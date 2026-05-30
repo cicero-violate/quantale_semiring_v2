@@ -1,4 +1,4 @@
-[<//! CUDA-resident quantale matrix and kernels.
+//! CUDA-resident quantale matrix and kernels.
 
 use std::sync::Arc;
 
@@ -8,13 +8,13 @@ use cudarc::nvrtc::compile_ptx;
 use crate::algebra::BOTTOM;
 use crate::edge::LatticeEdge;
 use crate::error::CudaError;
-use crate::node::{MATRIX_LEN, NODE_COUNT, Node, THREAD_COUNT};
+use crate::node::{Node, MATRIX_LEN, NODE_COUNT, THREAD_COUNT};
 use crate::path::reconstruct_path_from_witness_matrix;
-use crate::policy::{ExecutionGatePolicy, build_policy_edges};
+use crate::policy::{build_policy_edges, ExecutionGatePolicy};
 use crate::projection::{DecisionProjection, DecisionReport, QuantaleCudaReport};
-use crate::receipt::{ExecutionReceipt, build_receipt_edges};
+use crate::receipt::{build_receipt_edges, ExecutionReceipt};
 use crate::search::{
-    DomainCandidate, ScoredCandidate, build_search_delta_edges, build_search_edges,
+    build_search_delta_edges, build_search_edges, DomainCandidate, ScoredCandidate,
 };
 use crate::transitions::default_transition_edges;
 
@@ -40,7 +40,6 @@ pub struct GpuQuantaleMatrix {
     /// CUDA-resident W witness matrix: first hop for the selected path value.
     witness_matrix: CudaSlice<i32>,
     /// CUDA-resident scratch witness matrix used by tensor composition.
-    scratch_witness: CudaSlice<i32>,
     /// CUDA-resident execution-history matrix: consumed[src,dst] prevents repeated execution.
     consumed: CudaSlice<i32>,
     /// CUDA-resident prior A/A* matrix used for delta detection and convergence/reporting.
