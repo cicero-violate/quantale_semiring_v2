@@ -617,6 +617,195 @@ extern "C" __global__ void quantale_frontier_step(
     }
 }
 
+// Fused runtime tick:
+//   quantale_step closure/report work
+//   quantale_frontier_step projection/frontier update work
+//
+// This removes the host-side launch boundary between `quantale_step` and
+// `quantale_frontier_step` while keeping the existing standalone kernels for
+// tests, benchmarks, and compatibility.
+extern "C" __global__ void quantale_tick(
+    float* transition,
+    float* scratch,
+    float* previous,
+    int* next_hop,
+    int* consumed,
+    int* active,
+    int* next_active,
+    int* event_counts,
+    QuantaleCudaReport* out,
+    DecisionReport* decision
+) {
+    int tid = threadIdx.x;
+    int lane = tid & 31;
+    int warp_id = tid >> 5;
+    int warp_count = (blockDim.x + 31) >> 5;
+
+    __shared__ float warp_values[32];
+    __shared__ int warp_srcs[32];
+    __shared__ int warp_dsts[32];
+    __shared__ int warp_hops[32];
+    __shared__ int warp_counts[32];
+
+    if (tid < blockDim.x) {
+        event_counts[tid] = 0;
+    }
+    for (int i = tid; i < N; i += blockDim.x) {
+        next_active[i] = 0;
+    }
+    for (int idx = tid; idx < MATRIX_LEN; idx += blockDim.x) {
+        previous[idx] = transition[idx];
+    }
+    __syncthreads();
+
+    quantale_closure(transition, scratch, next_hop);
+
+    int local_events = 0;
+    float local_best_value = Q_BOTTOM;
+    int local_best_src = -1;
+    int local_best_dst = -1;
+    int local_best_hop = -1;
+
+    for (int idx = tid; idx < MATRIX_LEN; idx += blockDim.x) {
+        int i = idx / N;
+        int j = idx % N;
+        float before = previous[idx];
+        float after = transition[idx];
+        if (i != j && active[i] != 0 && after > before && after > Q_BOTTOM) {
+            local_events += 1;
+        }
+        if (i != j && after > local_best_value) {
+            local_best_value = after;
+            local_best_src = i;
+            local_best_dst = j;
+            local_best_hop = next_hop[idx];
+        }
+    }
+
+    int warp_events = warp_reduce_sum(local_events);
+    warp_reduce_best(local_best_value, local_best_src, local_best_dst, local_best_hop);
+
+    if (lane == 0) {
+        event_counts[warp_id] = warp_events;
+        warp_counts[warp_id] = warp_events;
+        warp_values[warp_id] = local_best_value;
+        warp_srcs[warp_id] = local_best_src;
+        warp_dsts[warp_id] = local_best_dst;
+        warp_hops[warp_id] = local_best_hop;
+    }
+    __syncthreads();
+
+    if (warp_id == 0) {
+        float block_best_value = lane < warp_count ? warp_values[lane] : Q_BOTTOM;
+        int block_best_src = lane < warp_count ? warp_srcs[lane] : -1;
+        int block_best_dst = lane < warp_count ? warp_dsts[lane] : -1;
+        int block_best_hop = lane < warp_count ? warp_hops[lane] : -1;
+        int block_events = lane < warp_count ? warp_counts[lane] : 0;
+
+        block_events = warp_reduce_sum(block_events);
+        warp_reduce_best(block_best_value, block_best_src, block_best_dst, block_best_hop);
+
+        if (lane == 0) {
+            out->step += 1;
+            out->best_src = block_best_src;
+            out->best_dst = block_best_dst;
+            out->best_value = block_best_value;
+            out->event_count = block_events;
+            out->goal_to_execute = transition[START_NODE * N + EXECUTE_PROBE_NODE];
+            out->goal_to_learn = transition[START_NODE * N + LEARN_PROBE_NODE];
+        }
+    }
+    __syncthreads();
+
+    for (int i = tid; i < N; i += blockDim.x) {
+        next_active[i] = 0;
+    }
+    __syncthreads();
+
+    float local_frontier_value = Q_BOTTOM;
+    int local_frontier_src = -1;
+    int local_frontier_dst = -1;
+    int local_frontier_hop = -1;
+    int local_candidates = 0;
+
+    for (int idx = tid; idx < MATRIX_LEN; idx += blockDim.x) {
+        int src = idx / N;
+        int dst = idx % N;
+        if (src == dst || active[src] == 0) {
+            continue;
+        }
+
+        int hop = next_hop[idx];
+        if (hop < 0 || hop >= N || consumed[src * N + hop] != 0) {
+            continue;
+        }
+
+        float value = transition[idx];
+        if (value <= Q_BOTTOM) {
+            continue;
+        }
+
+        local_candidates += 1;
+        choose_best(
+            value,
+            src,
+            dst,
+            hop,
+            local_frontier_value,
+            local_frontier_src,
+            local_frontier_dst,
+            local_frontier_hop
+        );
+    }
+
+    int warp_candidate_count = warp_reduce_sum(local_candidates);
+    warp_reduce_best(local_frontier_value, local_frontier_src, local_frontier_dst, local_frontier_hop);
+
+    if (lane == 0) {
+        warp_values[warp_id] = local_frontier_value;
+        warp_srcs[warp_id] = local_frontier_src;
+        warp_dsts[warp_id] = local_frontier_dst;
+        warp_hops[warp_id] = local_frontier_hop;
+        warp_counts[warp_id] = warp_candidate_count;
+    }
+    __syncthreads();
+
+    if (warp_id == 0) {
+        float block_best_value = lane < warp_count ? warp_values[lane] : Q_BOTTOM;
+        int block_best_src = lane < warp_count ? warp_srcs[lane] : -1;
+        int block_best_dst = lane < warp_count ? warp_dsts[lane] : -1;
+        int block_best_hop = lane < warp_count ? warp_hops[lane] : -1;
+        int block_candidates = lane < warp_count ? warp_counts[lane] : 0;
+
+        block_candidates = warp_reduce_sum(block_candidates);
+        warp_reduce_best(block_best_value, block_best_src, block_best_dst, block_best_hop);
+
+        if (lane == 0) {
+            decision->step += 1;
+            decision->selected_src = block_best_src;
+            decision->selected_dst = block_best_dst;
+            decision->first_hop = block_best_hop;
+            decision->selected_value = block_best_value;
+            decision->halted = block_best_hop == HALT_NODE ? 1 : 0;
+            decision->blocked = block_candidates == 0 ? 1 : 0;
+
+            if (block_candidates > 0 && block_best_src >= 0 && block_best_hop >= 0) {
+                consumed[block_best_src * N + block_best_hop] = 1;
+                next_active[block_best_hop] = 1;
+            } else {
+                for (int i = 0; i < N; ++i) {
+                    next_active[i] = active[i];
+                }
+            }
+        }
+    }
+    __syncthreads();
+
+    for (int i = tid; i < N; i += blockDim.x) {
+        active[i] = next_active[i];
+    }
+}
+
 // Commit π(A*) dynamically: mark the selected first hop as consumed and advance
 // the one-hot frontier vector S to that first hop. The transition matrix remains
 // unchanged; only dynamic frontier/mask state is mutated.

@@ -1,7 +1,15 @@
 //! Execution policy compiled into matrix-edge deltas.
+//!
+//! Policy routing is owned by `assets/policy.json`; this module evaluates the
+//! current boolean policy state against that data contract and compiles matching
+//! node-name edges into matrix deltas.
 
-use crate::edge::{TransitionEdge, edge};
-use crate::node::{ControlNode, EventNode, Node, StateNode};
+use serde::Deserialize;
+
+use crate::edge::TransitionEdge;
+use crate::topology::GraphTopology;
+
+const DEFAULT_POLICY_JSON: &str = include_str!("../assets/policy.json");
 
 pub struct ExecutionGatePolicy {
     pub evidence_accepted: bool,
@@ -27,10 +35,29 @@ impl Default for ExecutionGatePolicy {
     }
 }
 
-const POLICY_ALLOW_WEIGHT: f32 = 0.99;
-const POLICY_BLOCK_WEIGHT: f32 = 0.99;
-const POLICY_REPAIR_WEIGHT: f32 = 0.97;
-const POLICY_RETRY_WEIGHT: f32 = 0.90;
+#[derive(Debug, Deserialize)]
+struct PolicyRulesFile {
+    rules: Vec<PolicyRule>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PolicyRule {
+    when: PolicyCondition,
+    edges: Vec<PolicyEdge>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PolicyCondition {
+    #[serde(default)]
+    all: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PolicyEdge {
+    from: String,
+    to: String,
+    weight: f32,
+}
 
 /// Compile execution-side policy conditions into ordinary matrix edges.
 ///
@@ -41,124 +68,73 @@ const POLICY_RETRY_WEIGHT: f32 = 0.90;
 /// Policy is represented as ordinary matrix structure; projection reads the
 /// closed matrix rather than a side-channel projection mask.
 pub fn build_policy_edges(policy: ExecutionGatePolicy) -> Vec<TransitionEdge> {
-    let mut edges = Vec::with_capacity(10);
+    build_policy_edges_from_json(policy, DEFAULT_POLICY_JSON)
+        .expect("bundled assets/policy.json must compile")
+}
 
-    if policy.task_blocked {
-        edges.push(edge(
-            Node::control(ControlNode::GateExecution),
-            Node::control(ControlNode::Block),
-            POLICY_BLOCK_WEIGHT,
-        ));
-        edges.push(edge(
-            Node::control(ControlNode::ChooseBest),
-            Node::control(ControlNode::Block),
-            POLICY_BLOCK_WEIGHT,
-        ));
-    } else {
-        edges.push(edge(
-            Node::control(ControlNode::GateExecution),
-            Node::event(EventNode::ExecuteStarted),
-            POLICY_ALLOW_WEIGHT,
-        ));
+fn build_policy_edges_from_json(
+    policy: ExecutionGatePolicy,
+    input: &str,
+) -> Result<Vec<TransitionEdge>, String> {
+    let rules: PolicyRulesFile =
+        serde_json::from_str(input).map_err(|error| format!("parse policy rules: {error}"))?;
+    let topology = GraphTopology::default_asset()
+        .map_err(|error| format!("load topology registry: {error}"))?
+        .compile()
+        .map_err(|error| format!("compile topology registry: {error}"))?;
+
+    let mut edges = Vec::new();
+    for rule in rules.rules {
+        if !rule.when.matches(&policy) {
+            continue;
+        }
+        for edge in rule.edges {
+            let src = topology
+                .registry
+                .id_of(&edge.from)
+                .ok_or_else(|| format!("policy edge source '{}' is not declared", edge.from))?;
+            let dst = topology
+                .registry
+                .id_of(&edge.to)
+                .ok_or_else(|| format!("policy edge destination '{}' is not declared", edge.to))?;
+            edges.push(TransitionEdge::new(src as i32, dst as i32, edge.weight));
+        }
     }
+    Ok(edges)
+}
 
-    if policy.evidence_accepted {
-        edges.push(edge(
-            Node::control(ControlNode::GateReceipt),
-            Node::event(EventNode::ReceiptAccepted),
-            POLICY_ALLOW_WEIGHT,
-        ));
-    } else {
-        edges.push(edge(
-            Node::control(ControlNode::GateReceipt),
-            Node::event(EventNode::ReceiptRejected),
-            POLICY_BLOCK_WEIGHT,
-        ));
-        edges.push(edge(
-            Node::event(EventNode::ReceiptRejected),
-            Node::control(ControlNode::Rollback),
-            POLICY_REPAIR_WEIGHT,
-        ));
+impl PolicyCondition {
+    fn matches(&self, policy: &ExecutionGatePolicy) -> bool {
+        self.all
+            .iter()
+            .all(|predicate| policy.evaluate(predicate.as_str()))
     }
+}
 
-    if policy.receipt_hash_nonzero {
-        edges.push(edge(
-            Node::event(EventNode::ReceiptAccepted),
-            Node::event(EventNode::HashNonzero),
-            POLICY_ALLOW_WEIGHT,
-        ));
-        edges.push(edge(
-            Node::event(EventNode::HashNonzero),
-            Node::state(StateNode::Validate),
-            POLICY_ALLOW_WEIGHT,
-        ));
-    } else if policy.evidence_accepted {
-        edges.push(edge(
-            Node::event(EventNode::ReceiptAccepted),
-            Node::event(EventNode::ReceiptRejected),
-            POLICY_BLOCK_WEIGHT,
-        ));
-        edges.push(edge(
-            Node::event(EventNode::ReceiptRejected),
-            Node::control(ControlNode::Rollback),
-            POLICY_REPAIR_WEIGHT,
-        ));
+impl ExecutionGatePolicy {
+    fn evaluate(&self, predicate: &str) -> bool {
+        match predicate {
+            "evidence_accepted" => self.evidence_accepted,
+            "not_evidence_accepted" => !self.evidence_accepted,
+            "receipt_hash_nonzero" => self.receipt_hash_nonzero,
+            "not_receipt_hash_nonzero" => !self.receipt_hash_nonzero,
+            "task_blocked" => self.task_blocked,
+            "not_task_blocked" => !self.task_blocked,
+            "retry_allowed" => self.retry_allowed,
+            "not_retry_allowed" => !self.retry_allowed,
+            "halt_allowed" => self.halt_allowed,
+            "not_halt_allowed" => !self.halt_allowed,
+            "repair_allowed" => self.repair_allowed,
+            "not_repair_allowed" => !self.repair_allowed,
+            "commit_allowed" => self.commit_allowed,
+            "not_commit_allowed" => !self.commit_allowed,
+            "commit_ready" => {
+                self.commit_allowed && self.evidence_accepted && self.receipt_hash_nonzero
+            }
+            "not_commit_ready" => {
+                !(self.commit_allowed && self.evidence_accepted && self.receipt_hash_nonzero)
+            }
+            _ => false,
+        }
     }
-
-    if policy.commit_allowed && policy.evidence_accepted && policy.receipt_hash_nonzero {
-        edges.push(edge(
-            Node::state(StateNode::Validate),
-            Node::control(ControlNode::Commit),
-            POLICY_ALLOW_WEIGHT,
-        ));
-        edges.push(edge(
-            Node::control(ControlNode::Commit),
-            Node::control(ControlNode::GateMemory),
-            POLICY_ALLOW_WEIGHT,
-        ));
-    } else {
-        edges.push(edge(
-            Node::state(StateNode::Validate),
-            Node::control(ControlNode::Block),
-            POLICY_BLOCK_WEIGHT,
-        ));
-    }
-
-    if policy.repair_allowed {
-        edges.push(edge(
-            Node::control(ControlNode::Rollback),
-            Node::control(ControlNode::Repair),
-            POLICY_REPAIR_WEIGHT,
-        ));
-    } else {
-        edges.push(edge(
-            Node::control(ControlNode::Rollback),
-            Node::control(ControlNode::Block),
-            POLICY_BLOCK_WEIGHT,
-        ));
-    }
-
-    if policy.retry_allowed {
-        edges.push(edge(
-            Node::control(ControlNode::Block),
-            Node::control(ControlNode::Retry),
-            POLICY_RETRY_WEIGHT,
-        ));
-    } else if policy.halt_allowed {
-        edges.push(edge(
-            Node::control(ControlNode::Block),
-            Node::control(ControlNode::Halt),
-            POLICY_BLOCK_WEIGHT,
-        ));
-    }
-
-    if policy.halt_allowed {
-        edges.push(edge(
-            Node::event(EventNode::LearnUpdated),
-            Node::control(ControlNode::Halt),
-            POLICY_ALLOW_WEIGHT,
-        ));
-    }
-
-    edges
 }

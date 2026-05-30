@@ -39,7 +39,6 @@ struct JsonRecord<T> {
 struct JsonMetaRecord {
     sequence: u64,
     kind: TlogRecordKind,
-    payload: serde_json::Value,
 }
 
 pub struct TlogWriter {

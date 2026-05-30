@@ -25,6 +25,7 @@ const JOIN_ASSIGN_KERNEL: &str = "quantale_join_assign";
 const MUL_ASSIGN_KERNEL: &str = "quantale_mul_assign";
 const CLOSURE_ASSIGN_KERNEL: &str = "quantale_closure_assign";
 const STEP_KERNEL: &str = "quantale_step";
+const TICK_KERNEL: &str = "quantale_tick";
 /// CUDA kernel for the operational projection π(A*) from closed quantale paths.
 const DECISION_PROJECTION_KERNEL: &str = "quantale_decide_path";
 const FRONTIER_STEP_KERNEL: &str = "quantale_frontier_step";
@@ -70,6 +71,7 @@ impl GpuQuantaleMatrix {
                 MUL_ASSIGN_KERNEL,
                 CLOSURE_ASSIGN_KERNEL,
                 STEP_KERNEL,
+                TICK_KERNEL,
                 DECISION_PROJECTION_KERNEL,
                 FRONTIER_STEP_KERNEL,
             ],
@@ -313,6 +315,35 @@ impl GpuQuantaleMatrix {
         }
         .map_err(|error| CudaError::new("quantale_step", error))?;
         self.report()
+    }
+
+    /// Fused host tick: CUDA performs closure/report and frontier projection/update
+    /// in one launch. This removes the previous `step()` then `frontier_step()`
+    /// host launch boundary for the main runtime loop.
+    pub fn tick(&mut self) -> Result<(QuantaleCudaReport, DecisionProjection), CudaError> {
+        let tick = self
+            .dev
+            .get_func(MODULE_NAME, TICK_KERNEL)
+            .ok_or(CudaError::missing_function(TICK_KERNEL))?;
+        unsafe {
+            tick.launch(
+                kernel_config(),
+                (
+                    &mut self.transition,
+                    &mut self.scratch,
+                    &mut self.previous,
+                    &mut self.next_hop,
+                    &mut self.consumed,
+                    &mut self.active,
+                    &mut self.next_active,
+                    &mut self.event_counts,
+                    &mut self.report,
+                    &mut self.decision_report,
+                ),
+            )
+        }
+        .map_err(|error| CudaError::new("quantale_tick", error))?;
+        Ok((self.report()?, self.decision_report()?))
     }
 
     /// Compute π(A*) on CUDA from the already-closed matrix: choose a destination

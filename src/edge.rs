@@ -1,11 +1,12 @@
 //! Matrix edges and scalar evaluation.
 
 use cudarc::driver::DeviceRepr;
+use serde::Serialize;
 
 use crate::node::Node;
 
 #[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
 pub struct TransitionEdge {
     pub src: i32,
     pub dst: i32,

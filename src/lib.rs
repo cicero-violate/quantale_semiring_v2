@@ -429,15 +429,16 @@ mod tests {
     }
 
     #[test]
-    fn egress_returns_closed_loop_receipt_confirmation() {
-        let confirmation = EgressDispatcher::dispatch_with_confirmation(ExternalAction::Noop {
-            label: "noop".to_string(),
-        });
+    fn process_receipt_converts_to_closed_loop_execution_receipt() {
+        let process_receipt = ProcessReceipt {
+            node_name: "Control::GateExecution".to_string(),
+            exit_code: 0,
+            stderr_payload: String::new(),
+        };
+        let receipt = process_receipt.to_execution_receipt();
 
-        assert!(confirmation.success);
-        assert_eq!(confirmation.action_label, "noop");
-        assert!(confirmation.receipt.accepted);
-        assert!(confirmation.receipt.hash_nonzero);
+        assert!(receipt.accepted);
+        assert!(receipt.hash_nonzero());
     }
 
     #[test]

@@ -1,7 +1,7 @@
 use quantale_semiring_v2::{
-    ControlNode, DomainCandidate, EgressDispatcher, EventNode, ExternalAction, InboundEvent,
-    IngressServer, Node, StateNode, TlogRecordKind, TlogWriter, build_candidate_edges,
-    build_receipt_edges, drain_available, read_record_meta,
+    ControlNode, DomainCandidate, EventNode, InboundEvent, IngressServer, Node, ProcessReceipt,
+    StateNode, TlogRecordKind, TlogWriter, build_candidate_edges, build_receipt_edges,
+    drain_available, read_record_meta,
 };
 
 fn has_dst(edges: &[quantale_semiring_v2::TransitionEdge], dst: Node) -> bool {
@@ -10,12 +10,15 @@ fn has_dst(edges: &[quantale_semiring_v2::TransitionEdge], dst: Node) -> bool {
 
 #[test]
 fn success_receipt_keeps_validation_path_reachable() {
-    let confirmation = EgressDispatcher::dispatch_with_confirmation(ExternalAction::Noop {
-        label: "success".to_string(),
-    });
-    let edges = build_receipt_edges(confirmation.receipt);
+    let receipt = ProcessReceipt {
+        node_name: "Control::GateExecution".to_string(),
+        exit_code: 0,
+        stderr_payload: String::new(),
+    }
+    .to_execution_receipt();
+    let edges = build_receipt_edges(receipt.clone());
 
-    assert!(confirmation.success);
+    assert!(receipt.accepted);
     assert!(has_dst(&edges, Node::event(EventNode::ReceiptAccepted)));
     assert!(has_dst(&edges, Node::event(EventNode::HashNonzero)));
     assert!(has_dst(&edges, Node::state(StateNode::Validate)));

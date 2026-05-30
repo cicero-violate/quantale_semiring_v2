@@ -1,0 +1,87 @@
+{
+  "rules": [
+    {
+      "when": { "all": ["task_blocked"] },
+      "edges": [
+        { "from": "Control::GateExecution", "to": "Control::Block", "weight": 0.99 },
+        { "from": "Control::ChooseBest", "to": "Control::Block", "weight": 0.99 }
+      ]
+    },
+    {
+      "when": { "all": ["not_task_blocked"] },
+      "edges": [
+        { "from": "Control::GateExecution", "to": "Event::ExecuteStarted", "weight": 0.99 }
+      ]
+    },
+    {
+      "when": { "all": ["evidence_accepted"] },
+      "edges": [
+        { "from": "Control::GateReceipt", "to": "Event::ReceiptAccepted", "weight": 0.99 }
+      ]
+    },
+    {
+      "when": { "all": ["not_evidence_accepted"] },
+      "edges": [
+        { "from": "Control::GateReceipt", "to": "Event::ReceiptRejected", "weight": 0.99 },
+        { "from": "Event::ReceiptRejected", "to": "Control::Rollback", "weight": 0.97 }
+      ]
+    },
+    {
+      "when": { "all": ["receipt_hash_nonzero"] },
+      "edges": [
+        { "from": "Event::ReceiptAccepted", "to": "Event::HashNonzero", "weight": 0.99 },
+        { "from": "Event::HashNonzero", "to": "State::Validate", "weight": 0.99 }
+      ]
+    },
+    {
+      "when": { "all": ["evidence_accepted", "not_receipt_hash_nonzero"] },
+      "edges": [
+        { "from": "Event::ReceiptAccepted", "to": "Event::ReceiptRejected", "weight": 0.99 },
+        { "from": "Event::ReceiptRejected", "to": "Control::Rollback", "weight": 0.97 }
+      ]
+    },
+    {
+      "when": { "all": ["commit_allowed", "evidence_accepted", "receipt_hash_nonzero"] },
+      "edges": [
+        { "from": "State::Validate", "to": "Control::Commit", "weight": 0.99 },
+        { "from": "Control::Commit", "to": "Control::GateMemory", "weight": 0.99 }
+      ]
+    },
+    {
+      "when": { "all": ["not_commit_ready"] },
+      "edges": [
+        { "from": "State::Validate", "to": "Control::Block", "weight": 0.99 }
+      ]
+    },
+    {
+      "when": { "all": ["repair_allowed"] },
+      "edges": [
+        { "from": "Control::Rollback", "to": "Control::Repair", "weight": 0.97 }
+      ]
+    },
+    {
+      "when": { "all": ["not_repair_allowed"] },
+      "edges": [
+        { "from": "Control::Rollback", "to": "Control::Block", "weight": 0.99 }
+      ]
+    },
+    {
+      "when": { "all": ["retry_allowed"] },
+      "edges": [
+        { "from": "Control::Block", "to": "Control::Retry", "weight": 0.90 }
+      ]
+    },
+    {
+      "when": { "all": ["not_retry_allowed", "halt_allowed"] },
+      "edges": [
+        { "from": "Control::Block", "to": "Control::Halt", "weight": 0.99 }
+      ]
+    },
+    {
+      "when": { "all": ["halt_allowed"] },
+      "edges": [
+        { "from": "Event::LearnUpdated", "to": "Control::Halt", "weight": 0.99 }
+      ]
+    }
+  ]
+}

@@ -1,9 +1,4 @@
 //! Data-driven graph topology loading and compilation.
-//!
-//! This layer turns JSON topology assets into ordinary `TransitionEdge` values
-//! for the existing CUDA matrix engine. It is intentionally bounded by the
-//! current fixed CUDA node universe: oversized or non-canonical IDs are rejected
-//! before upload.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -93,7 +88,7 @@ impl GraphTopology {
 
     pub fn from_json_file(path: impl AsRef<Path>) -> Result<Self, CudaError> {
         let input = fs::read_to_string(path)
-            .map_err(|error| CudaError::invalid_input(format!("read topology: {error}")))?;
+            .map_err(|error| CudaError::invalid_input(error.to_string()))?;
         Self::from_json_str(&input)
     }
 
@@ -107,21 +102,14 @@ impl GraphTopology {
 
         for transition in &self.transitions {
             let src = registry.id_of(&transition.from).ok_or_else(|| {
-                CudaError::invalid_input(format!(
-                    "transition source '{}' is not declared",
-                    transition.from
-                ))
+                CudaError::invalid_input(format!("source '{}' missing", transition.from))
             })?;
             let dst = registry.id_of(&transition.to).ok_or_else(|| {
-                CudaError::invalid_input(format!(
-                    "transition destination '{}' is not declared",
-                    transition.to
-                ))
+                CudaError::invalid_input(format!("destination '{}' missing", transition.to))
             })?;
             edges.push(TransitionEdge::new(
-                i32::try_from(src).map_err(|_| CudaError::invalid_input("source id overflow"))?,
-                i32::try_from(dst)
-                    .map_err(|_| CudaError::invalid_input("destination id overflow"))?,
+                src as i32,
+                dst as i32,
                 transition.default_weight.raw(),
             ));
         }
@@ -140,45 +128,24 @@ impl GraphTopology {
 
     fn build_registry(&self) -> Result<NodeRegistry, CudaError> {
         if self.nodes.is_empty() {
-            return Err(CudaError::invalid_input("topology has no nodes"));
+            return Err(CudaError::invalid_input("no nodes"));
         }
         if self.nodes.len() > NODE_COUNT {
-            return Err(CudaError::invalid_input(format!(
-                "topology has {} nodes but current CUDA kernel supports {}",
-                self.nodes.len(),
-                NODE_COUNT
-            )));
+            return Err(CudaError::invalid_input("node count overflow"));
         }
 
         let mut by_name = BTreeMap::new();
         let mut by_id = BTreeMap::new();
         for node in &self.nodes {
-            if node.id >= NODE_COUNT {
-                return Err(CudaError::invalid_input(format!(
-                    "node '{}' id {} exceeds current CUDA universe {}",
-                    node.name, node.id, NODE_COUNT
-                )));
+            if node.id >= NODE_COUNT || Node::decode_index(node.id).is_none() {
+                return Err(CudaError::invalid_input("node ID invalid"));
             }
-            if Node::decode(node.id as i32).is_none() {
-                return Err(CudaError::invalid_input(format!(
-                    "node '{}' id {} is not decodable",
-                    node.name, node.id
-                )));
-            }
-            if by_name.insert(node.name.clone(), node.id).is_some() {
-                return Err(CudaError::invalid_input(format!(
-                    "duplicate node name '{}'",
-                    node.name
-                )));
-            }
-            if by_id.insert(node.id, node.name.clone()).is_some() {
-                return Err(CudaError::invalid_input(format!(
-                    "duplicate node id {}",
-                    node.id
-                )));
+            if by_name.insert(node.name.clone(), node.id).is_some()
+                || by_id.insert(node.id, node.name.clone()).is_some()
+            {
+                return Err(CudaError::invalid_input("duplicate node item"));
             }
         }
-
         Ok(NodeRegistry { by_name, by_id })
     }
 }
@@ -187,9 +154,8 @@ impl CompiledTopology {
     pub fn dense_matrix(&self) -> Vec<f32> {
         let mut matrix = vec![Q_BOTTOM; MATRIX_LEN];
         for edge in &self.edges {
-            let src = edge.src as usize;
-            let dst = edge.dst as usize;
-            matrix[src * NODE_COUNT + dst] = matrix[src * NODE_COUNT + dst].max(edge.value);
+            let idx = (edge.src as usize) * NODE_COUNT + edge.dst as usize;
+            matrix[idx] = matrix[idx].max(edge.value);
         }
         for node in 0..self.node_count {
             matrix[node * NODE_COUNT + node] = matrix[node * NODE_COUNT + node].max(Q_UNIT);

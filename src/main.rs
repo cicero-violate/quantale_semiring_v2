@@ -1,7 +1,9 @@
+use serde_json::json;
+
 use quantale_semiring_v2::{
-    CudaWorld, DomainCandidate, EgressDispatcher, ExternalAction, InboundEvent, IngressServer,
-    SystemConfig, TlogWriter, build_candidate_edges, build_receipt_edges,
-    data_driven_transition_edges, drain_available, format_quantale_value, node_name,
+    CudaWorld, DomainCandidate, InboundEvent, IngressServer, SystemConfig, TlogWriter,
+    UniversalExecutor, build_candidate_edges, build_receipt_edges, drain_available,
+    format_quantale_value, node_name,
 };
 
 fn main() {
@@ -21,10 +23,9 @@ fn main() {
         }
     };
 
-    let transition_edges = data_driven_transition_edges()
-        .unwrap_or_else(|_| quantale_semiring_v2::full_transition_edges());
+    let executor = UniversalExecutor::from_config(&config);
 
-    let mut world = match CudaWorld::from_edges(&transition_edges) {
+    let mut world = match CudaWorld::new() {
         Ok(world) => world,
         Err(error) => {
             eprintln!("{error}");
@@ -54,15 +55,8 @@ fn main() {
                 }
             }
         }
-        let report = match world.step() {
-            Ok(report) => report,
-            Err(error) => {
-                eprintln!("{error}");
-                std::process::exit(1);
-            }
-        };
-        let decision = match world.frontier_step() {
-            Ok(decision) => decision,
+        let (report, decision) = match world.tick() {
+            Ok(result) => result,
             Err(error) => {
                 eprintln!("{error}");
                 std::process::exit(1);
@@ -82,15 +76,15 @@ fn main() {
             decision.selected_action(),
             quantale_semiring_v2::QuantaleAction::RunExecutor
         ) {
-            let confirmation = EgressDispatcher::dispatch_with_confirmation(ExternalAction::Noop {
-                label: format!("tick-{tick}"),
-            });
-            if let Err(error) = world.join_receipt_edges(confirmation.receipt) {
+            let process_receipt = executor
+                .execute_abstract_node_blocking("Control::GateExecution", &json!({ "diff": "" }));
+            let execution_receipt = process_receipt.to_execution_receipt();
+            if let Err(error) = world.join_receipt_edges(execution_receipt.clone()) {
                 eprintln!("{error}");
                 std::process::exit(1);
             }
-            let receipt_edges = build_receipt_edges(confirmation.receipt);
-            if let Err(error) = tlog.append_receipt(&confirmation.receipt) {
+            let receipt_edges = build_receipt_edges(execution_receipt.clone());
+            if let Err(error) = tlog.append_receipt(&execution_receipt) {
                 eprintln!("{error}");
                 std::process::exit(1);
             }

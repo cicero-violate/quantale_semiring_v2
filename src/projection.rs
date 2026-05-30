@@ -1,12 +1,13 @@
 //! Closure reports and decision projection types.
 
 use cudarc::driver::DeviceRepr;
+use serde::Serialize;
 
 use crate::algebra::{Q_BOTTOM, Q_UNIT};
 use crate::node::{ControlNode, EventNode, Node, StateNode};
 
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize)]
 pub struct QuantaleCudaReport {
     pub step: i32,
     pub best_src: i32,
@@ -22,7 +23,7 @@ unsafe impl DeviceRepr for QuantaleCudaReport {}
 /// Compact report for π(A*): the gated executable projection of quantale closure.
 #[repr(C)]
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize)]
 pub struct DecisionReport {
     pub step: i32,
     pub selected_src: i32,
@@ -65,16 +66,24 @@ impl DecisionReport {
         if self.blocked != 0 {
             return QuantaleAction::Blocked;
         }
-        match self.selected_node() {
-            Some(Node::State(StateNode::Execute))
-            | Some(Node::Event(EventNode::ExecuteStarted)) => QuantaleAction::RunExecutor,
-            Some(Node::Control(ControlNode::Commit)) => QuantaleAction::Commit,
-            Some(Node::Control(ControlNode::Retry)) => QuantaleAction::Retry,
-            Some(Node::Control(ControlNode::Repair)) => QuantaleAction::Repair,
-            Some(Node::Control(ControlNode::Rollback)) => QuantaleAction::Rollback,
-            Some(Node::Control(ControlNode::Halt)) => QuantaleAction::Stop,
-            Some(node) => QuantaleAction::ContinueTo(node),
-            None => QuantaleAction::Unknown,
+        let Some(node) = self.selected_node() else {
+            return QuantaleAction::Unknown;
+        };
+        if node == Node::state(StateNode::Execute) || node == Node::event(EventNode::ExecuteStarted)
+        {
+            QuantaleAction::RunExecutor
+        } else if node == Node::control(ControlNode::Commit) {
+            QuantaleAction::Commit
+        } else if node == Node::control(ControlNode::Retry) {
+            QuantaleAction::Retry
+        } else if node == Node::control(ControlNode::Repair) {
+            QuantaleAction::Repair
+        } else if node == Node::control(ControlNode::Rollback) {
+            QuantaleAction::Rollback
+        } else if node == Node::control(ControlNode::Halt) {
+            QuantaleAction::Stop
+        } else {
+            QuantaleAction::ContinueTo(node)
         }
     }
 }
