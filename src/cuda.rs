@@ -1,15 +1,15 @@
-//! CUDA-resident quantale matrix and kernels.
+[<//! CUDA-resident quantale matrix and kernels.
 
 use std::sync::Arc;
 
 use cudarc::driver::{CudaDevice, CudaSlice, LaunchAsync, LaunchConfig};
 use cudarc::nvrtc::compile_ptx;
 
-use crate::algebra::Q_BOTTOM;
-use crate::edge::TransitionEdge;
+use crate::algebra::BOTTOM;
+use crate::edge::LatticeEdge;
 use crate::error::CudaError;
 use crate::node::{MATRIX_LEN, NODE_COUNT, Node, THREAD_COUNT};
-use crate::path::reconstruct_path_from_next_hop;
+use crate::path::reconstruct_path_from_witness_matrix;
 use crate::policy::{ExecutionGatePolicy, build_policy_edges};
 use crate::projection::{DecisionProjection, DecisionReport, QuantaleCudaReport};
 use crate::receipt::{ExecutionReceipt, build_receipt_edges};
@@ -20,14 +20,14 @@ use crate::transitions::default_transition_edges;
 
 const MODULE_NAME: &str = "quantale_semiring_v2";
 const RESET_KERNEL: &str = "quantale_reset";
-const LOAD_EDGES_KERNEL: &str = "quantale_load_edges";
-const JOIN_ASSIGN_KERNEL: &str = "quantale_join_assign";
-const MUL_ASSIGN_KERNEL: &str = "quantale_mul_assign";
-const CLOSURE_ASSIGN_KERNEL: &str = "quantale_closure_assign";
+const EMBED_ELEMENTS_KERNEL: &str = "quantale_embed_elements";
+const SUPREMUM_ASSIGN_KERNEL: &str = "quantale_supremum_assign";
+const TENSOR_ASSIGN_KERNEL: &str = "quantale_tensor_assign";
+const LEAST_FIXED_POINT_KERNEL: &str = "quantale_least_fixed_point";
 const STEP_KERNEL: &str = "quantale_step";
 const TICK_KERNEL: &str = "quantale_tick";
 /// CUDA kernel for the operational projection π(A*) from closed quantale paths.
-const DECISION_PROJECTION_KERNEL: &str = "quantale_decide_path";
+const QUANTALE_MORPHISM_KERNEL: &str = "quantale_morphism";
 const FRONTIER_STEP_KERNEL: &str = "quantale_frontier_step";
 const KERNEL_SOURCE: &str = include_str!("../cuda/quantale_world.cu");
 
@@ -38,15 +38,28 @@ pub struct GpuQuantaleMatrix {
     /// CUDA-resident scratch matrix for A* closure/composition.
     scratch: CudaSlice<f32>,
     /// CUDA-resident W witness matrix: first hop for the selected path value.
-    next_hop: CudaSlice<i32>,
-    /// CUDA-resident scratch witness matrix used by quantale multiplication.
-    scratch_next_hop: CudaSlice<i32>,
+    witness_matrix: CudaSlice<i32>,
+    /// CUDA-resident scratch witness matrix used by tensor composition.
+    scratch_witness: CudaSlice<i32>,
+    /// CUDA-resident execution-history matrix: consumed[src,dst] prevents repeated execution.
     consumed: CudaSlice<i32>,
+
+    /// CUDA-resident prior A/A* matrix used for delta detection and convergence/reporting.
     previous: CudaSlice<f32>,
+
+    /// CUDA-resident active frontier vector over NODE_COUNT nodes.
     active: CudaSlice<i32>,
+
+    /// CUDA-resident next active frontier vector over NODE_COUNT nodes.
     next_active: CudaSlice<i32>,
+
+    /// CUDA-resident per-thread event counter scratch buffer.
     event_counts: CudaSlice<i32>,
+
+    /// CUDA-resident compact closure telemetry report.
     report: CudaSlice<QuantaleCudaReport>,
+
+    /// CUDA-resident compact executable decision projection report.
     decision_report: CudaSlice<DecisionReport>,
 }
 
@@ -66,35 +79,35 @@ impl GpuQuantaleMatrix {
             MODULE_NAME,
             &[
                 RESET_KERNEL,
-                LOAD_EDGES_KERNEL,
-                JOIN_ASSIGN_KERNEL,
-                MUL_ASSIGN_KERNEL,
-                CLOSURE_ASSIGN_KERNEL,
+                EMBED_ELEMENTS_KERNEL,
+                SUPREMUM_ASSIGN_KERNEL,
+                TENSOR_ASSIGN_KERNEL,
+                LEAST_FIXED_POINT_KERNEL,
                 STEP_KERNEL,
                 TICK_KERNEL,
-                DECISION_PROJECTION_KERNEL,
+                QUANTALE_MORPHISM_KERNEL,
                 FRONTIER_STEP_KERNEL,
             ],
         )
         .map_err(|error| CudaError::new("load_ptx", error))?;
 
         let transition = dev
-            .htod_copy(vec![Q_BOTTOM; MATRIX_LEN])
+            .htod_copy(vec![BOTTOM; MATRIX_LEN])
             .map_err(|error| CudaError::new("htod_copy transition", error))?;
         let scratch = dev
-            .htod_copy(vec![Q_BOTTOM; MATRIX_LEN])
+            .htod_copy(vec![BOTTOM; MATRIX_LEN])
             .map_err(|error| CudaError::new("htod_copy scratch", error))?;
-        let next_hop = dev
+        let witness_matrix = dev
             .htod_copy(vec![-1_i32; MATRIX_LEN])
-            .map_err(|error| CudaError::new("htod_copy next_hop", error))?;
-        let scratch_next_hop = dev
+            .map_err(|error| CudaError::new("htod_copy witness_matrix", error))?;
+        let scratch_witness = dev
             .htod_copy(vec![-1_i32; MATRIX_LEN])
-            .map_err(|error| CudaError::new("htod_copy scratch_next_hop", error))?;
+            .map_err(|error| CudaError::new("htod_copy scratch_witness", error))?;
         let consumed = dev
             .htod_copy(vec![0_i32; MATRIX_LEN])
             .map_err(|error| CudaError::new("htod_copy consumed", error))?;
         let previous = dev
-            .htod_copy(vec![Q_BOTTOM; MATRIX_LEN])
+            .htod_copy(vec![BOTTOM; MATRIX_LEN])
             .map_err(|error| CudaError::new("htod_copy previous", error))?;
         let active = dev
             .htod_copy(vec![0_i32; NODE_COUNT])
@@ -116,8 +129,8 @@ impl GpuQuantaleMatrix {
             dev,
             transition,
             scratch,
-            next_hop,
-            scratch_next_hop,
+            witness_matrix,
+            scratch_witness,
             consumed,
             previous,
             active,
@@ -130,9 +143,9 @@ impl GpuQuantaleMatrix {
         Ok(matrix)
     }
 
-    pub fn from_edges(edges: &[TransitionEdge]) -> Result<Self, CudaError> {
+    pub fn from_edges(edges: &[LatticeEdge]) -> Result<Self, CudaError> {
         let mut matrix = Self::empty()?;
-        matrix.load_edges(edges)?;
+        matrix.embed_elements(edges)?;
         Ok(matrix)
     }
 
@@ -148,8 +161,8 @@ impl GpuQuantaleMatrix {
                     &mut self.transition,
                     &mut self.scratch,
                     &mut self.previous,
-                    &mut self.next_hop,
-                    &mut self.scratch_next_hop,
+                    &mut self.witness_matrix,
+                    &mut self.scratch_witness,
                     &mut self.consumed,
                     &mut self.active,
                     &mut self.next_active,
@@ -162,29 +175,29 @@ impl GpuQuantaleMatrix {
         .map_err(|error| CudaError::new("quantale_reset", error))
     }
 
-    pub fn load_edges(&mut self, edges: &[TransitionEdge]) -> Result<(), CudaError> {
+    pub fn embed_elements(&mut self, edges: &[LatticeEdge]) -> Result<(), CudaError> {
         let edge_count = i32::try_from(edges.len())
-            .map_err(|_| CudaError::invalid_input("too many transition edges"))?;
+            .map_err(|_| CudaError::invalid_input("too many lattice elements"))?;
         let edge_buffer = self
             .dev
             .htod_copy(edges.to_vec())
             .map_err(|error| CudaError::new("htod_copy edges", error))?;
-        let load_edges = self
+        let embed_elements = self
             .dev
-            .get_func(MODULE_NAME, LOAD_EDGES_KERNEL)
-            .ok_or(CudaError::missing_function(LOAD_EDGES_KERNEL))?;
+            .get_func(MODULE_NAME, EMBED_ELEMENTS_KERNEL)
+            .ok_or(CudaError::missing_function(EMBED_ELEMENTS_KERNEL))?;
         unsafe {
-            load_edges.launch(
+            embed_elements.launch(
                 kernel_config(),
                 (
                     &mut self.transition,
-                    &mut self.next_hop,
+                    &mut self.witness_matrix,
                     &edge_buffer,
                     edge_count,
                 ),
             )
         }
-        .map_err(|error| CudaError::new("quantale_load_edges", error))
+        .map_err(|error| CudaError::new("quantale_embed_elements", error))
     }
 
     /// Join matrix-native policy edges into the current transition matrix.
@@ -192,33 +205,33 @@ impl GpuQuantaleMatrix {
     /// This joins policy into the matrix. Projection reads matrix structure only.
     pub fn join_policy_edges(&mut self, policy: ExecutionGatePolicy) -> Result<(), CudaError> {
         let policy_edges = build_policy_edges(policy);
-        self.load_edges(&policy_edges)
+        self.embed_elements(&policy_edges)
     }
 
     /// Write a single feedback weight from a process receipt directly into VRAM.
     ///
     /// This is the primary feedback path for the agent loop: after every operator
     /// execution, the raw Unix exit-code weight is injected back onto the selected
-    /// edge so the quantale closure can route away from failed nodes on the next tick.
-    pub fn inject_dynamic_weight(
+    /// edge so the least fixed point can route away from failed nodes on the next tick.
+    pub fn join_empirical_element(
         &mut self,
         src: i32,
         dst: i32,
         weight: f32,
     ) -> Result<(), CudaError> {
-        self.load_edges(&[TransitionEdge::new(src, dst, weight)])
+        self.embed_elements(&[LatticeEdge::new(src, dst, weight)])
     }
 
     /// Join runtime receipt evidence into the current transition matrix.
     pub fn join_receipt_edges(&mut self, receipt: ExecutionReceipt) -> Result<(), CudaError> {
         let receipt_edges = build_receipt_edges(receipt);
-        self.load_edges(&receipt_edges)
+        self.embed_elements(&receipt_edges)
     }
 
     /// Join selected runtime search evidence into the current transition matrix.
     pub fn join_search_edges(&mut self, top_k: &[ScoredCandidate]) -> Result<(), CudaError> {
         let search_edges = build_search_edges(top_k);
-        self.load_edges(&search_edges)
+        self.embed_elements(&search_edges)
     }
 
     /// Score external candidates, select top-k, and join search evidence.
@@ -228,7 +241,7 @@ impl GpuQuantaleMatrix {
         k: usize,
     ) -> Result<Vec<ScoredCandidate>, CudaError> {
         let (top_k, search_edges) = build_search_delta_edges(candidates, k);
-        self.load_edges(&search_edges)?;
+        self.embed_elements(&search_edges)?;
         Ok(top_k)
     }
 
@@ -237,68 +250,72 @@ impl GpuQuantaleMatrix {
         self.join_policy_edges(policy)
     }
 
-    pub fn join_assign(&mut self, rhs: &Self) -> Result<(), CudaError> {
+    pub fn supremum_assign(&mut self, rhs: &Self) -> Result<(), CudaError> {
         if !Arc::ptr_eq(&self.dev, &rhs.dev) {
             return Err(CudaError::invalid_input(
-                "join_assign requires both matrices to belong to the same CUDA device/context",
+                "supremum_assign requires both matrices to belong to the same CUDA device/context",
             ));
         }
         let join = self
             .dev
-            .get_func(MODULE_NAME, JOIN_ASSIGN_KERNEL)
-            .ok_or(CudaError::missing_function(JOIN_ASSIGN_KERNEL))?;
+            .get_func(MODULE_NAME, SUPREMUM_ASSIGN_KERNEL)
+            .ok_or(CudaError::missing_function(SUPREMUM_ASSIGN_KERNEL))?;
         unsafe {
             join.launch(
                 kernel_config(),
                 (
                     &mut self.transition,
-                    &mut self.next_hop,
+                    &mut self.witness_matrix,
                     &rhs.transition,
-                    &rhs.next_hop,
+                    &rhs.witness_matrix,
                 ),
             )
         }
-        .map_err(|error| CudaError::new("quantale_join_assign", error))
+        .map_err(|error| CudaError::new("quantale_supremum_assign", error))
     }
 
-    pub fn mul_assign(&mut self, rhs: &Self) -> Result<(), CudaError> {
+    pub fn tensor_assign(&mut self, rhs: &Self) -> Result<(), CudaError> {
         if !Arc::ptr_eq(&self.dev, &rhs.dev) {
             return Err(CudaError::invalid_input(
-                "mul_assign requires both matrices to belong to the same CUDA device/context",
+                "tensor_assign requires both matrices to belong to the same CUDA device/context",
             ));
         }
         let mul = self
             .dev
-            .get_func(MODULE_NAME, MUL_ASSIGN_KERNEL)
-            .ok_or(CudaError::missing_function(MUL_ASSIGN_KERNEL))?;
+            .get_func(MODULE_NAME, TENSOR_ASSIGN_KERNEL)
+            .ok_or(CudaError::missing_function(TENSOR_ASSIGN_KERNEL))?;
         unsafe {
             mul.launch(
                 kernel_config(),
                 (
                     &mut self.transition,
-                    &mut self.next_hop,
+                    &mut self.witness_matrix,
                     &rhs.transition,
-                    &rhs.next_hop,
+                    &rhs.witness_matrix,
                     &mut self.scratch,
-                    &mut self.scratch_next_hop,
+                    &mut self.scratch_witness,
                 ),
             )
         }
-        .map_err(|error| CudaError::new("quantale_mul_assign", error))
+        .map_err(|error| CudaError::new("quantale_tensor_assign", error))
     }
 
-    pub fn closure_assign(&mut self) -> Result<(), CudaError> {
+    pub fn star_assign(&mut self) -> Result<(), CudaError> {
         let closure = self
             .dev
-            .get_func(MODULE_NAME, CLOSURE_ASSIGN_KERNEL)
-            .ok_or(CudaError::missing_function(CLOSURE_ASSIGN_KERNEL))?;
+            .get_func(MODULE_NAME, LEAST_FIXED_POINT_KERNEL)
+            .ok_or(CudaError::missing_function(LEAST_FIXED_POINT_KERNEL))?;
         unsafe {
             closure.launch(
                 kernel_config(),
-                (&mut self.transition, &mut self.scratch, &mut self.next_hop),
+                (
+                    &mut self.transition,
+                    &mut self.scratch,
+                    &mut self.witness_matrix,
+                ),
             )
         }
-        .map_err(|error| CudaError::new("quantale_closure_assign", error))
+        .map_err(|error| CudaError::new("quantale_least_fixed_point", error))
     }
 
     pub fn synchronize(&self) -> Result<(), CudaError> {
@@ -319,7 +336,7 @@ impl GpuQuantaleMatrix {
                     &mut self.transition,
                     &mut self.scratch,
                     &mut self.previous,
-                    &mut self.next_hop,
+                    &mut self.witness_matrix,
                     &mut self.active,
                     &mut self.next_active,
                     &mut self.event_counts,
@@ -346,7 +363,7 @@ impl GpuQuantaleMatrix {
                     &mut self.transition,
                     &mut self.scratch,
                     &mut self.previous,
-                    &mut self.next_hop,
+                    &mut self.witness_matrix,
                     &mut self.consumed,
                     &mut self.active,
                     &mut self.next_active,
@@ -365,21 +382,21 @@ impl GpuQuantaleMatrix {
     pub fn project_decision_path(&mut self) -> Result<DecisionProjection, CudaError> {
         let projection = self
             .dev
-            .get_func(MODULE_NAME, DECISION_PROJECTION_KERNEL)
-            .ok_or(CudaError::missing_function(DECISION_PROJECTION_KERNEL))?;
+            .get_func(MODULE_NAME, QUANTALE_MORPHISM_KERNEL)
+            .ok_or(CudaError::missing_function(QUANTALE_MORPHISM_KERNEL))?;
         unsafe {
             projection.launch(
                 kernel_config(),
                 (
                     &self.transition,
-                    &self.next_hop,
+                    &self.witness_matrix,
                     &self.consumed,
                     &self.active,
                     &mut self.decision_report,
                 ),
             )
         }
-        .map_err(|error| CudaError::new("quantale_decide_path", error))?;
+        .map_err(|error| CudaError::new("quantale_morphism", error))?;
         self.decision_report()
     }
 
@@ -399,7 +416,7 @@ impl GpuQuantaleMatrix {
                 kernel_config(),
                 (
                     &self.transition,
-                    &self.next_hop,
+                    &self.witness_matrix,
                     &mut self.consumed,
                     &mut self.active,
                     &mut self.next_active,
@@ -433,20 +450,20 @@ impl GpuQuantaleMatrix {
         })
     }
 
-    pub fn next_hop_matrix(&self) -> Result<Vec<i32>, CudaError> {
+    pub fn witness_matrix(&self) -> Result<Vec<i32>, CudaError> {
         self.dev
-            .dtoh_sync_copy(&self.next_hop)
-            .map_err(|error| CudaError::new("dtoh_sync_copy next_hop", error))
+            .dtoh_sync_copy(&self.witness_matrix)
+            .map_err(|error| CudaError::new("dtoh_sync_copy witness_matrix", error))
     }
 
     /// Download W only and reconstruct a concrete node path from `src` to `dst`.
     pub fn reconstruct_path(&self, src: Node, dst: Node) -> Result<Vec<Node>, CudaError> {
-        let next_hop = self.next_hop_matrix()?;
-        reconstruct_path_from_next_hop(&next_hop, src, dst)
+        let witness_matrix = self.witness_matrix()?;
+        reconstruct_path_from_witness_matrix(&witness_matrix, src, dst)
     }
 
     /// Reconstruct the last projected path using `selected_src` and
-    /// `selected_dst` from `quantale_decide_path`.
+    /// `selected_dst` from `quantale_morphism`.
     pub fn reconstruct_projected_path(&self) -> Result<Vec<Node>, CudaError> {
         let decision = self.decision_report()?;
         let src = Node::decode_index(decision.selected_src as usize).ok_or_else(|| {
