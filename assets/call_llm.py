@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """External LLM operator — reads a JSON context payload from stdin, calls the
-browser-router's OpenAI-compatible endpoint, and writes the response to stdout.
+browser-router's OpenAI-compatible endpoint, and writes a flat JSON edge array
+to stdout for direct ingestion by src/plan.rs.
 
 Exit codes:
-  0   success (response text on stdout)
+  0   success (JSON edge array on stdout)
   1   API / HTTP error
   127 connection failure (browser-router not reachable)
 """
@@ -15,18 +16,57 @@ import argparse
 BROWSER_ROUTER_URL = "http://127.0.0.1:8082/v1/chat/completions"
 MODEL = "chatgpt-cdp"
 
+# Valid node names the LLM may reference in edge proposals.
+VALID_NODES = (
+    "State::Goal", "State::Input", "State::Parse", "State::Map",
+    "State::Search", "State::Score", "State::Select", "State::Plan",
+    "State::Optimize", "State::Execute", "State::Validate",
+    "State::Memory", "State::Learn",
+    "Control::Allow", "Control::Block", "Control::Retry", "Control::Repair",
+    "Control::Commit", "Control::Rollback", "Control::Halt",
+    "Control::GateInput", "Control::GateExecution", "Control::GateReceipt",
+    "Control::GateMemory", "Control::GateLearn", "Control::ChooseBest",
+    "Event::FactArrived", "Event::InputAccepted", "Event::ParseOk",
+    "Event::ParseErr", "Event::MapReady", "Event::CandidateFound",
+    "Event::ScoreReady", "Event::TopKSelected", "Event::PlanReady",
+    "Event::OptimizeReady", "Event::ExecuteStarted", "Event::ExecuteFinished",
+    "Event::ReceiptAttached", "Event::ReceiptAccepted", "Event::ReceiptRejected",
+    "Event::HashNonzero", "Event::MemoryWritten", "Event::LearnUpdated",
+)
+
+_EDGE_SCHEMA = """\
+Output ONLY a JSON array of edge objects — no prose, no markdown fences.
+Each object must have exactly these keys:
+  "from"   : a node name from the valid set below
+  "to"     : a node name from the valid set below
+  "weight" : a float in [0.0, 1.0] representing transition strength
+
+Valid node names:
+{nodes}
+
+Example output:
+[
+  {{"from": "State::Plan", "to": "State::Optimize", "weight": 0.95}},
+  {{"from": "State::Optimize", "to": "State::Execute", "weight": 0.90}}
+]"""
+
 PROMPT_TEMPLATES = {
     "plan": (
         "You are a neuro-symbolic planning engine embedded in a quantale-matrix agent loop.\n"
-        "Given the following execution context:\n\n{context}\n\n"
-        "Generate a concise, structured execution plan as JSON with keys: "
-        "'steps' (list of action strings) and 'goal' (single sentence)."
+        "Your output is compiled directly into GPU matrix weights — it must be machine-readable.\n\n"
+        "Execution context:\n{context}\n\n"
+        "Propose a sequence of state transitions that will move the agent toward its goal.\n"
+        "Choose high weights (0.85–0.99) for steps you are confident in; "
+        "lower weights (0.50–0.84) for speculative steps.\n\n"
+        + _EDGE_SCHEMA
     ),
     "repair": (
         "You are a repair subsystem for a quantale-matrix agent loop.\n"
-        "The system encountered an error. Execution context:\n\n{context}\n\n"
-        "Provide a structural repair directive as JSON with keys: "
-        "'action' (one of: retry, rollback, halt) and 'reason' (single sentence)."
+        "Your output is compiled directly into GPU matrix weights — it must be machine-readable.\n\n"
+        "The system encountered a failure. Execution context:\n{context}\n\n"
+        "Propose a recovery path by strengthening edges toward rollback, retry, or repair nodes.\n"
+        "Use weights close to 1.0 for the recovery path you recommend most strongly.\n\n"
+        + _EDGE_SCHEMA
     ),
 }
 
@@ -43,25 +83,26 @@ def main() -> None:
         sys.exit(1)
 
     context = input_data.get("context", "")
-    prompt = PROMPT_TEMPLATES[args.template].format(context=context)
+    node_list = "\n".join(f"  {n}" for n in VALID_NODES)
+    prompt = PROMPT_TEMPLATES[args.template].format(context=context, nodes=node_list)
+
+    import urllib.request
+    import urllib.error
+
+    payload = json.dumps({
+        "model": MODEL,
+        "messages": [{"role": "user", "content": prompt}],
+    }).encode()
+
+    req = urllib.request.Request(
+        BROWSER_ROUTER_URL,
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
 
     try:
-        import urllib.request
-        import urllib.error
-
-        payload = json.dumps({
-            "model": MODEL,
-            "messages": [{"role": "user", "content": prompt}],
-        }).encode()
-
-        req = urllib.request.Request(
-            BROWSER_ROUTER_URL,
-            data=payload,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-
-        with urllib.request.urlopen(req, timeout=30) as response:
+        with urllib.request.urlopen(req, timeout=60) as response:
             body = json.loads(response.read().decode())
             content = body["choices"][0]["message"]["content"]
             print(content)

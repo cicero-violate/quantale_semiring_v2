@@ -2,8 +2,8 @@ use serde_json::json;
 
 use quantale_semiring_v2::{
     CudaWorld, DomainCandidate, InboundEvent, IngressServer, Node, SystemConfig, TlogWriter,
-    UniversalExecutor, build_candidate_edges, build_receipt_edges, drain_available,
-    format_quantale_value, node_name,
+    UniversalExecutor, build_candidate_edges, build_receipt_edges, compile_llm_plan,
+    drain_available, format_quantale_value, node_name,
 };
 
 fn main() {
@@ -160,8 +160,36 @@ fn main() {
             std::process::exit(1);
         }
 
-        // If the operator produced structured output, use it as context for the next step.
+        // If the operator produced output, try to compile it as a JSON edge plan.
         if process_receipt.exit_code == 0 && !process_receipt.stdout_payload.is_empty() {
+            match compile_llm_plan(&process_receipt.stdout_payload) {
+                Ok(plan_edges) if !plan_edges.is_empty() => {
+                    println!("[ALGEBRA] LLM plan: {} edge(s) → VRAM", plan_edges.len());
+                    if let Err(error) = world.load_edges(&plan_edges) {
+                        eprintln!("{error}");
+                        std::process::exit(1);
+                    }
+                    if let Err(error) = tlog.append_edges("plan:llm", &plan_edges) {
+                        eprintln!("{error}");
+                        std::process::exit(1);
+                    }
+                }
+                Ok(_) => {
+                    // Non-edge output (e.g. repair directive): keep as plain context.
+                }
+                Err(reason) => {
+                    println!("[WARN] LLM plan invalid ({reason}); penalising edge");
+                    if let Err(error) = world.inject_dynamic_weight(
+                        decision.selected_src,
+                        decision.selected_dst,
+                        0.0,
+                    ) {
+                        eprintln!("{error}");
+                        std::process::exit(1);
+                    }
+                }
+            }
+            // Always carry stdout forward as context for the next prompt.
             current_payload = json!({ "context": process_receipt.stdout_payload });
         }
 
