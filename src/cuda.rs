@@ -43,22 +43,16 @@ pub struct GpuQuantaleMatrix {
     scratch_witness: CudaSlice<i32>,
     /// CUDA-resident execution-history matrix: consumed[src,dst] prevents repeated execution.
     consumed: CudaSlice<i32>,
-
     /// CUDA-resident prior A/A* matrix used for delta detection and convergence/reporting.
     previous: CudaSlice<f32>,
-
     /// CUDA-resident active frontier vector over NODE_COUNT nodes.
     active: CudaSlice<i32>,
-
     /// CUDA-resident next active frontier vector over NODE_COUNT nodes.
     next_active: CudaSlice<i32>,
-
     /// CUDA-resident per-thread event counter scratch buffer.
     event_counts: CudaSlice<i32>,
-
     /// CUDA-resident compact closure telemetry report.
     report: CudaSlice<QuantaleCudaReport>,
-
     /// CUDA-resident compact executable decision projection report.
     decision_report: CudaSlice<DecisionReport>,
 }
