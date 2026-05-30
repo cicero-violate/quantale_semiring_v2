@@ -1,0 +1,12 @@
+[package]
+name = "quantale_semiring_v2"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+default = []
+
+[dependencies]
+cudarc = { version = "0.11", features = ["nvrtc", "cuda-12050"] }
+
+[build-dependencies]
