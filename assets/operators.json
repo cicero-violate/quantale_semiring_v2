@@ -22,7 +22,8 @@
       "static_args": ["assets/call_llm.py", "--template", "plan"],
       "input_mapping": {
         "stdin_mode": "json"
-      }
+      },
+      "output_mode": "plan"
     },
     {
       "node_name": "Control::Repair",
@@ -30,7 +31,8 @@
       "static_args": ["assets/call_llm.py", "--template", "repair"],
       "input_mapping": {
         "stdin_mode": "json"
-      }
+      },
+      "output_mode": "plan"
     }
   ]
 }

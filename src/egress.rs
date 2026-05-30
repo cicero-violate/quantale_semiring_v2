@@ -34,6 +34,17 @@ impl UniversalExecutor {
         self.execute_abstract_node_blocking(node_name, dynamic_payload)
     }
 
+    /// Return the declared `output_mode` for a node operator, if any.
+    ///
+    /// Operators that emit a JSON edge plan should declare `"output_mode": "plan"`
+    /// in `operators.json`. The main loop uses this to decide whether to run
+    /// `compile_llm_plan` on the operator's stdout.
+    pub fn output_mode<'a>(&'a self, node_name: &str) -> Option<&'a str> {
+        self.operator_registry
+            .get(node_name)
+            .and_then(|op| op["output_mode"].as_str())
+    }
+
     /// Blocking implementation used by synchronous host loops and tests.
     pub fn execute_abstract_node_blocking(
         &self,

@@ -160,32 +160,34 @@ fn main() {
             std::process::exit(1);
         }
 
-        // If the operator produced output, try to compile it as a JSON edge plan.
+        // Only compile a JSON edge plan if the operator explicitly declares output_mode=plan.
+        // Other operators (cargo test, patch, etc.) produce non-plan stdout that should
+        // never be parsed as an edge array or penalised for not being one.
         if process_receipt.exit_code == 0 && !process_receipt.stdout_payload.is_empty() {
-            match compile_llm_plan(&process_receipt.stdout_payload) {
-                Ok(plan_edges) if !plan_edges.is_empty() => {
-                    println!("[ALGEBRA] LLM plan: {} edge(s) → VRAM", plan_edges.len());
-                    if let Err(error) = world.load_edges(&plan_edges) {
-                        eprintln!("{error}");
-                        std::process::exit(1);
+            if executor.output_mode(active_node_name) == Some("plan") {
+                match compile_llm_plan(&process_receipt.stdout_payload) {
+                    Ok(plan_edges) if !plan_edges.is_empty() => {
+                        println!("[ALGEBRA] LLM plan: {} edge(s) → VRAM", plan_edges.len());
+                        if let Err(error) = world.load_edges(&plan_edges) {
+                            eprintln!("{error}");
+                            std::process::exit(1);
+                        }
+                        if let Err(error) = tlog.append_edges("plan:llm", &plan_edges) {
+                            eprintln!("{error}");
+                            std::process::exit(1);
+                        }
                     }
-                    if let Err(error) = tlog.append_edges("plan:llm", &plan_edges) {
-                        eprintln!("{error}");
-                        std::process::exit(1);
-                    }
-                }
-                Ok(_) => {
-                    // Non-edge output (e.g. repair directive): keep as plain context.
-                }
-                Err(reason) => {
-                    println!("[WARN] LLM plan invalid ({reason}); penalising edge");
-                    if let Err(error) = world.inject_dynamic_weight(
-                        decision.selected_src,
-                        decision.selected_dst,
-                        0.0,
-                    ) {
-                        eprintln!("{error}");
-                        std::process::exit(1);
+                    Ok(_) => {}
+                    Err(reason) => {
+                        println!("[WARN] LLM plan invalid ({reason}); penalising edge");
+                        if let Err(error) = world.inject_dynamic_weight(
+                            decision.selected_src,
+                            decision.selected_dst,
+                            0.0,
+                        ) {
+                            eprintln!("{error}");
+                            std::process::exit(1);
+                        }
                     }
                 }
             }
