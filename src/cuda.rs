@@ -31,30 +31,7 @@ const QUANTALE_MORPHISM_KERNEL: &str = "quantale_morphism";
 const FRONTIER_STEP_KERNEL: &str = "quantale_frontier_step";
 const KERNEL_SOURCE: &str = include_str!("../cuda/quantale_world.cu");
 
-pub struct GpuQuantaleMatrix {
-    dev: Arc<CudaDevice>,
-    /// CUDA-resident A / A*: quantale transition matrix and closed path values.
-    transition: CudaSlice<f32>,
-    /// CUDA-resident scratch matrix for A* closure/composition.
-    scratch: CudaSlice<f32>,
-    /// CUDA-resident W witness matrix: first hop for the selected path value.
-    witness_matrix: CudaSlice<i32>,
-    /// CUDA-resident scratch witness matrix used by tensor composition.
-    /// CUDA-resident execution-history matrix: consumed[src,dst] prevents repeated execution.
-    consumed: CudaSlice<i32>,
-    /// CUDA-resident prior A/A* matrix used for delta detection and convergence/reporting.
-    previous: CudaSlice<f32>,
-    /// CUDA-resident active frontier vector over NODE_COUNT nodes.
-    active: CudaSlice<i32>,
-    /// CUDA-resident next active frontier vector over NODE_COUNT nodes.
-    next_active: CudaSlice<i32>,
-    /// CUDA-resident per-thread event counter scratch buffer.
-    event_counts: CudaSlice<i32>,
-    /// CUDA-resident compact closure telemetry report.
-    report: CudaSlice<QuantaleCudaReport>,
-    /// CUDA-resident compact executable decision projection report.
-    decision_report: CudaSlice<DecisionReport>,
-}
+pub struct GpuQuantaleMatrix { dev: Arc<CudaDevice>, /// CUDA-resident A / A*: quantale transition matrix and closed path values. transition: CudaSlice<f32>, /// CUDA-resident scratch matrix for A* closure/composition. scratch: CudaSlice<f32>, /// CUDA-resident W witness matrix: first hop for the selected path value. witness_matrix: CudaSlice<i32>, /// CUDA-resident scratch witness matrix used by tensor composition. scratch_witness: CudaSlice<i32>, consumed: CudaSlice<i32>, previous: CudaSlice<f32>, active: CudaSlice<i32>, next_active: CudaSlice<i32>, event_counts: CudaSlice<i32>, report: CudaSlice<QuantaleCudaReport>, decision_report: CudaSlice<DecisionReport>, }
 
 pub type CudaWorld = GpuQuantaleMatrix;
 
