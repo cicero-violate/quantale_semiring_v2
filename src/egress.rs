@@ -46,6 +46,7 @@ impl UniversalExecutor {
                 return ProcessReceipt {
                     node_name: node_name.to_string(),
                     exit_code: 127,
+                    stdout_payload: String::new(),
                     stderr_payload: "Node operator contract missing from registry".to_string(),
                 };
             }
@@ -72,18 +73,36 @@ impl UniversalExecutor {
                 return ProcessReceipt {
                     node_name: node_name.to_string(),
                     exit_code: 1,
+                    stdout_payload: String::new(),
                     stderr_payload: format!("Failed to spawn process: {error}"),
                 };
             }
         };
 
-        if let Some(stdin_field) = op_config["input_mapping"]["stdin_source"].as_str() {
+        let stdin_mode = op_config["input_mapping"]["stdin_mode"]
+            .as_str()
+            .unwrap_or("field");
+
+        if stdin_mode == "json" {
+            if let Some(mut stdin) = child.stdin.take() {
+                let json_bytes = serde_json::to_vec(dynamic_payload).unwrap_or_default();
+                if let Err(error) = stdin.write_all(&json_bytes) {
+                    return ProcessReceipt {
+                        node_name: node_name.to_string(),
+                        exit_code: 1,
+                        stdout_payload: String::new(),
+                        stderr_payload: format!("Failed to write JSON stdin: {error}"),
+                    };
+                }
+            }
+        } else if let Some(stdin_field) = op_config["input_mapping"]["stdin_source"].as_str() {
             if let Some(mut stdin) = child.stdin.take() {
                 let content = dynamic_payload[stdin_field].as_str().unwrap_or("");
                 if let Err(error) = stdin.write_all(content.as_bytes()) {
                     return ProcessReceipt {
                         node_name: node_name.to_string(),
                         exit_code: 1,
+                        stdout_payload: String::new(),
                         stderr_payload: format!("Failed to write process stdin: {error}"),
                     };
                 }
@@ -94,11 +113,13 @@ impl UniversalExecutor {
             Ok(output) => ProcessReceipt {
                 node_name: node_name.to_string(),
                 exit_code: output.status.code().unwrap_or(1),
+                stdout_payload: String::from_utf8_lossy(&output.stdout).into_owned(),
                 stderr_payload: String::from_utf8_lossy(&output.stderr).into_owned(),
             },
             Err(error) => ProcessReceipt {
                 node_name: node_name.to_string(),
                 exit_code: 1,
+                stdout_payload: String::new(),
                 stderr_payload: format!("Failed to wait for process: {error}"),
             },
         }

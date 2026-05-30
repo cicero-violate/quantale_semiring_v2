@@ -18,6 +18,7 @@ const DEFAULT_RECEIPT_JSON: &str = include_str!("../assets/receipt.json");
 pub struct ProcessReceipt {
     pub node_name: String,
     pub exit_code: i32,
+    pub stdout_payload: String,
     pub stderr_payload: String,
 }
 

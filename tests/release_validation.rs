@@ -13,6 +13,7 @@ fn success_receipt_keeps_validation_path_reachable() {
     let receipt = ProcessReceipt {
         node_name: "Control::GateExecution".to_string(),
         exit_code: 0,
+        stdout_payload: String::new(),
         stderr_payload: String::new(),
     }
     .to_execution_receipt();

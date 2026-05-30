@@ -15,6 +15,22 @@
       "input_mapping": {
         "stdin_source": null
       }
+    },
+    {
+      "node_name": "State::Plan",
+      "executable": "python3",
+      "static_args": ["assets/call_llm.py", "--template", "plan"],
+      "input_mapping": {
+        "stdin_mode": "json"
+      }
+    },
+    {
+      "node_name": "Control::Repair",
+      "executable": "python3",
+      "static_args": ["assets/call_llm.py", "--template", "repair"],
+      "input_mapping": {
+        "stdin_mode": "json"
+      }
     }
   ]
 }

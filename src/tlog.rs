@@ -9,7 +9,7 @@ use serde_json::json;
 
 use crate::edge::TransitionEdge;
 use crate::projection::{DecisionReport, QuantaleCudaReport};
-use crate::receipt::ExecutionReceipt;
+use crate::receipt::{ExecutionReceipt, ProcessReceipt};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TlogRecordKind {
@@ -17,6 +17,7 @@ pub enum TlogRecordKind {
     CudaReport,
     Receipt,
     TransitionEdges,
+    AgentStep,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -66,6 +67,29 @@ impl TlogWriter {
 
     pub fn append_receipt(&mut self, receipt: &ExecutionReceipt) -> io::Result<u64> {
         self.append_record(TlogRecordKind::Receipt, &json!(receipt))
+    }
+
+    /// Fused step log: process receipt outcome + the decision that triggered it.
+    pub fn log_step(
+        &mut self,
+        receipt: &ProcessReceipt,
+        decision: &DecisionReport,
+    ) -> io::Result<u64> {
+        self.append_record(
+            TlogRecordKind::AgentStep,
+            &json!({
+                "step": decision.step,
+                "selected_src": decision.selected_src,
+                "selected_dst": decision.selected_dst,
+                "selected_value": decision.selected_value,
+                "halted": decision.halted,
+                "blocked": decision.blocked,
+                "node": receipt.node_name,
+                "exit_code": receipt.exit_code,
+                "stdout_len": receipt.stdout_payload.len(),
+                "stderr": receipt.stderr_payload,
+            }),
+        )
     }
 
     pub fn append_edges(&mut self, label: &str, edges: &[TransitionEdge]) -> io::Result<u64> {

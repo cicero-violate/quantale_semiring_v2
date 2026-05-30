@@ -195,6 +195,20 @@ impl GpuQuantaleMatrix {
         self.load_edges(&policy_edges)
     }
 
+    /// Write a single feedback weight from a process receipt directly into VRAM.
+    ///
+    /// This is the primary feedback path for the agent loop: after every operator
+    /// execution, the raw Unix exit-code weight is injected back onto the selected
+    /// edge so the quantale closure can route away from failed nodes on the next tick.
+    pub fn inject_dynamic_weight(
+        &mut self,
+        src: i32,
+        dst: i32,
+        weight: f32,
+    ) -> Result<(), CudaError> {
+        self.load_edges(&[TransitionEdge::new(src, dst, weight)])
+    }
+
     /// Join runtime receipt evidence into the current transition matrix.
     pub fn join_receipt_edges(&mut self, receipt: ExecutionReceipt) -> Result<(), CudaError> {
         let receipt_edges = build_receipt_edges(receipt);

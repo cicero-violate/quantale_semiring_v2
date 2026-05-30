@@ -433,6 +433,7 @@ mod tests {
         let process_receipt = ProcessReceipt {
             node_name: "Control::GateExecution".to_string(),
             exit_code: 0,
+            stdout_payload: String::new(),
             stderr_payload: String::new(),
         };
         let receipt = process_receipt.to_execution_receipt();
