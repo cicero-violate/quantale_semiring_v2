@@ -3,7 +3,6 @@
 use crate::algebra::Q_BOTTOM;
 use crate::edge::{TransitionEdge, edge};
 use crate::node::{ControlNode, EventNode, Node, StateNode};
-// use crate::types::QuantaleWeight;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ExecutionReceipt {
