@@ -11,6 +11,7 @@ pub struct SystemConfig {
     pub block_size: usize,
     pub tlog_path: PathBuf,
     pub ingress_capacity_hint: usize,
+    pub max_ticks: usize,
 }
 
 impl Default for SystemConfig {
@@ -21,6 +22,7 @@ impl Default for SystemConfig {
             block_size: THREAD_COUNT,
             tlog_path: PathBuf::from("quantale.tlog"),
             ingress_capacity_hint: 1024,
+            max_ticks: 64,
         }
     }
 }

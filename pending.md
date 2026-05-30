@@ -599,9 +599,9 @@ workflow DSL -> GraphTopology
 
 CUDA kernels remain fixed to NODE_COUNT = 44. Dynamic kernel sizing and real VRAM page swapping are not implemented yet.
 
-### 9. Documentation cleanup
+### 9. Documentation cleanup ✅
 
-Update stale docs:
+Updated stale docs so they match the live matrix-edge architecture:
 
 ```text
 README.md
@@ -611,18 +611,7 @@ plan_1.md
 lean/README.md
 ```
 
-Remove stale references to:
-
-```text
-gate_mask[44]
-set_gates()
-set_execution_gates()
-quantale_set_gates
-projection compatibility mask
-runtime CUDA validation as fully pending
-path reconstruction as pending
-receipt edges as pending
-```
+Removed obsolete documentation claims about gate-mask projection, removed gate APIs, CUDA validation status, path reconstruction status, and receipt-edge status.
 
 ### 10. Remove temporary backup file ✅
 

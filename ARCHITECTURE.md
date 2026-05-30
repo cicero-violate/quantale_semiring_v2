@@ -76,7 +76,6 @@ previous[44 × 44]            # step comparison state
 next_hop[44 × 44]            # W witness matrix
 scratch_next_hop[44 × 44]    # witness scratch
 action/frontier buffers      # active[44], next_active[44]
-gate_mask[44]                # temporary compatibility projection boundary
 report[1]
 decision_report[1]
 ```
@@ -113,7 +112,7 @@ M := M ∨ M_policy
 M := M ∨ M_receipt
 ```
 
-`gate_mask[44]` remains only as a compatibility boundary for the current projection kernel.
+Policy and receipt updates are represented as matrix-edge deltas joined into the same transition matrix; there is no projection gate-mask side channel in the live source.
 
 ## Non-goals
 

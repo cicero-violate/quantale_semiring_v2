@@ -1,0 +1,20 @@
+{
+  "operators": [
+    {
+      "node_name": "Control::GateExecution",
+      "executable": "patch",
+      "static_args": ["-p1", "--batch"],
+      "input_mapping": {
+        "stdin_source": "diff"
+      }
+    },
+    {
+      "node_name": "State::Validate",
+      "executable": "cargo",
+      "static_args": ["test", "--release"],
+      "input_mapping": {
+        "stdin_source": null
+      }
+    }
+  ]
+}

@@ -22,10 +22,13 @@ The intended Lean/cLean bridge is:
 quantale_join_assign        ↔ matrixJoin
 quantale_mul_assign         ↔ matrixMul over max-times Q
 quantale_closure_assign     ↔ closureSpec
+quantale_step               ↔ closure + active frontier update
 quantale_decide_path        ↔ projectionSpec + first-hop witness
+build_policy_edges          ↔ policyEdgeSpec
+build_receipt_edges         ↔ receiptEdgeSpec
 next_hop[N × N]             ↔ path witness matrix W
 ```
 
 Rust/CPU is not modeled as owning quantale state. CPU appears only as transition-edge ingress, compact-report egress, path decoding from `next_hop`, and external side-effect execution.
 
-`cLean` integration should attach the CUDA kernels in `../cuda/quantale_world.cu` to the contract above. No local `lean`/`lake`/`cLean` binary is installed in this workspace, so this proof artifact has not been typechecked here.
+`cLean` integration should attach the CUDA kernels in `../cuda/quantale_world.cu` to the contract above. Only update Lean artifacts when the actual Lean/cLean toolchain is available. Do not add placeholder proofs or fake scaffolding. No local `lean`/`lake`/`cLean` binary is installed in this workspace, so this proof artifact has not been typechecked here.

@@ -26,10 +26,8 @@ Every state, control, event, gate, receipt, commit, rollback, memory, learn, and
 
 ```text
 load_edges()
-set_gates()                 # compatibility projection mask
-set_execution_gates()       # compatibility projection mask
 join_policy_edges()
-apply_execution_policy()    # policy edges + compatibility mask
+apply_execution_policy()    # policy edges
 join_receipt_edges()
 join_assign()
 mul_assign()
@@ -87,13 +85,12 @@ next_hop[44 × 44]
 scratch_next_hop[44 × 44]
 active[44]
 next_active[44]
-gate_mask[44]              # temporary compatibility projection boundary
 event_counts[512]
 report[1]
 decision_report[1]
 ```
 
-The CPU does not own or mirror the quantale matrix. Rust may upload transition-edge deltas or a transient gate mask and may download compact reports or the `next_hop` witness matrix for path decoding. It does not run a planner, reference engine, closure engine, or matrix mirror.
+The CPU does not own or mirror the quantale matrix. Rust may upload transition-edge deltas and may download compact reports or the `next_hop` witness matrix for path decoding. It does not run a planner, reference engine, closure engine, or matrix mirror.
 
 ## Node universe
 
@@ -167,7 +164,6 @@ Every arrow above is a scored matrix edge.
 ```text
 quantale_reset
 quantale_load_edges
-quantale_set_gates
 quantale_join_assign
 quantale_mul_assign
 quantale_closure_assign
@@ -204,7 +200,7 @@ receipt -> TransitionEdge updates
 M := M ∨ M_receipt
 ```
 
-`gate_mask[44]` remains as a compatibility projection boundary until `quantale_decide_path` can be driven solely by matrix edges.
+Policy and receipt changes are matrix-edge updates; there is no projection gate-mask side channel in the live source.
 
 ## Build
 

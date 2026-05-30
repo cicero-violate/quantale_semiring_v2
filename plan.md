@@ -142,8 +142,9 @@ projection
 
 ## Still pending
 
-- [ ] Replace the projection `gate_mask` compatibility path with pure matrix-edge updates.
-- [ ] Add runtime receipt-driven edge updates.
-- [ ] Add path reconstruction beyond first-hop witness.
-- [ ] Update Lean spec from product state to unified node algebra.
-- [ ] Runtime-test CUDA with `cargo run --release` on CUDA hardware.
+- [ ] Clean docs/spec wording so it matches the live matrix-edge architecture.
+- [ ] Harden the async-style runtime loop: continuously drain bounded ingress, compile inbound events into deltas, feed receipts back into CUDA, and append all records to `quantale.tlog`.
+- [ ] Run full validation without workspace guard blocks, including `release_validation` and large-N benchmarks where hardware permits.
+- [ ] Optimize CUDA launch/memory behavior by fusing the `quantale_step` / `quantale_frontier_step` boundary and reducing scratch/global-memory traffic.
+- [ ] Update Lean/cLean spec only when the Lean/cLean toolchain is available; do not add fake proof scaffolding.
+- [ ] Implement real sparse/tiled GPU propagation when scaling beyond the current 44-node dense matrix.
