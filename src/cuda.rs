@@ -13,6 +13,9 @@ use crate::path::reconstruct_path_from_next_hop;
 use crate::policy::{ExecutionGatePolicy, build_policy_edges};
 use crate::projection::{DecisionProjection, DecisionReport, QuantaleCudaReport};
 use crate::receipt::{ExecutionReceipt, build_receipt_edges};
+use crate::search::{
+    DomainCandidate, ScoredCandidate, build_search_delta_edges, build_search_edges,
+};
 use crate::transitions::default_transition_edges;
 
 const MODULE_NAME: &str = "quantale_semiring_v2";
@@ -24,7 +27,7 @@ const CLOSURE_ASSIGN_KERNEL: &str = "quantale_closure_assign";
 const STEP_KERNEL: &str = "quantale_step";
 /// CUDA kernel for the operational projection π(A*) from closed quantale paths.
 const DECISION_PROJECTION_KERNEL: &str = "quantale_decide_path";
-const THREADS: u32 = THREAD_COUNT as u32;
+const FRONTIER_STEP_KERNEL: &str = "quantale_frontier_step";
 const KERNEL_SOURCE: &str = include_str!("../cuda/quantale_world.cu");
 
 pub struct GpuQuantaleMatrix {
@@ -37,6 +40,7 @@ pub struct GpuQuantaleMatrix {
     next_hop: CudaSlice<i32>,
     /// CUDA-resident scratch witness matrix used by quantale multiplication.
     scratch_next_hop: CudaSlice<i32>,
+    consumed: CudaSlice<i32>,
     previous: CudaSlice<f32>,
     active: CudaSlice<i32>,
     next_active: CudaSlice<i32>,
@@ -67,6 +71,7 @@ impl GpuQuantaleMatrix {
                 CLOSURE_ASSIGN_KERNEL,
                 STEP_KERNEL,
                 DECISION_PROJECTION_KERNEL,
+                FRONTIER_STEP_KERNEL,
             ],
         )
         .map_err(|error| CudaError::new("load_ptx", error))?;
@@ -83,6 +88,9 @@ impl GpuQuantaleMatrix {
         let scratch_next_hop = dev
             .htod_copy(vec![-1_i32; MATRIX_LEN])
             .map_err(|error| CudaError::new("htod_copy scratch_next_hop", error))?;
+        let consumed = dev
+            .htod_copy(vec![0_i32; MATRIX_LEN])
+            .map_err(|error| CudaError::new("htod_copy consumed", error))?;
         let previous = dev
             .htod_copy(vec![Q_BOTTOM; MATRIX_LEN])
             .map_err(|error| CudaError::new("htod_copy previous", error))?;
@@ -108,6 +116,7 @@ impl GpuQuantaleMatrix {
             scratch,
             next_hop,
             scratch_next_hop,
+            consumed,
             previous,
             active,
             next_active,
@@ -139,6 +148,7 @@ impl GpuQuantaleMatrix {
                     &mut self.previous,
                     &mut self.next_hop,
                     &mut self.scratch_next_hop,
+                    &mut self.consumed,
                     &mut self.active,
                     &mut self.next_active,
                     &mut self.event_counts,
@@ -187,6 +197,23 @@ impl GpuQuantaleMatrix {
     pub fn join_receipt_edges(&mut self, receipt: ExecutionReceipt) -> Result<(), CudaError> {
         let receipt_edges = build_receipt_edges(receipt);
         self.load_edges(&receipt_edges)
+    }
+
+    /// Join selected runtime search evidence into the current transition matrix.
+    pub fn join_search_edges(&mut self, top_k: &[ScoredCandidate]) -> Result<(), CudaError> {
+        let search_edges = build_search_edges(top_k);
+        self.load_edges(&search_edges)
+    }
+
+    /// Score external candidates, select top-k, and join search evidence.
+    pub fn join_search_candidates(
+        &mut self,
+        candidates: impl IntoIterator<Item = DomainCandidate>,
+        k: usize,
+    ) -> Result<Vec<ScoredCandidate>, CudaError> {
+        let (top_k, search_edges) = build_search_delta_edges(candidates, k);
+        self.load_edges(&search_edges)?;
+        Ok(top_k)
     }
 
     /// Represent policy as matrix edges. Projection reads matrix structure only.
@@ -258,6 +285,12 @@ impl GpuQuantaleMatrix {
         .map_err(|error| CudaError::new("quantale_closure_assign", error))
     }
 
+    pub fn synchronize(&self) -> Result<(), CudaError> {
+        self.dev
+            .synchronize()
+            .map_err(|error| CudaError::new("CudaDevice::synchronize", error))
+    }
+
     pub fn step(&mut self) -> Result<QuantaleCudaReport, CudaError> {
         let step = self
             .dev
@@ -295,6 +328,7 @@ impl GpuQuantaleMatrix {
                 (
                     &self.transition,
                     &self.next_hop,
+                    &self.consumed,
                     &self.active,
                     &mut self.decision_report,
                 ),
@@ -307,6 +341,29 @@ impl GpuQuantaleMatrix {
     /// Backwards-compatible name for the decision projection π(A*).
     pub fn decide(&mut self) -> Result<DecisionProjection, CudaError> {
         self.project_decision_path()
+    }
+
+    /// Fused Option-B frontier projection and update on GPU.
+    pub fn frontier_step(&mut self) -> Result<DecisionProjection, CudaError> {
+        let frontier = self
+            .dev
+            .get_func(MODULE_NAME, FRONTIER_STEP_KERNEL)
+            .ok_or(CudaError::missing_function(FRONTIER_STEP_KERNEL))?;
+        unsafe {
+            frontier.launch(
+                kernel_config(),
+                (
+                    &self.transition,
+                    &self.next_hop,
+                    &mut self.consumed,
+                    &mut self.active,
+                    &mut self.next_active,
+                    &mut self.decision_report,
+                ),
+            )
+        }
+        .map_err(|error| CudaError::new("quantale_frontier_step", error))?;
+        self.decision_report()
     }
 
     pub fn report(&self) -> Result<QuantaleCudaReport, CudaError> {
@@ -347,13 +404,13 @@ impl GpuQuantaleMatrix {
     /// `selected_dst` from `quantale_decide_path`.
     pub fn reconstruct_projected_path(&self) -> Result<Vec<Node>, CudaError> {
         let decision = self.decision_report()?;
-        let src = Node::decode(decision.selected_src).ok_or_else(|| {
+        let src = Node::decode_index(decision.selected_src as usize).ok_or_else(|| {
             CudaError::invalid_input(format!(
                 "cannot reconstruct projected path with invalid selected_src {}",
                 decision.selected_src
             ))
         })?;
-        let dst = Node::decode(decision.selected_dst).ok_or_else(|| {
+        let dst = Node::decode_index(decision.selected_dst as usize).ok_or_else(|| {
             CudaError::invalid_input(format!(
                 "cannot reconstruct projected path with invalid selected_dst {}",
                 decision.selected_dst
@@ -367,7 +424,7 @@ impl GpuQuantaleMatrix {
 fn kernel_config() -> LaunchConfig {
     LaunchConfig {
         grid_dim: (1, 1, 1),
-        block_dim: (THREADS, 1, 1),
+        block_dim: (THREAD_COUNT as u32, 1, 1),
         shared_mem_bytes: 0,
     }
 }

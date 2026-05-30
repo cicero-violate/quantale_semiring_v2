@@ -1,24 +1,42 @@
 pub mod algebra;
+pub mod config;
 pub mod cuda;
+pub mod dsl;
 pub mod edge;
+pub mod egress;
 pub mod error;
+pub mod ingress;
 pub mod node;
+pub mod paging;
 pub mod path;
 pub mod policy;
 pub mod projection;
 pub mod receipt;
+pub mod search;
+pub mod tlog;
+pub mod topology;
 pub mod transitions;
+pub mod types;
 
 pub use algebra::*;
+pub use config::*;
 pub use cuda::*;
+pub use dsl::*;
 pub use edge::*;
+pub use egress::*;
 pub use error::*;
+pub use ingress::*;
 pub use node::*;
+pub use paging::*;
 pub use path::*;
 pub use policy::*;
 pub use projection::*;
 pub use receipt::*;
+pub use search::*;
+pub use tlog::*;
+pub use topology::*;
 pub use transitions::*;
+pub use types::*;
 
 #[cfg(test)]
 mod tests {
@@ -245,5 +263,191 @@ mod tests {
 
         assert_eq!(err.operation, "input");
         assert!(err.message.contains("did not converge"));
+    }
+
+    #[test]
+    fn top_k_selection_orders_by_score_and_tie_breaks_by_id() {
+        let scored = score_candidates(vec![
+            DomainCandidate::new("b", "search candidate b", 0.80, 1.00, 0.00, 0.00),
+            DomainCandidate::new("a", "search candidate a", 0.80, 1.00, 0.00, 0.00),
+            DomainCandidate::new("c", "search candidate c", 0.50, 1.00, 0.00, 0.00),
+        ]);
+
+        let top = select_top_k(scored, 2);
+
+        assert_eq!(top.len(), 2);
+        assert_eq!(top[0].candidate.id, "a");
+        assert_eq!(top[1].candidate.id, "b");
+    }
+
+    #[test]
+    fn external_candidates_compile_top_k_into_quantale_delta_edges() {
+        let candidates = vec![
+            DomainCandidate::new("low", "needle candidate", 0.50, 1.00, 0.00, 0.00),
+            DomainCandidate::new("high", "needle candidate", 0.90, 1.00, 0.00, 0.00),
+            DomainCandidate::new("miss", "other candidate", 1.00, 1.00, 0.00, 0.00),
+        ]
+        .into_iter()
+        .filter(|candidate| candidate.label.contains("needle"));
+
+        let (top, edges) = build_search_delta_edges(candidates, 1);
+
+        assert_eq!(top.len(), 1);
+        assert_eq!(top[0].candidate.id, "high");
+        assert!(has_edge(
+            &edges,
+            Node::state(StateNode::Search),
+            Node::event(EventNode::CandidateFound)
+        ));
+        assert!(has_edge(
+            &edges,
+            Node::state(StateNode::Score),
+            Node::event(EventNode::ScoreReady)
+        ));
+        assert!(has_edge(
+            &edges,
+            Node::state(StateNode::Select),
+            Node::event(EventNode::TopKSelected)
+        ));
+    }
+
+    #[test]
+    fn binary_tlog_appends_typed_records_with_sequences() {
+        let path = std::env::temp_dir().join(format!(
+            "quantale_semiring_v2_test_{}_{}.tlog",
+            std::process::id(),
+            1_u64
+        ));
+        let _ = std::fs::remove_file(&path);
+
+        let mut tlog = TlogWriter::open(&path).unwrap();
+        let report = QuantaleCudaReport {
+            step: 7,
+            best_src: Node::state(StateNode::Goal).encode(),
+            best_dst: Node::control(ControlNode::GateInput).encode(),
+            best_value: 0.99,
+            event_count: 3,
+            goal_to_execute: 0.50,
+            goal_to_learn: 0.25,
+        };
+        let decision = DecisionReport {
+            step: 8,
+            selected_src: Node::state(StateNode::Goal).encode(),
+            selected_dst: Node::control(ControlNode::GateInput).encode(),
+            first_hop: Node::control(ControlNode::GateInput).encode(),
+            selected_value: 0.99,
+            halted: 0,
+            blocked: 0,
+        };
+        let receipt = ExecutionReceipt::accepted(0.88, 0.91, 0.93);
+        let edges = vec![TransitionEdge::from_nodes(
+            Node::state(StateNode::Search),
+            Node::event(EventNode::CandidateFound),
+            0.90,
+        )];
+
+        assert_eq!(tlog.append_cuda_report(&report).unwrap(), 0);
+        assert_eq!(tlog.append_decision(&decision).unwrap(), 1);
+        assert_eq!(tlog.append_receipt(&receipt).unwrap(), 2);
+        assert_eq!(tlog.append_edges("search", &edges).unwrap(), 3);
+        tlog.flush().unwrap();
+
+        let records = read_record_meta(&path).unwrap();
+        assert_eq!(records.len(), 4);
+        assert_eq!(records[0].kind, TlogRecordKind::CudaReport);
+        assert_eq!(records[1].kind, TlogRecordKind::Decision);
+        assert_eq!(records[2].kind, TlogRecordKind::Receipt);
+        assert_eq!(records[3].kind, TlogRecordKind::TransitionEdges);
+        assert_eq!(records[0].sequence, 0);
+        assert_eq!(records[3].sequence, 3);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn binary_tlog_reopens_and_continues_sequence() {
+        let path = std::env::temp_dir().join(format!(
+            "quantale_semiring_v2_test_{}_{}.tlog",
+            std::process::id(),
+            2_u64
+        ));
+        let _ = std::fs::remove_file(&path);
+
+        let decision = DecisionReport {
+            step: 1,
+            selected_src: 0,
+            selected_dst: 1,
+            first_hop: 1,
+            selected_value: 0.5,
+            halted: 0,
+            blocked: 0,
+        };
+
+        {
+            let mut tlog = TlogWriter::open(&path).unwrap();
+            assert_eq!(tlog.append_decision(&decision).unwrap(), 0);
+            tlog.flush().unwrap();
+        }
+        {
+            let mut tlog = TlogWriter::open(&path).unwrap();
+            assert_eq!(tlog.append_decision(&decision).unwrap(), 1);
+            tlog.flush().unwrap();
+        }
+
+        let records = read_record_meta(&path).unwrap();
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].sequence, 0);
+        assert_eq!(records[1].sequence, 1);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn system_config_matches_node_registry() {
+        let config = SystemConfig::default();
+
+        assert_eq!(config.matrix_dim, NODE_COUNT);
+        assert_eq!(config.matrix_len, MATRIX_LEN);
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn ingress_queue_drains_available_events_without_blocking() {
+        let (server, receiver) = IngressServer::new();
+
+        server
+            .push_event(InboundEvent::new("test", "fact", b"payload".to_vec()))
+            .unwrap();
+
+        let events = drain_available(&receiver, 8);
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].source, "test");
+        assert_eq!(events[0].event_name, "fact");
+        assert_eq!(events[0].payload, b"payload".to_vec());
+        assert!(drain_available(&receiver, 8).is_empty());
+    }
+
+    #[test]
+    fn egress_returns_closed_loop_receipt_confirmation() {
+        let confirmation = EgressDispatcher::dispatch_with_confirmation(ExternalAction::Noop {
+            label: "noop".to_string(),
+        });
+
+        assert!(confirmation.success);
+        assert_eq!(confirmation.action_label, "noop");
+        assert!(confirmation.receipt.accepted);
+        assert!(confirmation.receipt.hash_nonzero);
+    }
+
+    #[test]
+    fn quantale_weight_clamps_and_composes() {
+        let left = QuantaleWeight::new(0.5);
+        let right = QuantaleWeight::new(0.8);
+
+        assert_eq!(QuantaleWeight::new(2.0).raw(), Q_UNIT);
+        assert_eq!(QuantaleWeight::new(f32::NAN).raw(), Q_BOTTOM);
+        assert_eq!(left.join(right).raw(), 0.8);
+        assert!((left.compose(right).raw() - 0.4).abs() <= f32::EPSILON);
     }
 }

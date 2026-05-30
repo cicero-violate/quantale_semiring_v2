@@ -221,11 +221,16 @@ impl Node {
     }
 
     pub const fn decode(id: i32) -> Option<Self> {
-        if id < 0 || id as usize >= NODE_COUNT {
+        if id < 0 {
             return None;
         }
+        Self::decode_index(id as usize)
+    }
 
-        let raw = id as usize;
+    pub const fn decode_index(raw: usize) -> Option<Self> {
+        if raw >= NODE_COUNT {
+            return None;
+        }
         if raw < CONTROL_OFFSET {
             return match StateNode::from_u32((raw - STATE_OFFSET) as u32) {
                 Some(value) => Some(Self::State(value)),

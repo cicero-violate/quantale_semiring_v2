@@ -1,0 +1,548 @@
+{
+  "matrix_name": "neurosymbolic_orchestrator_v2",
+  "nodes": [
+    {
+      "id": 0,
+      "name": "State::Goal",
+      "type": "State"
+    },
+    {
+      "id": 1,
+      "name": "State::Input",
+      "type": "State"
+    },
+    {
+      "id": 2,
+      "name": "State::Parse",
+      "type": "State"
+    },
+    {
+      "id": 3,
+      "name": "State::Map",
+      "type": "State"
+    },
+    {
+      "id": 4,
+      "name": "State::Search",
+      "type": "State"
+    },
+    {
+      "id": 5,
+      "name": "State::Score",
+      "type": "State"
+    },
+    {
+      "id": 6,
+      "name": "State::Select",
+      "type": "State"
+    },
+    {
+      "id": 7,
+      "name": "State::Plan",
+      "type": "State"
+    },
+    {
+      "id": 8,
+      "name": "State::Optimize",
+      "type": "State"
+    },
+    {
+      "id": 9,
+      "name": "State::Execute",
+      "type": "State"
+    },
+    {
+      "id": 10,
+      "name": "State::Validate",
+      "type": "State"
+    },
+    {
+      "id": 11,
+      "name": "State::Memory",
+      "type": "State"
+    },
+    {
+      "id": 12,
+      "name": "State::Learn",
+      "type": "State"
+    },
+    {
+      "id": 13,
+      "name": "Control::Allow",
+      "type": "Control"
+    },
+    {
+      "id": 14,
+      "name": "Control::Block",
+      "type": "Control"
+    },
+    {
+      "id": 15,
+      "name": "Control::Retry",
+      "type": "Control"
+    },
+    {
+      "id": 16,
+      "name": "Control::Repair",
+      "type": "Control"
+    },
+    {
+      "id": 17,
+      "name": "Control::Commit",
+      "type": "Control"
+    },
+    {
+      "id": 18,
+      "name": "Control::Rollback",
+      "type": "Control"
+    },
+    {
+      "id": 19,
+      "name": "Control::Halt",
+      "type": "Control"
+    },
+    {
+      "id": 20,
+      "name": "Control::GateInput",
+      "type": "Control"
+    },
+    {
+      "id": 21,
+      "name": "Control::GateExecution",
+      "type": "Control"
+    },
+    {
+      "id": 22,
+      "name": "Control::GateReceipt",
+      "type": "Control"
+    },
+    {
+      "id": 23,
+      "name": "Control::GateMemory",
+      "type": "Control"
+    },
+    {
+      "id": 24,
+      "name": "Control::GateLearn",
+      "type": "Control"
+    },
+    {
+      "id": 25,
+      "name": "Control::ChooseBest",
+      "type": "Control"
+    },
+    {
+      "id": 26,
+      "name": "Event::FactArrived",
+      "type": "Event"
+    },
+    {
+      "id": 27,
+      "name": "Event::InputAccepted",
+      "type": "Event"
+    },
+    {
+      "id": 28,
+      "name": "Event::ParseOk",
+      "type": "Event"
+    },
+    {
+      "id": 29,
+      "name": "Event::ParseErr",
+      "type": "Event"
+    },
+    {
+      "id": 30,
+      "name": "Event::MapReady",
+      "type": "Event"
+    },
+    {
+      "id": 31,
+      "name": "Event::CandidateFound",
+      "type": "Event"
+    },
+    {
+      "id": 32,
+      "name": "Event::ScoreReady",
+      "type": "Event"
+    },
+    {
+      "id": 33,
+      "name": "Event::TopKSelected",
+      "type": "Event"
+    },
+    {
+      "id": 34,
+      "name": "Event::PlanReady",
+      "type": "Event"
+    },
+    {
+      "id": 35,
+      "name": "Event::OptimizeReady",
+      "type": "Event"
+    },
+    {
+      "id": 36,
+      "name": "Event::ExecuteStarted",
+      "type": "Event"
+    },
+    {
+      "id": 37,
+      "name": "Event::ExecuteFinished",
+      "type": "Event"
+    },
+    {
+      "id": 38,
+      "name": "Event::ReceiptAttached",
+      "type": "Event"
+    },
+    {
+      "id": 39,
+      "name": "Event::ReceiptAccepted",
+      "type": "Event"
+    },
+    {
+      "id": 40,
+      "name": "Event::ReceiptRejected",
+      "type": "Event"
+    },
+    {
+      "id": 41,
+      "name": "Event::HashNonzero",
+      "type": "Event"
+    },
+    {
+      "id": 42,
+      "name": "Event::MemoryWritten",
+      "type": "Event"
+    },
+    {
+      "id": 43,
+      "name": "Event::LearnUpdated",
+      "type": "Event"
+    }
+  ],
+  "transitions": [
+    {
+      "from": "State::Goal",
+      "to": "Control::GateInput",
+      "default_weight": 0.99,
+      "policy_effect": "TriggerGateInput"
+    },
+    {
+      "from": "Control::GateInput",
+      "to": "Event::FactArrived",
+      "default_weight": 0.98,
+      "policy_effect": "AwaitFact"
+    },
+    {
+      "from": "Event::FactArrived",
+      "to": "State::Input",
+      "default_weight": 0.97,
+      "policy_effect": "AcceptInput"
+    },
+    {
+      "from": "State::Input",
+      "to": "Event::InputAccepted",
+      "default_weight": 0.96,
+      "policy_effect": "EmitInputAccepted"
+    },
+    {
+      "from": "Event::InputAccepted",
+      "to": "State::Parse",
+      "default_weight": 0.95,
+      "policy_effect": "ParseInput"
+    },
+    {
+      "from": "State::Parse",
+      "to": "Event::ParseOk",
+      "default_weight": 0.92,
+      "policy_effect": "ParseOk"
+    },
+    {
+      "from": "State::Parse",
+      "to": "Event::ParseErr",
+      "default_weight": 0.1,
+      "policy_effect": "ParseErr"
+    },
+    {
+      "from": "Event::ParseOk",
+      "to": "State::Map",
+      "default_weight": 0.9,
+      "policy_effect": "MapInput"
+    },
+    {
+      "from": "Event::ParseErr",
+      "to": "Control::Repair",
+      "default_weight": 0.6,
+      "policy_effect": "RepairParse"
+    },
+    {
+      "from": "Control::Repair",
+      "to": "State::Parse",
+      "default_weight": 0.55,
+      "policy_effect": "RetryParse"
+    },
+    {
+      "from": "State::Map",
+      "to": "Event::MapReady",
+      "default_weight": 0.93,
+      "policy_effect": "MapReady"
+    },
+    {
+      "from": "Event::MapReady",
+      "to": "State::Search",
+      "default_weight": 0.92,
+      "policy_effect": "Search"
+    },
+    {
+      "from": "State::Search",
+      "to": "Event::CandidateFound",
+      "default_weight": 0.91,
+      "policy_effect": "CandidateFound"
+    },
+    {
+      "from": "Event::CandidateFound",
+      "to": "State::Score",
+      "default_weight": 0.92,
+      "policy_effect": "Score"
+    },
+    {
+      "from": "State::Score",
+      "to": "Event::ScoreReady",
+      "default_weight": 0.94,
+      "policy_effect": "ScoreReady"
+    },
+    {
+      "from": "Event::ScoreReady",
+      "to": "State::Select",
+      "default_weight": 0.95,
+      "policy_effect": "Select"
+    },
+    {
+      "from": "State::Select",
+      "to": "Event::TopKSelected",
+      "default_weight": 0.94,
+      "policy_effect": "TopKSelected"
+    },
+    {
+      "from": "Event::TopKSelected",
+      "to": "State::Plan",
+      "default_weight": 0.93,
+      "policy_effect": "Plan"
+    },
+    {
+      "from": "State::Plan",
+      "to": "Event::PlanReady",
+      "default_weight": 0.92,
+      "policy_effect": "PlanReady"
+    },
+    {
+      "from": "Event::PlanReady",
+      "to": "Control::ChooseBest",
+      "default_weight": 0.96,
+      "policy_effect": "ChooseBest"
+    },
+    {
+      "from": "Control::ChooseBest",
+      "to": "State::Execute",
+      "default_weight": 0.88,
+      "policy_effect": "Execute"
+    },
+    {
+      "from": "Control::ChooseBest",
+      "to": "State::Optimize",
+      "default_weight": 0.7,
+      "policy_effect": "Optimize"
+    },
+    {
+      "from": "State::Optimize",
+      "to": "Event::OptimizeReady",
+      "default_weight": 0.75,
+      "policy_effect": "OptimizeReady"
+    },
+    {
+      "from": "Event::OptimizeReady",
+      "to": "State::Execute",
+      "default_weight": 0.82,
+      "policy_effect": "ExecuteOptimized"
+    },
+    {
+      "from": "State::Execute",
+      "to": "Control::GateExecution",
+      "default_weight": 0.97,
+      "policy_effect": "GateExecution"
+    },
+    {
+      "from": "Control::GateExecution",
+      "to": "Event::ExecuteStarted",
+      "default_weight": 0.96,
+      "policy_effect": "StartExecution"
+    },
+    {
+      "from": "Control::GateExecution",
+      "to": "Control::Block",
+      "default_weight": 0.05,
+      "policy_effect": "BlockExecution"
+    },
+    {
+      "from": "Event::ExecuteStarted",
+      "to": "Event::ExecuteFinished",
+      "default_weight": 0.9,
+      "policy_effect": "FinishExecution"
+    },
+    {
+      "from": "Event::ExecuteFinished",
+      "to": "Event::ReceiptAttached",
+      "default_weight": 0.85,
+      "policy_effect": "AttachReceipt"
+    },
+    {
+      "from": "Event::ReceiptAttached",
+      "to": "Control::GateReceipt",
+      "default_weight": 0.97,
+      "policy_effect": "GateReceipt"
+    },
+    {
+      "from": "Control::GateReceipt",
+      "to": "Event::ReceiptAccepted",
+      "default_weight": 0.9,
+      "policy_effect": "AcceptReceipt"
+    },
+    {
+      "from": "Control::GateReceipt",
+      "to": "Event::ReceiptRejected",
+      "default_weight": 0.15,
+      "policy_effect": "RejectReceipt"
+    },
+    {
+      "from": "Event::ReceiptAccepted",
+      "to": "Event::HashNonzero",
+      "default_weight": 0.95,
+      "policy_effect": "CheckHash"
+    },
+    {
+      "from": "Event::HashNonzero",
+      "to": "State::Validate",
+      "default_weight": 0.96,
+      "policy_effect": "Validate"
+    },
+    {
+      "from": "Event::ReceiptRejected",
+      "to": "Control::Rollback",
+      "default_weight": 0.8,
+      "policy_effect": "Rollback"
+    },
+    {
+      "from": "Control::Rollback",
+      "to": "Control::Repair",
+      "default_weight": 0.6,
+      "policy_effect": "Repair"
+    },
+    {
+      "from": "State::Validate",
+      "to": "Control::Commit",
+      "default_weight": 0.94,
+      "policy_effect": "Commit"
+    },
+    {
+      "from": "State::Validate",
+      "to": "Control::Block",
+      "default_weight": 0.05,
+      "policy_effect": "BlockValidation"
+    },
+    {
+      "from": "Control::Commit",
+      "to": "Control::GateMemory",
+      "default_weight": 0.98,
+      "policy_effect": "GateMemory"
+    },
+    {
+      "from": "Control::GateMemory",
+      "to": "State::Memory",
+      "default_weight": 0.95,
+      "policy_effect": "Memory"
+    },
+    {
+      "from": "State::Memory",
+      "to": "Event::MemoryWritten",
+      "default_weight": 0.92,
+      "policy_effect": "MemoryWritten"
+    },
+    {
+      "from": "Event::MemoryWritten",
+      "to": "Control::GateLearn",
+      "default_weight": 0.9,
+      "policy_effect": "GateLearn"
+    },
+    {
+      "from": "Control::GateLearn",
+      "to": "State::Learn",
+      "default_weight": 0.88,
+      "policy_effect": "Learn"
+    },
+    {
+      "from": "State::Learn",
+      "to": "Event::LearnUpdated",
+      "default_weight": 0.91,
+      "policy_effect": "LearnUpdated"
+    },
+    {
+      "from": "Event::LearnUpdated",
+      "to": "Control::Halt",
+      "default_weight": 0.99,
+      "policy_effect": "Halt"
+    }
+  ],
+  "pages": [
+    {
+      "name": "main",
+      "node_names": [
+        "State::Goal",
+        "State::Input",
+        "State::Parse",
+        "State::Map",
+        "State::Search",
+        "State::Score",
+        "State::Select",
+        "State::Plan",
+        "State::Optimize",
+        "State::Execute",
+        "State::Validate",
+        "State::Memory",
+        "State::Learn",
+        "Control::Allow",
+        "Control::Block",
+        "Control::Retry",
+        "Control::Repair",
+        "Control::Commit",
+        "Control::Rollback",
+        "Control::Halt",
+        "Control::GateInput",
+        "Control::GateExecution",
+        "Control::GateReceipt",
+        "Control::GateMemory",
+        "Control::GateLearn",
+        "Control::ChooseBest",
+        "Event::FactArrived",
+        "Event::InputAccepted",
+        "Event::ParseOk",
+        "Event::ParseErr",
+        "Event::MapReady",
+        "Event::CandidateFound",
+        "Event::ScoreReady",
+        "Event::TopKSelected",
+        "Event::PlanReady",
+        "Event::OptimizeReady",
+        "Event::ExecuteStarted",
+        "Event::ExecuteFinished",
+        "Event::ReceiptAttached",
+        "Event::ReceiptAccepted",
+        "Event::ReceiptRejected",
+        "Event::HashNonzero",
+        "Event::MemoryWritten",
+        "Event::LearnUpdated"
+      ]
+    }
+  ]
+}

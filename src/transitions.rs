@@ -245,3 +245,12 @@ pub fn full_transition_edges() -> Vec<TransitionEdge> {
     edges.extend(persistence_transition_edges());
     edges
 }
+
+/// Load transition edges from the bundled JSON topology asset.
+///
+/// This is the data-driven equivalent of `full_transition_edges()`. The current
+/// CUDA kernels still require the canonical 44-node universe, so the topology
+/// compiler validates node IDs before returning edges.
+pub fn data_driven_transition_edges() -> Result<Vec<TransitionEdge>, crate::CudaError> {
+    crate::topology::load_default_topology_edges()
+}

@@ -4,6 +4,7 @@ use crate::algebra::Q_BOTTOM;
 use crate::edge::{TransitionEdge, edge};
 use crate::node::{ControlNode, EventNode, Node, StateNode};
 
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ExecutionReceipt {
     pub accepted: bool,
     pub receipt_confidence: f32,

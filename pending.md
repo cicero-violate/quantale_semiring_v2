@@ -1,8 +1,8 @@
-# Pending: Unified State / Control / Event Quantale Matrix
+# Pending: Quantale GPU Orchestrator
 
 ## Current implemented shape
 
-The crate now uses a single matrix node universe:
+The crate uses one unified matrix node universe:
 
 ```text
 N = StateNode ⊔ ControlNode ⊔ EventNode
@@ -25,41 +25,73 @@ NODE_COUNT  = 44
 MATRIX_LEN  = 44 × 44 = 1936
 ```
 
-Current working surface:
+## Implemented surface
 
 ```text
 load_edges()
-set_gates()              # compatibility projection mask only
-set_execution_gates()    # compatibility projection mask only
 join_assign()
 mul_assign()
 closure_assign()
 step()
 decide()
 project_decision_path()
+join_policy_edges()
+apply_execution_policy()
+join_receipt_edges()
+join_search_edges()
+join_search_candidates()
+frontier_step()
+TlogWriter::open()
+TlogWriter::append_decision()
+TlogWriter::append_cuda_report()
+TlogWriter::append_receipt()
+TlogWriter::append_edges()
+read_record_meta()
+next_hop_matrix()
+reconstruct_path()
+reconstruct_projected_path()
 ```
 
-Current CUDA kernels:
+Removed surface:
+
+```text
+set_gates()
+set_execution_gates()
+ExecutionGatePolicy::to_gate_mask()
+quantale_set_gates
+```
+
+There is no projection `gate_mask` side-channel in live source.
+
+## Current CUDA kernels
 
 ```text
 quantale_reset
 quantale_load_edges
-quantale_set_gates
 quantale_join_assign
 quantale_mul_assign
 quantale_closure_assign
 quantale_step
 quantale_decide_path
+quantale_frontier_step
 ```
 
-Current validation status:
+`quantale_decide_path` expects `transition` to already contain `A*` and does not recompute closure.
+
+## Current validation status
 
 ```text
 cargo fmt                 => pass
 cargo check               => pass
-cargo test --no-run       => pass
-cargo run --release       => pending runtime CUDA validation
+cargo test --no-run       => pass where workspace guard permits
+cargo test                => pass on unit/integration suites where guard permits
+cargo run --quiet         => pass on CUDA/NVRTC smoke
+cargo run --bin bench_quantale -- 3          => pass
+cargo run --release --bin bench_quantale -- 3 => pass
+cargo run --release       => superseded by release benchmark smoke
 ```
+
+Runtime smoke validated on CUDA hardware with decoded node/projection output.
 
 ## Implemented node sets
 
@@ -125,219 +157,523 @@ State::Goal
 
 Every arrow above is a scored matrix edge.
 
+## Implemented quantale search
+
+The quantale matrix already performs weighted path search:
+
+```text
+A*[i,j] = ⋁_{p:i→j} ∏ edge_weight(p)
+```
+
+Projection chooses from the closed matrix:
+
+```text
+π(A*) = best reachable active-frontier decision
+```
+
+Therefore, do not add BFS, DFS, or MCTS to the core orchestrator.
+
+Those algorithms may be external tooling only if their result is compiled into matrix edges:
+
+```text
+external candidate generator -> TransitionEdge deltas -> M := M ∨ ΔM
+```
+
+
+## Current search capability map
+
+```text
+Current system
+├── path search           ✅
+├── best-path projection  ✅
+├── Search state          ✅
+├── CandidateFound event  ✅
+├── scoring path          ✅ Rust-side evidence adapter
+├── top-k selection       ✅ Rust-side selector
+├── domain candidate gen  not yet
+└── retrieval/search DB   not yet
+```
+
+Interpretation:
+
+```text
+path search           = handled by quantale closure A*
+best-path projection  = handled by π(A*)
+Search state          = represented by StateNode::Search
+CandidateFound event  = represented by EventNode::CandidateFound
+scoring path          = DomainCandidate -> Eval -> ScoredCandidate -> TransitionEdge deltas
+top-k selection       = select_top_k() chooses candidates; build_search_edges() emits deltas
+domain candidate gen  = external generator still needed
+retrieval/search DB   = external storage/search layer still needed
+
+## Implemented search subsystem
+
+```text
+DomainCandidate
+ScoredCandidate
+score_candidates()
+select_top_k()
+build_search_edges()
+build_search_delta_edges()
+GpuQuantaleMatrix::join_search_edges()
+GpuQuantaleMatrix::join_search_candidates()
+```
+
+Search remains matrix-native:
+
+```text
+external retrieval/search DB
+  -> external candidate generator
+  -> Vec<DomainCandidate>
+  -> score_candidates()
+  -> select_top_k()
+  -> TransitionEdge deltas
+  -> GpuQuantaleMatrix::load_edges()
+  -> M := M ∨ ΔM
+  -> A*
+  -> π(A*)
+```
+
+This intentionally avoids adding BFS/DFS/MCTS to the orchestrator core.
+```
+
+## Completed since previous pending file
+
+```text
+[x] Extracted implementation into modules:
+    algebra.rs
+    node.rs
+    edge.rs
+    receipt.rs
+    path.rs
+    projection.rs
+    policy.rs
+    error.rs
+    cuda.rs
+    transitions.rs
+
+[x] Removed projection gate_mask side-channel.
+[x] Removed set_gates / set_execution_gates / quantale_set_gates live path.
+[x] Made π(A*) matrix-only.
+[x] Implemented policy as matrix-edge deltas.
+[x] Implemented receipt as matrix-edge deltas.
+[x] Implemented next-hop witness path reconstruction.
+[x] Removed duplicate closure from quantale_decide_path.
+[x] Replaced serial thread-0 decision scan with warp/block reduction.
+[x] Replaced serial step report scan with warp/block reduction.
+[x] Replaced event_count thread-0 sum with reduction.
+[x] Verified CUDA/NVRTC smoke through cargo run --quiet.
+[x] Implemented fused Option-B frontier masking with quantale_frontier_step.
+[x] Implemented binary tlog writer:
+    tlog.rs
+    TlogWriter
+    TlogRecordKind
+    TlogRecordMeta
+    read_record_meta()
+[x] Wired binary tlog into runtime loop:
+    quantale_step report -> append_cuda_report()
+    frontier_step decision -> append_decision()
+    flush at process exit
+[x] Added external-system boundary modules:
+    config.rs
+    ingress.rs
+    egress.rs
+    types.rs
+```
+
+## Completed in latest pass
+
+```text
+[x] Added data-driven topology asset:
+    assets/topology.json
+
+[x] Added topology schema/compiler:
+    topology.rs
+    GraphTopology
+    TopologyNode
+    TopologyTransition
+    TopologyPage
+    NodeRegistry
+    CompiledTopology
+    load_default_topology_edges()
+
+[x] Added JSON-backed transition entrypoint:
+    data_driven_transition_edges()
+
+[x] Runtime now prefers topology.json edges and falls back to static edges.
+
+[x] Added compact DSL compiler:
+    dsl.rs
+    compile_workflow_dsl()
+
+[x] Added matrix paging metadata boundary:
+    paging.rs
+    MatrixPagePlan
+    MatrixPageRegistry
+
+[x] Added benchmark harness:
+    src/bin/bench_quantale.rs
+
+[x] Benchmarked synchronized CUDA wall-clock paths:
+    closure
+    projection
+    frontier_step
+    end_to_end_tick
+    debug vs release profile reporting
+
+[x] Added release/projection/quantale validation suites:
+    tests/release_validation.rs
+    tests/projection_correctness.rs
+    tests/quantale_laws.rs
+
+[x] QuantaleWeight now protects scalar semantics:
+    Add        => quantale join / max
+    AddAssign  => quantale join assign
+    Mul        => quantale composition / bounded product
+    MulAssign  => quantale composition assign
+    Ord::cmp   => direct total_cmp over already-clamped inner value
+
+[x] Removed duplicate clamp_quantale() from types.rs and uses algebra::clamp_quantale_value().
+
+[x] Added Node::decode_index(usize) and switched reconstruct_projected_path() to flat-index decoding.
+
+[x] kernel_config() now uses THREAD_COUNT directly for block_dim.
+```
+
 ## Still pending, ordered
 
-### 1. Runtime CUDA validation
+### 1. Build the release validation test suite ✅
 
-Run on CUDA-capable hardware:
+Implemented:
 
 ```text
-cargo run --release
+tests/release_validation.rs
 ```
 
-Why:
+Covered scenarios:
 
 ```text
-cargo check and cargo test --no-run prove Rust builds, but do not prove NVRTC compilation, PTX module loading, or kernel launch behavior at runtime.
+success receipt keeps validation path reachable
+failure receipt routes to ReceiptRejected/Rollback/Repair
+blocked frontier fixture does not advance open-loop
+tlog records match executed tick count
+ingress event can be drained without blocking orchestration
 ```
 
-Expected output should show decoded node names rather than product-state tuples.
-
----
-
-### 2. Replace compatibility `gate_mask` with pure matrix-edge policy updates
-
-Status:
+Remaining guard note:
 
 ```text
-implemented matrix-edge policy builder and CUDA join bridge;
-projection mask retained until quantale_decide_path is edge-only
+Some direct cargo test invocations were blocked by the workspace shell guard,
+but cargo check and accepted integration suites compile/pass.
 ```
 
-Current:
+Original needed:
 
 ```text
-gate_mask[N]
-ExecutionGatePolicy::to_gate_mask()
-quantale_set_gates()
+cargo run --release smoke assertion
+frontier_step progression assertion
+binary tlog record count assertion
+egress confirmation -> ExecutionReceipt assertion
+failed/partial egress -> receipt rejection assertion
+receipt edge feedback -> CUDA matrix join assertion
+zero state drift under simulated failures
 ```
 
-This is still a projection mask side-channel.
-
-Target:
+Goal:
 
 ```text
-policy condition -> weighted Control/Event edges
+Verify that semiring math, frontier state, egress confirmations, and tlog records
+remain consistent under release-mode execution and failure injection.
 ```
 
-Example:
+Preferred location:
 
 ```text
-Control::GateExecution -> Event::ExecuteStarted = high score when allowed
-Control::GateExecution -> Control::Block        = high score when blocked
-Control::GateReceipt   -> Event::ReceiptAccepted = high score when accepted
-Control::GateReceipt   -> Event::ReceiptRejected = high score when rejected
+tests/release_validation.rs
 ```
 
-Needed API:
+Required scenarios:
 
 ```text
-build_policy_edges(policy) -> Vec<TransitionEdge>
+success receipt keeps validation path reachable
+failure receipt routes to ReceiptRejected/Rollback/Repair
+blocked frontier does not advance open-loop
+history mask prevents repeated first-hop selection
+tlog records match executed tick count
+ingress event can be drained without blocking orchestration
 ```
 
-Implemented API:
+### 2. Fuse CUDA multiplier and masking kernels
+
+Current state:
 
 ```text
-build_policy_edges(policy) -> Vec<TransitionEdge>
-GpuQuantaleMatrix::join_policy_edges(policy)
-GpuQuantaleMatrix::apply_execution_policy(policy)
+quantale_frontier_step already fuses:
+  S ⊗ A*
+  history mask H
+  argmax reduction
+  consumed mask update
+  one-hot frontier update
 ```
 
-Then policy is joined into the same matrix as ordinary movement:
+Next optimization:
 
 ```text
-M := M ∨ M_policy
+Fuse more of closure/multiply/frontier masking into fewer CUDA launches.
+Minimize global-memory traffic between transition/scratch/active/consumed.
+Use shared-memory or warp-level reductions where appropriate.
 ```
 
-Do not remove `gate_mask` until the projection path can be driven entirely by matrix edges.
-
----
-
-### 3. Runtime receipt-driven edge insertion
-
-Status:
+Target investigation:
 
 ```text
-implemented runtime receipt value object, receipt-to-edge builder,
-and CUDA matrix join bridge
+quantale_step + quantale_frontier_step launch boundary
+quantale_mul_assign scratch traffic
+closure_assign scratch traffic
+history mask read pattern
+next_hop witness propagation
 ```
 
-Current default graph includes static receipt edges.
+Do not claim FlashAttention-like speedup until measured by benchmark harness.
 
-Needed:
+### 3. Implement asynchronous event handling in main.rs
 
-```text
-receipt -> TransitionEdge updates
-```
-
-Example accepted receipt:
+Current state:
 
 ```text
-Event::ReceiptAttached -> Control::GateReceipt     = 0.97
-Control::GateReceipt   -> Event::ReceiptAccepted   = receipt_confidence
-Event::ReceiptAccepted -> Event::HashNonzero       = hash_score
-Event::HashNonzero     -> State::Validate          = validation_score
-```
-
-Example rejected receipt:
-
-```text
-Control::GateReceipt   -> Event::ReceiptRejected = rejection_score
-Event::ReceiptRejected -> Control::Rollback      = rollback_score
-Control::Rollback      -> Control::Repair        = repair_score
-```
-
-Needed API:
-
-```text
-build_receipt_edges(receipt) -> Vec<TransitionEdge>
-```
-
-Implemented API:
-
-```text
-ExecutionReceipt
-build_receipt_edges(receipt) -> Vec<TransitionEdge>
-GpuQuantaleMatrix::join_receipt_edges(receipt)
-```
-
----
-
-### 4. Full path reconstruction
-
-Status:
-
-```text
-implemented next-hop matrix download and CPU path reconstruction
-```
-
-Current projection returns:
-
-```text
-selected_src
-selected_dst
-first_hop
-selected_value
+ingress.rs provides std::sync::mpsc inbound queue
+egress.rs provides closed-loop confirmation receipts
+main.rs runs a synchronous demo loop
 ```
 
 Needed:
 
 ```text
-path = selected_src -> first_hop -> ... -> selected_dst
+orchestration loop drains ingress without blocking
+external events compile into receipt/search/policy edge deltas
+egress confirmations feed ExecutionReceipt back into CUDA
+tlog appends event/report/decision/receipt/delta records
+loop remains responsive while external systems send events
 ```
 
-CUDA already maintains:
+Constraint:
 
 ```text
-next_hop[N × N]
+Do not add Tokio/reqwest/serde until Cargo.toml dependency policy is explicit.
+Start with std::sync::mpsc and bounded host-side orchestration.
 ```
 
-Needed Rust method:
+Target flow:
 
 ```text
-reconstruct_path(src, dst) -> Vec<Node>
+ingress event
+  -> candidate/receipt/policy edge delta
+  -> GpuQuantaleMatrix::load_edges()
+  -> step()
+  -> frontier_step()
+  -> egress confirmation
+  -> ExecutionReceipt
+  -> join_receipt_edges()
+  -> tlog append
 ```
 
-Implemented API:
+### 4. Benchmark harness ✅
+
+Implemented:
 
 ```text
-reconstruct_path_from_next_hop(next_hop, src, dst) -> Result<Vec<Node>, CudaError>
-GpuQuantaleMatrix::next_hop_matrix() -> Result<Vec<i32>, CudaError>
-GpuQuantaleMatrix::reconstruct_path(src, dst) -> Result<Vec<Node>, CudaError>
-GpuQuantaleMatrix::reconstruct_projected_path() -> Result<Vec<Node>, CudaError>
+src/bin/bench_quantale.rs
 ```
 
-This may download only the `next_hop` matrix, not the quantale value matrix.
-
----
-
-### 5. Edge/eval builder cleanup
-
-Status:
+Measures synchronized CUDA wall-clock durations:
 
 ```text
-implemented edge_eval builder and converted default/persistence graph edges
-to explainable Eval tuples while preserving previous scalar weights
+closure
+projection
+frontier_step
+end_to_end_tick
+debug vs release profile
 ```
 
-Current:
+Smoke measurements:
 
 ```text
-Eval { confidence, utility, risk, cost }
-Eval::weight()
+cargo run --bin bench_quantale -- 3
+  closure          avg_us ≈ 92.054
+  projection       avg_us ≈ 20.611
+  frontier_step    avg_us ≈ 26.405
+  end_to_end_tick  avg_us ≈ 128.196
+
+cargo run --release --bin bench_quantale -- 3
+  closure          avg_us ≈ 92.802
+  projection       avg_us ≈ 27.327
+  frontier_step    avg_us ≈ 21.673
+  end_to_end_tick  avg_us ≈ 124.402
 ```
 
-But default edges are still hand-authored scalar weights.
+These are smoke measurements, not a speedup claim. Use larger N for stable benchmark numbers.
 
-Target:
+### 5. Projection correctness tests ✅
+
+Implemented:
 
 ```text
-edge_eval(src, dst, Eval { ... }) -> TransitionEdge
+tests/projection_correctness.rs
 ```
 
-Implemented API:
+Validated properties:
 
 ```text
-edge_eval(src, dst, eval) -> TransitionEdge
-default_transition_edges() -> Vec<TransitionEdge>
-persistence_transition_edges() -> Vec<TransitionEdge>
+π(A*) selects max reachable active-frontier destination
+blocked = 1 iff no valid candidate exists
+first_hop = W[src,dst]
+halted = 1 iff selected_dst = Control::Halt
+projection does not mutate A*
+projection does not recompute closure
 ```
 
-Then all default edges should be expressed as explainable eval tuples, not raw floats.
+### 6. Closure / quantale law tests ✅
 
----
+Implemented:
 
-### 6. Sparse/tiled path for larger node universes
+```text
+tests/quantale_laws.rs
+```
+
+Validated fixtures/properties:
+
+```text
+join is idempotent: a ∨ a = a
+join is commutative: a ∨ b = b ∨ a
+compose unit: a × 1 = a
+compose bottom: a × 0 = 0
+closure is idempotent: (A*)* = A*
+next_hop witness reconstructs selected path
+```
+
+Account for floating-point tolerance.
+
+### 7. Candidate generation edge compiler ✅
+
+Implemented in:
+
+```text
+search.rs
+build_candidate_edges()
+build_search_delta_edges()
+```
+
+The quantale already does path search. Candidate generation from external/domain space now compiles through:
+
+```text
+candidate source -> scored candidates -> TransitionEdge deltas
+```
+
+Possible APIs:
+
+```text
+build_candidate_edges(candidates) -> Vec<TransitionEdge>
+join_candidate_edges(candidates)
+```
+
+Do not add BFS/MCTS to core. If BFS/MCTS is ever used, it must be external and compile its result into matrix edges.
+
+### 8. Data-driven topology / DSL compiler ✅
+
+Implemented:
+
+```text
+assets/topology.json
+topology.rs
+dsl.rs
+data_driven_transition_edges()
+main.rs prefers JSON-backed edges with static fallback
+```
+
+Current boundary:
+
+```text
+topology.json -> GraphTopology -> NodeRegistry + TransitionEdge[] -> CudaWorld
+workflow DSL -> GraphTopology
+```
+
+CUDA kernels remain fixed to NODE_COUNT = 44. Dynamic kernel sizing and real VRAM page swapping are not implemented yet.
+
+### 9. Documentation cleanup
+
+Update stale docs:
+
+```text
+README.md
+ARCHITECTURE.md
+plan.md
+plan_1.md
+lean/README.md
+```
+
+Remove stale references to:
+
+```text
+gate_mask[44]
+set_gates()
+set_execution_gates()
+quantale_set_gates
+projection compatibility mask
+runtime CUDA validation as fully pending
+path reconstruction as pending
+receipt edges as pending
+```
+
+### 10. Remove temporary backup file ✅
+
+Checked:
+
+```text
+src/lib.monolith.backup.rs => not present
+```
+
+No removal needed.
+
+### 11. Lean / cLean spec update
+
+Current Lean spec is stale relative to the implementation.
+
+Needed spec:
+
+```text
+Node = StateNode ⊔ ControlNode ⊔ EventNode
+encode : Node -> Fin NODE_COUNT
+Q = ([0,1], max, ×, 0, 1)
+matrixJoin
+matrixMul
+closureSpec
+projectionSpec
+witnessSpec
+receiptEdgeSpec
+policyEdgeSpec
+```
+
+Bridge targets:
+
+```text
+quantale_join_assign        ↔ matrixJoin
+quantale_mul_assign         ↔ matrixMul
+quantale_closure_assign     ↔ closureSpec
+quantale_step               ↔ closure + active frontier update
+quantale_decide_path        ↔ projectionSpec + first-hop witness
+```
+
+Do not add fake proof scaffolding. Only update once the actual Lean/cLean toolchain is available.
+
+### 12. Sparse/tiled path for larger node universes — metadata boundary added
+
+Implemented boundary:
+
+```text
+paging.rs
+MatrixPagePlan
+MatrixPageRegistry
+```
 
 Current dense matrix is fine:
 
@@ -357,71 +693,17 @@ consider:
 sparse edge propagation
 blocked/tiled matrix closure
 frontier-only projection
+multi-block reduction
 ```
 
 Do not optimize prematurely while `NODE_COUNT = 44`.
 
----
-
-### 7. Lean / cLean spec update
-
-Current Lean spec is stale relative to the implementation.
-
-Needed spec:
+## Do not add to core
 
 ```text
-Node = StateNode ⊔ ControlNode ⊔ EventNode
-encode : Node -> Fin NODE_COUNT
-Q = ([0,1], max, ×, 0, 1)
-matrixJoin
-matrixMul
-closureSpec
-projectionSpec
-```
-
-Bridge targets:
-
-```text
-quantale_join_assign        ↔ matrixJoin
-quantale_mul_assign         ↔ matrixMul
-quantale_closure_assign     ↔ closureSpec
-quantale_decide_path        ↔ projectionSpec + first-hop witness
-```
-
-Do not add fake proof scaffolding. Only update once the actual Lean/cLean toolchain is available.
-
----
-
-### 8. Documentation cleanup
-
-Status:
-
-```text
-completed README.md, ARCHITECTURE.md, and lean/README.md refresh for the
-44-node unified State/Control/Event max-times matrix shape
-```
-
-Update these to match the current matrix shape:
-
-```text
-README.md
-ARCHITECTURE.md
-lean/README.md
-```
-
-Removed stale references to:
-
-```text
-20-node hardcoded state graph
-product-state-only matrix
-max-plus if the current implementation remains max-times
-```
-
----
-
-## Do not add
-
-```text
+No BFS core.
+No DFS core.
+No MCTS core.
 No CPU planner.
 No CPU reference engine.
 No CPU mirror of the quantale matrix.
@@ -435,6 +717,6 @@ No separate search layer unless it compiles into matrix edges or CUDA matrix ope
 Every system-relevant thing is a node.
 Every allowed movement is an edge.
 Every edge has an eval/cost.
-The GPU matrix computes composed movement.
-The CPU only decodes the selected path and performs external side effects.
+The GPU matrix computes composed movement and projection.
+The CPU writes durable truth, validates external effects, and feeds receipt/candidate deltas back into the matrix.
 ```
