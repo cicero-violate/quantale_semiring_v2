@@ -26,6 +26,14 @@
       "output_mode": "plan"
     },
     {
+      "node_name": "State::Memory",
+      "executable": "python3",
+      "static_args": ["assets/memory.py"],
+      "input_mapping": {
+        "stdin_mode": "json"
+      }
+    },
+    {
       "node_name": "Control::Repair",
       "executable": "python3",
       "static_args": ["assets/call_llm.py", "--template", "repair"],
