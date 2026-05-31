@@ -93,6 +93,56 @@ Projection
 → M := M ∨ ΔM
 ```
 
+
+## Tensor quantale engine
+
+The crate now includes a first-class three-layer tensor engine:
+
+```text
+T ∈ R^(3 × 44 × 44)
+```
+
+Layers:
+
+```text
+Layer 0: confidence/correctness  max-times  join=max  compose=×
+Layer 1: compute/time cost       min-plus   join=min  compose=+
+Layer 2: security/safety         max-min    join=max  compose=min
+```
+
+Primary tensor API:
+
+```text
+TensorEdge
+ProjectionBias
+ExecutionOutcome
+TensorQuantaleWorld
+TensorQuantaleWorld::from_tensor_edges()
+TensorQuantaleWorld::close()
+TensorQuantaleWorld::project()
+TensorQuantaleWorld::update_lattice_edge()
+TensorQuantaleWorld::decay()
+```
+
+Tensor CUDA kernels:
+
+```text
+tensor_quantale_reset
+tensor_quantale_embed_edges
+tensor_quantale_closure
+tensor_quantale_project
+tensor_quantale_update_edge
+tensor_quantale_decay
+```
+
+Projection blends the closed tensor using:
+
+```text
+score = α·confidence - β·cost + γ·safety
+```
+
+The tensor implementation is not a sidecar. Tensor state, tensor closure, tensor witnesses, blended projection, feedback updates, and decay are implemented as CUDA-resident buffers and kernels.
+
 ## Validation
 
 Current source state:
@@ -101,7 +151,8 @@ Current source state:
 cargo fmt --check ✓
 cargo check       ✓
 cargo test        ✓
-bench_quantale    ✓
+bench_quantale        ✓
+bench_tensor_quantale ✓
 39 tests passing
 ```
 

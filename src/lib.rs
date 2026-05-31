@@ -10,10 +10,10 @@ pub mod node;
 pub mod paging;
 pub mod path;
 pub mod plan;
-pub mod policy;
 pub mod projection;
-pub mod receipt;
+pub mod rule_delta;
 pub mod search;
+pub mod tensor;
 pub mod tlog;
 pub mod topology;
 pub mod transitions;
@@ -31,10 +31,10 @@ pub use node::*;
 pub use paging::*;
 pub use path::*;
 pub use plan::*;
-pub use policy::*;
 pub use projection::*;
-pub use receipt::*;
+pub use rule_delta::*;
 pub use search::*;
+pub use tensor::*;
 pub use tlog::*;
 pub use topology::*;
 pub use transitions::*;
@@ -45,13 +45,13 @@ mod tests {
     use super::*;
     use crate::{
         ControlNode, EventNode, ExecutionReceipt, MATRIX_LEN, NODE_COUNT, Node, StateNode,
-        build_receipt_edges, reconstruct_path_from_next_hop,
+        build_receipt_edges, reconstruct_path_from_witness_matrix,
     };
 
-    fn has_edge(edges: &[TransitionEdge], src: Node, dst: Node) -> bool {
-        edges.iter().any(|edge| {
-            edge.src == src.encode() && edge.dst == dst.encode() && edge.value > Q_BOTTOM
-        })
+    fn has_edge(edges: &[LatticeEdge], src: Node, dst: Node) -> bool {
+        edges
+            .iter()
+            .any(|edge| edge.src == src.encode() && edge.dst == dst.encode() && edge.value > BOTTOM)
     }
 
     #[test]
@@ -213,55 +213,56 @@ mod tests {
     }
 
     #[test]
-    fn reconstruct_path_from_next_hop_returns_direct_path() {
+    fn reconstruct_path_from_witness_matrix_returns_direct_path() {
         let src = Node::state(StateNode::Goal);
         let dst = Node::control(ControlNode::GateInput);
-        let mut next_hop = vec![-1_i32; MATRIX_LEN];
-        next_hop[src.encode() as usize * NODE_COUNT + dst.encode() as usize] = dst.encode();
+        let mut witness_matrix = vec![-1_i32; MATRIX_LEN];
+        witness_matrix[src.encode() as usize * NODE_COUNT + dst.encode() as usize] = dst.encode();
 
-        let path = reconstruct_path_from_next_hop(&next_hop, src, dst).unwrap();
+        let path = reconstruct_path_from_witness_matrix(&witness_matrix, src, dst).unwrap();
 
         assert_eq!(path, vec![src, dst]);
     }
 
     #[test]
-    fn reconstruct_path_from_next_hop_walks_multiple_hops() {
+    fn reconstruct_path_from_witness_matrix_walks_multiple_hops() {
         let src = Node::state(StateNode::Goal);
         let gate = Node::control(ControlNode::GateInput);
         let event = Node::event(EventNode::FactArrived);
         let dst = Node::state(StateNode::Input);
-        let mut next_hop = vec![-1_i32; MATRIX_LEN];
-        next_hop[src.encode() as usize * NODE_COUNT + dst.encode() as usize] = gate.encode();
-        next_hop[gate.encode() as usize * NODE_COUNT + dst.encode() as usize] = event.encode();
-        next_hop[event.encode() as usize * NODE_COUNT + dst.encode() as usize] = dst.encode();
+        let mut witness_matrix = vec![-1_i32; MATRIX_LEN];
+        witness_matrix[src.encode() as usize * NODE_COUNT + dst.encode() as usize] = gate.encode();
+        witness_matrix[gate.encode() as usize * NODE_COUNT + dst.encode() as usize] =
+            event.encode();
+        witness_matrix[event.encode() as usize * NODE_COUNT + dst.encode() as usize] = dst.encode();
 
-        let path = reconstruct_path_from_next_hop(&next_hop, src, dst).unwrap();
+        let path = reconstruct_path_from_witness_matrix(&witness_matrix, src, dst).unwrap();
 
         assert_eq!(path, vec![src, gate, event, dst]);
     }
 
     #[test]
-    fn reconstruct_path_from_next_hop_rejects_missing_witness() {
+    fn reconstruct_path_from_witness_matrix_rejects_missing_witness() {
         let src = Node::state(StateNode::Goal);
         let dst = Node::state(StateNode::Input);
-        let next_hop = vec![-1_i32; MATRIX_LEN];
+        let witness_matrix = vec![-1_i32; MATRIX_LEN];
 
-        let err = reconstruct_path_from_next_hop(&next_hop, src, dst).unwrap_err();
+        let err = reconstruct_path_from_witness_matrix(&witness_matrix, src, dst).unwrap_err();
 
         assert_eq!(err.operation, "input");
-        assert!(err.message.contains("missing next-hop witness"));
+        assert!(err.message.contains("missing witness witness"));
     }
 
     #[test]
-    fn reconstruct_path_from_next_hop_rejects_cycle() {
+    fn reconstruct_path_from_witness_matrix_rejects_cycle() {
         let src = Node::state(StateNode::Goal);
         let mid = Node::control(ControlNode::GateInput);
         let dst = Node::state(StateNode::Input);
-        let mut next_hop = vec![-1_i32; MATRIX_LEN];
-        next_hop[src.encode() as usize * NODE_COUNT + dst.encode() as usize] = mid.encode();
-        next_hop[mid.encode() as usize * NODE_COUNT + dst.encode() as usize] = src.encode();
+        let mut witness_matrix = vec![-1_i32; MATRIX_LEN];
+        witness_matrix[src.encode() as usize * NODE_COUNT + dst.encode() as usize] = mid.encode();
+        witness_matrix[mid.encode() as usize * NODE_COUNT + dst.encode() as usize] = src.encode();
 
-        let err = reconstruct_path_from_next_hop(&next_hop, src, dst).unwrap_err();
+        let err = reconstruct_path_from_witness_matrix(&witness_matrix, src, dst).unwrap_err();
 
         assert_eq!(err.operation, "input");
         assert!(err.message.contains("did not converge"));
@@ -342,7 +343,7 @@ mod tests {
             blocked: 0,
         };
         let receipt = ExecutionReceipt::accepted(0.88, 0.91, 0.93);
-        let edges = vec![TransitionEdge::from_nodes(
+        let edges = vec![LatticeEdge::from_nodes(
             Node::state(StateNode::Search),
             Node::event(EventNode::CandidateFound),
             0.90,
@@ -359,7 +360,7 @@ mod tests {
         assert_eq!(records[0].kind, TlogRecordKind::CudaReport);
         assert_eq!(records[1].kind, TlogRecordKind::Decision);
         assert_eq!(records[2].kind, TlogRecordKind::Receipt);
-        assert_eq!(records[3].kind, TlogRecordKind::TransitionEdges);
+        assert_eq!(records[3].kind, TlogRecordKind::LatticeEdges);
         assert_eq!(records[0].sequence, 0);
         assert_eq!(records[3].sequence, 3);
 
@@ -450,7 +451,7 @@ mod tests {
         let right = QuantaleWeight::new(0.8);
 
         assert_eq!(QuantaleWeight::new(2.0).raw(), Q_UNIT);
-        assert_eq!(QuantaleWeight::new(f32::NAN).raw(), Q_BOTTOM);
+        assert_eq!(QuantaleWeight::new(f32::NAN).raw(), BOTTOM);
         assert_eq!(left.join(right).raw(), 0.8);
         assert!((left.compose(right).raw() - 0.4).abs() <= f32::EPSILON);
     }

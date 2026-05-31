@@ -29,6 +29,61 @@ frontier_step
 end_to_end_tick
 ```
 
+
+## Run tensor benchmark
+
+```bash
+cargo run --bin bench_tensor_quantale -- 100
+cargo run --release --bin bench_tensor_quantale -- 100
+```
+
+The tensor benchmark measures:
+
+```text
+tensor_closure
+tensor_projection
+tensor_decay
+```
+
+## Tensor engine
+
+Create tensor edges directly:
+
+```rust
+use quantale_semiring_v2::{TensorEdge, TensorQuantaleWorld, ProjectionBias};
+
+let edges = [
+    TensorEdge::new(src, dst, 0.90, 2.0, 0.95),
+];
+let mut world = TensorQuantaleWorld::from_tensor_edges(&edges)?;
+world.close()?;
+let decision = world.project(ProjectionBias::default())?;
+```
+
+Layer semantics:
+
+```text
+confidence: max-times
+cost:       min-plus
+safety:     max-min
+```
+
+Projection score:
+
+```text
+score = α·confidence - β·cost + γ·safety
+```
+
+Feedback updates:
+
+```rust
+world.update_lattice_edge(src, dst, ExecutionOutcome::Success)?;
+world.update_lattice_edge(src, dst, ExecutionOutcome::Failure)?;
+world.update_lattice_edge(src, dst, ExecutionOutcome::Timeout)?;
+world.update_lattice_edge(src, dst, ExecutionOutcome::SafetyViolation)?;
+world.decay(0.99)?;
+```
+
 ## Run orchestrator
 
 ```bash
