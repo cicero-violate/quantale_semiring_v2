@@ -82,6 +82,10 @@ blocked
 
 Paths are reconstructed from the witness matrix.
 
+## Default runtime
+
+`cargo run` starts the tensor quantale runtime. The scalar matrix engine remains available for compatibility and tests, but `main.rs` uses `TensorQuantaleWorld`.
+
 ## Execution feedback
 
 ```text
@@ -141,7 +145,7 @@ Projection blends the closed tensor using:
 score = α·confidence - β·cost + γ·safety
 ```
 
-The tensor implementation is not a sidecar. Tensor state, tensor closure, tensor witnesses, blended projection, feedback updates, and decay are implemented as CUDA-resident buffers and kernels.
+The tensor implementation is not a sidecar. Tensor state, tensor closure, tensor witnesses, blended projection, feedback updates, decay, frontier advancement, and the default runtime loop are implemented on the tensor path.
 
 ## Validation
 
@@ -153,7 +157,7 @@ cargo check       ✓
 cargo test        ✓
 bench_quantale        ✓
 bench_tensor_quantale ✓
-39 tests passing
+53 tests passing
 ```
 
 ## CUDA kernels

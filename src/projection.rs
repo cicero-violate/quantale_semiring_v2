@@ -3,7 +3,7 @@
 use cudarc::driver::DeviceRepr;
 use serde::Serialize;
 
-use crate::algebra::{Q_BOTTOM, Q_UNIT};
+use crate::algebra::{BOTTOM, Q_UNIT};
 use crate::node::{ControlNode, EventNode, Node, StateNode};
 
 #[repr(C)]
@@ -20,7 +20,7 @@ pub struct QuantaleCudaReport {
 
 unsafe impl DeviceRepr for QuantaleCudaReport {}
 
-/// Compact report for π(A*): the gated executable projection of quantale closure.
+/// Compact report for π(A*): the gated executable projection of least fixed point.
 #[repr(C)]
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize)]
@@ -89,7 +89,7 @@ impl DecisionReport {
 }
 
 pub fn format_quantale_value(value: f32) -> String {
-    if value <= Q_BOTTOM {
+    if value <= BOTTOM {
         "⊥".to_string()
     } else if (value - Q_UNIT).abs() <= f32::EPSILON {
         "e".to_string()

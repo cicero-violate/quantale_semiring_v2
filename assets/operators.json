@@ -23,7 +23,7 @@
       "input_mapping": {
         "stdin_mode": "json"
       },
-      "output_mode": "plan"
+      "output_mode": "tensor_plan"
     },
     {
       "node_name": "State::Memory",
@@ -40,7 +40,7 @@
       "input_mapping": {
         "stdin_mode": "json"
       },
-      "output_mode": "plan"
+      "output_mode": "tensor_plan"
     }
   ]
 }

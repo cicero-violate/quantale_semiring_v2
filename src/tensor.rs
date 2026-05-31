@@ -13,8 +13,10 @@ use serde::Serialize;
 
 use crate::edge::LatticeEdge;
 use crate::error::CudaError;
-use crate::node::{MATRIX_LEN, NODE_COUNT, START_NODE, THREAD_COUNT};
+use crate::node::{MATRIX_LEN, NODE_COUNT, Node, START_NODE, THREAD_COUNT};
+use crate::path::reconstruct_path_from_witness_matrix;
 use crate::projection::DecisionReport;
+use crate::rule_delta::ProcessReceipt;
 
 pub const TENSOR_LAYER_COUNT: usize = 3;
 pub const TENSOR_LEN: usize = TENSOR_LAYER_COUNT * MATRIX_LEN;
@@ -99,6 +101,16 @@ impl ExecutionOutcome {
             Self::Failure => 1,
             Self::Timeout => 2,
             Self::SafetyViolation => 3,
+        }
+    }
+}
+
+impl From<&ProcessReceipt> for ExecutionOutcome {
+    fn from(receipt: &ProcessReceipt) -> Self {
+        match receipt.exit_code {
+            0 => Self::Success,
+            124 => Self::Timeout,
+            _ => Self::Failure,
         }
     }
 }
@@ -369,6 +381,39 @@ impl TensorQuantaleWorld {
         self.dev
             .dtoh_sync_copy(&self.witness)
             .map_err(|error| CudaError::new("dtoh_sync_copy tensor witness", error))
+    }
+
+    pub fn reconstruct_tensor_path(
+        &self,
+        layer: i32,
+        src: Node,
+        dst: Node,
+    ) -> Result<Vec<Node>, CudaError> {
+        if !(0..TENSOR_LAYER_COUNT as i32).contains(&layer) {
+            return Err(CudaError::invalid_input(format!(
+                "invalid tensor layer {layer}"
+            )));
+        }
+        let witness = self.witness()?;
+        let offset = layer as usize * MATRIX_LEN;
+        reconstruct_path_from_witness_matrix(&witness[offset..offset + MATRIX_LEN], src, dst)
+    }
+
+    pub fn reconstruct_projected_tensor_path(&self, layer: i32) -> Result<Vec<Node>, CudaError> {
+        let decision = self.decision_report()?;
+        let src = Node::decode(decision.selected_src).ok_or_else(|| {
+            CudaError::invalid_input(format!(
+                "cannot reconstruct tensor path with invalid selected_src {}",
+                decision.selected_src
+            ))
+        })?;
+        let dst = Node::decode(decision.selected_dst).ok_or_else(|| {
+            CudaError::invalid_input(format!(
+                "cannot reconstruct tensor path with invalid selected_dst {}",
+                decision.selected_dst
+            ))
+        })?;
+        self.reconstruct_tensor_path(layer, src, dst)
     }
 
     pub fn decision_report(&self) -> Result<DecisionReport, CudaError> {

@@ -2,12 +2,13 @@
 //!
 //! This module does not implement graph search, retrieval, or storage. External
 //! candidate generators pass concrete candidates here; this module scores and
-//! selects those candidates, then emits ordinary `TransitionEdge` deltas for the
+//! selects those candidates, then emits ordinary `LatticeEdge` deltas for the
 //! quantale matrix.
 
-use crate::algebra::Q_BOTTOM;
-use crate::edge::{Eval, TransitionEdge, edge};
+use crate::algebra::BOTTOM;
+use crate::edge::{Eval, LatticeEdge, edge};
 use crate::node::{EventNode, Node, StateNode};
+use crate::tensor::TensorEdge;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct DomainCandidate {
@@ -66,7 +67,7 @@ pub fn score_candidates(
     candidates
         .into_iter()
         .map(ScoredCandidate::from_candidate)
-        .filter(|candidate| candidate.score > Q_BOTTOM)
+        .filter(|candidate| candidate.score > BOTTOM)
         .collect()
 }
 
@@ -94,7 +95,7 @@ pub fn select_top_k(
 /// The returned edges are joined into the CUDA-resident transition matrix with
 /// the same max-times semantics as static transitions, policy edges, and
 /// receipt edges: `M := M ∨ M_search`.
-pub fn build_search_edges(top_k: &[ScoredCandidate]) -> Vec<TransitionEdge> {
+pub fn build_search_edges(top_k: &[ScoredCandidate]) -> Vec<LatticeEdge> {
     let mut edges = Vec::with_capacity(3);
 
     if top_k.is_empty() {
@@ -104,7 +105,7 @@ pub fn build_search_edges(top_k: &[ScoredCandidate]) -> Vec<TransitionEdge> {
     let best_score = top_k
         .iter()
         .map(|candidate| candidate.score)
-        .fold(Q_BOTTOM, f32::max);
+        .fold(BOTTOM, f32::max);
     let mean_score =
         top_k.iter().map(|candidate| candidate.score).sum::<f32>() / top_k.len() as f32;
 
@@ -130,7 +131,7 @@ pub fn build_search_edges(top_k: &[ScoredCandidate]) -> Vec<TransitionEdge> {
 pub fn build_search_delta_edges(
     candidates: impl IntoIterator<Item = DomainCandidate>,
     k: usize,
-) -> (Vec<ScoredCandidate>, Vec<TransitionEdge>) {
+) -> (Vec<ScoredCandidate>, Vec<LatticeEdge>) {
     let top_k = select_top_k(score_candidates(candidates), k);
     let edges = build_search_edges(&top_k);
     (top_k, edges)
@@ -144,6 +145,30 @@ pub fn build_search_delta_edges(
 pub fn build_candidate_edges(
     candidates: impl IntoIterator<Item = DomainCandidate>,
     k: usize,
-) -> (Vec<ScoredCandidate>, Vec<TransitionEdge>) {
+) -> (Vec<ScoredCandidate>, Vec<LatticeEdge>) {
     build_search_delta_edges(candidates, k)
+}
+
+/// Compile selected search candidates into tensor matrix edges.
+pub fn build_tensor_search_edges(top_k: &[ScoredCandidate]) -> Vec<TensorEdge> {
+    build_search_edges(top_k)
+        .into_iter()
+        .map(TensorEdge::from_scalar)
+        .collect()
+}
+
+pub fn build_tensor_search_delta_edges(
+    candidates: impl IntoIterator<Item = DomainCandidate>,
+    k: usize,
+) -> (Vec<ScoredCandidate>, Vec<TensorEdge>) {
+    let top_k = select_top_k(score_candidates(candidates), k);
+    let edges = build_tensor_search_edges(&top_k);
+    (top_k, edges)
+}
+
+pub fn build_tensor_candidate_edges(
+    candidates: impl IntoIterator<Item = DomainCandidate>,
+    k: usize,
+) -> (Vec<ScoredCandidate>, Vec<TensorEdge>) {
+    build_tensor_search_delta_edges(candidates, k)
 }

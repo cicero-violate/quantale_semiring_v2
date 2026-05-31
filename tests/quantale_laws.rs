@@ -1,6 +1,6 @@
 use quantale_semiring_v2::{
-    MATRIX_LEN, NODE_COUNT, Node, Q_BOTTOM, Q_UNIT, QuantaleWeight, StateNode,
-    reconstruct_path_from_next_hop,
+    BOTTOM, MATRIX_LEN, NODE_COUNT, Node, Q_UNIT, QuantaleWeight, StateNode,
+    reconstruct_path_from_witness_matrix,
 };
 
 fn close_dense(mut matrix: Vec<f32>) -> Vec<f32> {
@@ -11,7 +11,7 @@ fn close_dense(mut matrix: Vec<f32>) -> Vec<f32> {
     for k in 0..NODE_COUNT {
         for i in 0..NODE_COUNT {
             let ik = matrix[i * NODE_COUNT + k];
-            if ik <= Q_BOTTOM {
+            if ik <= BOTTOM {
                 continue;
             }
             for j in 0..NODE_COUNT {
@@ -47,7 +47,7 @@ fn quantale_compose_has_unit_and_bottom() {
 
 #[test]
 fn dense_closure_fixture_is_idempotent() {
-    let mut matrix = vec![Q_BOTTOM; MATRIX_LEN];
+    let mut matrix = vec![BOTTOM; MATRIX_LEN];
     let goal = Node::state(StateNode::Goal).encode() as usize;
     let input = Node::state(StateNode::Input).encode() as usize;
     let parse = Node::state(StateNode::Parse).encode() as usize;
@@ -63,15 +63,15 @@ fn dense_closure_fixture_is_idempotent() {
 }
 
 #[test]
-fn next_hop_witness_reconstructs_selected_path() {
+fn witness_matrix_witness_reconstructs_selected_path() {
     let src = Node::state(StateNode::Goal);
     let mid = Node::state(StateNode::Input);
     let dst = Node::state(StateNode::Parse);
-    let mut next_hop = vec![-1_i32; MATRIX_LEN];
-    next_hop[src.encode() as usize * NODE_COUNT + dst.encode() as usize] = mid.encode();
-    next_hop[mid.encode() as usize * NODE_COUNT + dst.encode() as usize] = dst.encode();
+    let mut witness_matrix = vec![-1_i32; MATRIX_LEN];
+    witness_matrix[src.encode() as usize * NODE_COUNT + dst.encode() as usize] = mid.encode();
+    witness_matrix[mid.encode() as usize * NODE_COUNT + dst.encode() as usize] = dst.encode();
 
-    let path = reconstruct_path_from_next_hop(&next_hop, src, dst).unwrap();
+    let path = reconstruct_path_from_witness_matrix(&witness_matrix, src, dst).unwrap();
 
     assert_eq!(path, vec![src, mid, dst]);
 }

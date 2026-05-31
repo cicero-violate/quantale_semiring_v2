@@ -90,15 +90,15 @@ world.decay(0.99)?;
 cargo run
 ```
 
-The runtime:
+The default executable uses `TensorQuantaleWorld`. The runtime:
 
 1. Creates a CUDA world.
 2. Loads topology edges.
 3. Seeds ingress candidates.
 4. Computes closure and projection.
 5. Executes the selected operator.
-6. Converts process results into receipt edges.
-7. Reinjects feedback into the graph.
+6. Converts process results into tensor receipt edges.
+7. Reinjects feedback into the tensor graph.
 8. Logs activity into quantale.tlog.
 
 ## Operators

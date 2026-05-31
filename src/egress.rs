@@ -7,7 +7,7 @@ use std::process::{Command, Stdio};
 use serde_json::Value;
 
 use crate::config::SystemConfig;
-use crate::receipt::ProcessReceipt;
+use crate::rule_delta::ProcessReceipt;
 
 pub struct UniversalExecutor {
     /// Mapping of Node Names to their generic CLI schemas loaded from operators.json.
@@ -36,9 +36,9 @@ impl UniversalExecutor {
 
     /// Return the declared `output_mode` for a node operator, if any.
     ///
-    /// Operators that emit a JSON edge plan should declare `"output_mode": "plan"`
+    /// Operators that emit a JSON tensor edge plan should declare `"output_mode": "tensor_plan"`
     /// in `operators.json`. The main loop uses this to decide whether to run
-    /// `compile_llm_plan` on the operator's stdout.
+    /// `compile_llm_tensor_plan` on the operator's stdout.
     pub fn output_mode<'a>(&'a self, node_name: &str) -> Option<&'a str> {
         self.operator_registry
             .get(node_name)

@@ -1,125 +1,108 @@
 # Architecture
 
-`quantale_semiring_v2` is a CUDA-first max-times matrix prototype over one unified node universe:
+`quantale_semiring_v2` is now a CUDA-first tensor quantale orchestrator.
+
+## Core tensor
+
+```text
+T ∈ R^(3 × 44 × 44)
+```
+
+Layers:
+
+```text
+Layer 0: confidence/correctness  max-times  join=max  compose=×
+Layer 1: compute/time cost       min-plus   join=min  compose=+
+Layer 2: security/safety         max-min    join=max  compose=min
+```
+
+## Node universe
 
 ```text
 N = StateNode ⊔ ControlNode ⊔ EventNode
-Q = ([0,1], max, ×, 0, 1)
-M ∈ Q^(44 × 44)
-```
-
-## Node groups
-
-```text
 StateNode   = 13
 ControlNode = 13
 EventNode   = 18
 NODE_COUNT  = 44
 MATRIX_LEN  = 1936
+TENSOR_LEN  = 5808
 ```
 
-### State nodes
+## GPU ownership
+
+CUDA owns:
 
 ```text
-Goal       = objective / initial active node
-Input      = accepted input surface
-Parse      = structured input parsing
-Map        = map parsed input into search space
-Search     = candidate discovery
-Score      = candidate scoring
-Select     = top-k or best candidate selection
-Plan       = plan construction
-Optimize   = optional plan optimization
-Execute    = external execution boundary
-Validate   = receipt/hash validation point
-Memory     = persistence point
-Learn      = learning/update point
+tensor[3 × 44 × 44]
+scratch[3 × 44 × 44]
+witness[3 × 44 × 44]
+scratch_witness[3 × 44 × 44]
+consumed[44 × 44]
+active[44]
+next_active[44]
+decision[1]
 ```
 
-### Control nodes
+Rust owns:
 
 ```text
-Allow, Block, Retry, Repair, Commit, Rollback, Halt,
-GateInput, GateExecution, GateReceipt, GateMemory, GateLearn,
-ChooseBest
+operator execution
+edge-delta upload
+compact report decoding
+transaction logging
 ```
 
-Control nodes are ordinary matrix nodes. Gates, commits, rollbacks, repair, and halt are not side channels.
+Rust does not own a CPU planner or a CPU mirror of the tensor.
 
-### Event nodes
+## Tensor runtime flow
 
 ```text
-FactArrived, InputAccepted, ParseOk, ParseErr, MapReady,
-CandidateFound, ScoreReady, TopKSelected, PlanReady, OptimizeReady,
-ExecuteStarted, ExecuteFinished, ReceiptAttached, ReceiptAccepted,
-ReceiptRejected, HashNonzero, MemoryWritten, LearnUpdated
+tensor topology edges
+  ↓
+TensorQuantaleWorld
+  ↓
+tensor_quantale_tick
+  ↓
+tensor_quantale_closure
+  ↓
+tensor_quantale_frontier_step
+  ↓
+operator execution
+  ↓
+ExecutionOutcome + ExecutionReceipt
+  ↓
+tensor feedback / tensor receipt edges
+  ↓
+T := T ∨ ΔT
 ```
 
-Events are ordinary matrix nodes. Receipt and memory events are represented directly in the graph.
+## Projection
 
-## Ownership boundary
+Projection blends the closed tensor:
 
 ```text
-Rust = launcher / transition-edge upload / compact report decoding / path decoding
-CUDA = transition matrix / closure / composition / witness matrix / projection
-NVRTC = runtime CUDA compilation path through cudarc
+score = α·confidence - β·cost + γ·safety
 ```
 
-Rust does not mirror `M` and does not implement a CPU planner or CPU closure engine. Rust may upload edge batches and may download compact reports or `next_hop[44 × 44]` for path reconstruction.
+The active frontier advances by selected first hop. The consumed mask prevents repeated first-hop execution from the same source.
 
-## Matrix state
+## Data assets
 
 ```text
-transition[44 × 44]          # A / A*
-scratch[44 × 44]             # composition and closure scratch
-previous[44 × 44]            # step comparison state
-next_hop[44 × 44]            # W witness matrix
-scratch_next_hop[44 × 44]    # witness scratch
-action/frontier buffers      # active[44], next_active[44]
-report[1]
-decision_report[1]
+assets/topology.json      graph structure and tensor edge defaults
+assets/rule_delta.json    policy/receipt tensor deltas
+assets/operators.json     OS process operator contracts
 ```
 
-## Path and decision flow
+## Legacy removals
+
+Removed:
 
 ```text
-1. Rust uploads TransitionEdge batches.
-2. CUDA joins edges into M.
-3. CUDA computes max-times closure/composition.
-4. CUDA projects π(A*) into DecisionReport.
-5. Rust decodes selected nodes and, when needed, downloads W to reconstruct a path.
+src/policy.rs
+src/receipt.rs
+assets/policy.json
+assets/receipt.json
 ```
 
-Path reconstruction uses only the witness matrix:
-
-```text
-path = src → W[src,dst] → W[W[src,dst],dst] → ... → dst
-```
-
-## Policy and receipt flow
-
-Policy and runtime receipts compile into matrix-edge deltas:
-
-```text
-build_policy_edges(policy)   -> Vec<TransitionEdge>
-build_receipt_edges(receipt) -> Vec<TransitionEdge>
-```
-
-These deltas are joined into the same matrix:
-
-```text
-M := M ∨ M_policy
-M := M ∨ M_receipt
-```
-
-Policy and receipt updates are represented as matrix-edge deltas joined into the same transition matrix; there is no projection gate-mask side channel in the live source.
-
-## Non-goals
-
-```text
-No CPU planner.
-No CPU reference engine.
-No CPU mirror of the quantale matrix.
-No hidden imperative control outside the matrix, except temporary execution I/O boundaries.
-No sparse/tiled implementation while NODE_COUNT = 44.
-```
+Policy and receipt routing now live in `src/rule_delta.rs` and `assets/rule_delta.json`.

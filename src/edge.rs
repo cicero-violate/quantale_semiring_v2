@@ -7,15 +7,15 @@ use crate::node::Node;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
-pub struct TransitionEdge {
+pub struct LatticeEdge {
     pub src: i32,
     pub dst: i32,
     pub value: f32,
 }
 
-unsafe impl DeviceRepr for TransitionEdge {}
+unsafe impl DeviceRepr for LatticeEdge {}
 
-impl TransitionEdge {
+impl LatticeEdge {
     pub const fn new(src: i32, dst: i32, value: f32) -> Self {
         Self { src, dst, value }
     }
@@ -65,10 +65,10 @@ impl Eval {
     }
 }
 
-pub const fn edge(src: Node, dst: Node, value: f32) -> TransitionEdge {
-    TransitionEdge::from_nodes(src, dst, value)
+pub const fn edge(src: Node, dst: Node, value: f32) -> LatticeEdge {
+    LatticeEdge::from_nodes(src, dst, value)
 }
 
-pub fn edge_eval(src: Node, dst: Node, eval: Eval) -> TransitionEdge {
-    TransitionEdge::from_nodes(src, dst, eval.weight())
+pub fn edge_eval(src: Node, dst: Node, eval: Eval) -> LatticeEdge {
+    LatticeEdge::from_nodes(src, dst, eval.weight())
 }

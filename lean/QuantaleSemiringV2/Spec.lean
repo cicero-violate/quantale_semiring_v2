@@ -10,9 +10,9 @@
   - Keep CPU out of the executable state model.
 
   The CUDA/cLean refinement boundary should connect:
-    quantale_join_assign    ↦ matrixJoin
-    quantale_mul_assign     ↦ matrixMul
-    quantale_closure_assign ↦ closureSpec
+    quantale_supremum_assign    ↦ matrixJoin
+    quantale_tensor_assign     ↦ matrixMul
+    quantale_least_fixed_point ↦ closureSpec
 -/
 
 namespace QuantaleSemiringV2
@@ -120,7 +120,7 @@ def matrixIdentity {n : Nat} : Matrix n :=
   fun i j => if i = j then Weight.finite 0 else ⊥q
 
 /-
-  cLean should prove that quantale_closure_assign implements this relation.
+  cLean should prove that quantale_least_fixed_point implements this relation.
   It is intentionally a spec relation rather than a CPU executable.
 -/
 def IsClosure {n : Nat} (A C : Matrix n) : Prop :=
@@ -153,9 +153,9 @@ theorem matrix_join_bottom {n : Nat} (A : Matrix n) : matrixJoin A matrixBottom 
   These constants are the proof boundary for cLean integration.
 -/
 structure CudaKernelContract where
-  join_assign_refines : Prop
-  mul_assign_refines : Prop
-  closure_assign_refines : Prop
+  supremum_assign_refines : Prop
+  tensor_assign_refines : Prop
+  star_assign_refines : Prop
   step_preserves_gpu_resident_state : Prop
 
 end QuantaleSemiringV2

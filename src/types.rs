@@ -5,14 +5,14 @@ use std::ops::{Add, AddAssign, Mul, MulAssign};
 
 use serde::{Deserialize, Serialize};
 
-use crate::algebra::{Q_BOTTOM, Q_UNIT, clamp_quantale_value};
+use crate::algebra::{BOTTOM, Q_UNIT, clamp_quantale_value};
 
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 pub struct QuantaleWeight(pub f32);
 
 impl QuantaleWeight {
-    pub const BOTTOM: Self = Self(Q_BOTTOM);
+    pub const BOTTOM: Self = Self(BOTTOM);
     pub const UNIT: Self = Self(Q_UNIT);
 
     pub const fn zero() -> Self {

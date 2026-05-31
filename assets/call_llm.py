@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """External LLM operator — reads a JSON context payload from stdin, calls the
-browser-router's OpenAI-compatible endpoint, and writes a flat JSON edge array
-to stdout for direct ingestion by src/plan.rs.
+browser-router's OpenAI-compatible endpoint, and writes a flat JSON tensor-edge
+array to stdout for direct ingestion by src/plan.rs.
 
 Exit codes:
-  0   success (JSON edge array on stdout)
+  0   success (JSON tensor-edge array on stdout)
   1   API / HTTP error
   127 connection failure (browser-router not reachable)
 """
@@ -35,19 +35,21 @@ VALID_NODES = (
 )
 
 _EDGE_SCHEMA = """\
-Output ONLY a JSON array of edge objects — no prose, no markdown fences.
+Output ONLY a JSON array of tensor edge objects — no prose, no markdown fences.
 Each object must have exactly these keys:
-  "from"   : a node name from the valid set below
-  "to"     : a node name from the valid set below
-  "weight" : a float in [0.0, 1.0] representing transition strength
+  "from"       : a node name from the valid set below
+  "to"         : a node name from the valid set below
+  "confidence" : a float in [0.0, 1.0] for correctness/confidence
+  "cost"       : a nonnegative float for compute/time cost
+  "safety"     : a float in [0.0, 1.0] for security/safety
 
 Valid node names:
 {nodes}
 
 Example output:
 [
-  {{"from": "State::Plan", "to": "State::Optimize", "weight": 0.95}},
-  {{"from": "State::Optimize", "to": "State::Execute", "weight": 0.90}}
+  {{"from": "State::Plan", "to": "State::Optimize", "confidence": 0.95, "cost": 2.0, "safety": 0.90}},
+  {{"from": "State::Optimize", "to": "State::Execute", "confidence": 0.90, "cost": 3.0, "safety": 0.88}}
 ]"""
 
 PROMPT_TEMPLATES = {

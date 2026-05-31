@@ -7,16 +7,18 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::edge::TransitionEdge;
+use crate::edge::LatticeEdge;
 use crate::projection::{DecisionReport, QuantaleCudaReport};
-use crate::receipt::{ExecutionReceipt, ProcessReceipt};
+use crate::rule_delta::{ExecutionReceipt, ProcessReceipt};
+use crate::tensor::TensorEdge;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TlogRecordKind {
     Decision,
     CudaReport,
     Receipt,
-    TransitionEdges,
+    LatticeEdges,
+    TensorEdges,
     AgentStep,
 }
 
@@ -92,9 +94,16 @@ impl TlogWriter {
         )
     }
 
-    pub fn append_edges(&mut self, label: &str, edges: &[TransitionEdge]) -> io::Result<u64> {
+    pub fn append_edges(&mut self, label: &str, edges: &[LatticeEdge]) -> io::Result<u64> {
         self.append_record(
-            TlogRecordKind::TransitionEdges,
+            TlogRecordKind::LatticeEdges,
+            &json!({ "label": label, "edges": edges }),
+        )
+    }
+
+    pub fn append_tensor_edges(&mut self, label: &str, edges: &[TensorEdge]) -> io::Result<u64> {
+        self.append_record(
+            TlogRecordKind::TensorEdges,
             &json!({ "label": label, "edges": edges }),
         )
     }

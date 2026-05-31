@@ -1,17 +1,18 @@
 use serde_json::json;
 
 use quantale_semiring_v2::{
-    CudaWorld, DomainCandidate, InboundEvent, IngressServer, Node, SystemConfig, TlogWriter,
-    UniversalExecutor, build_candidate_edges, build_receipt_edges, compile_llm_plan,
-    drain_available, format_quantale_value, node_name,
+    DomainCandidate, ExecutionOutcome, InboundEvent, IngressServer, LAYER_CONFIDENCE, Node,
+    ProjectionBias, SystemConfig, TensorQuantaleWorld, TlogWriter, UniversalExecutor,
+    build_tensor_candidate_edges, build_tensor_receipt_edges, compile_llm_tensor_plan,
+    drain_available, format_quantale_value, full_tensor_transition_edges, node_name,
 };
 
 fn main() {
     let config = SystemConfig::default();
+    let projection_bias = ProjectionBias::default();
 
     let (ingress, inbound) = IngressServer::new();
-    if let Err(error) =
-        ingress.push_event(InboundEvent::new("demo", "candidate", b"seed".to_vec()))
+    if let Err(error) = ingress.push_event(InboundEvent::new("demo", "candidate", b"seed".to_vec()))
     {
         eprintln!("{error}");
         std::process::exit(1);
@@ -26,16 +27,19 @@ fn main() {
     };
 
     let executor = UniversalExecutor::from_config(&config);
-
-    let mut world = match CudaWorld::new() {
+    let tensor_edges = full_tensor_transition_edges();
+    let mut world = match TensorQuantaleWorld::from_tensor_edges(&tensor_edges) {
         Ok(world) => world,
         Err(error) => {
             eprintln!("{error}");
             std::process::exit(1);
         }
     };
+    if let Err(error) = tlog.append_tensor_edges("topology:tensor", &tensor_edges) {
+        eprintln!("{error}");
+        std::process::exit(1);
+    }
 
-    // Seed ingress candidates into the GPU matrix before the agent loop starts.
     for event in drain_available(&inbound, 32) {
         let candidate = DomainCandidate::new(
             format!("{}:{}", event.source, event.event_name),
@@ -45,53 +49,40 @@ fn main() {
             0.02,
             0.04,
         );
-        let (_top, edges) = build_candidate_edges([candidate], 1);
+        let (_top, edges) = build_tensor_candidate_edges([candidate], 1);
         if !edges.is_empty() {
-            if let Err(error) = world.load_edges(&edges) {
+            if let Err(error) = world.embed_tensor_edges(&edges) {
                 eprintln!("{error}");
                 std::process::exit(1);
             }
-            if let Err(error) = tlog.append_edges("ingress:candidate", &edges) {
+            if let Err(error) = tlog.append_tensor_edges("ingress:candidate", &edges) {
                 eprintln!("{error}");
                 std::process::exit(1);
             }
         }
     }
 
-    println!("Starting Quantale Neuro-Symbolic Agent Loop...");
+    println!("Starting Tensor Quantale Neuro-Symbolic Agent Loop...");
 
-    // The dynamic payload fed into the executor at each step.
-    // After a successful LLM call the stdout content replaces this.
     let mut current_payload = json!({ "context": "Optimize memory allocations across threads" });
 
     for _ in 0..config.max_ticks {
-        // Fused CUDA tick: compute quantale closure and project the frontier.
-        let (report, decision) = match world.tick() {
-            Ok(result) => result,
+        let decision = match world.tick(projection_bias) {
+            Ok(decision) => decision,
             Err(error) => {
                 eprintln!("{error}");
                 std::process::exit(1);
             }
         };
 
-        if let Err(error) = tlog.append_cuda_report(&report) {
-            eprintln!("{error}");
-            std::process::exit(1);
-        }
         if let Err(error) = tlog.append_decision(&decision) {
             eprintln!("{error}");
             std::process::exit(1);
         }
 
         println!(
-            "step={} best=({}->{}) value={} Goal->Execute={} Goal->Learn={} \
-             projection=({}->{}) first_hop={} dvalue={} action={:?} halted={} blocked={}",
-            report.step,
-            node_name(report.best_src),
-            node_name(report.best_dst),
-            format_quantale_value(report.best_value),
-            format_quantale_value(report.goal_to_execute),
-            format_quantale_value(report.goal_to_learn),
+            "step={} projection=({}->{}) first_hop={} score={} action={:?} halted={} blocked={}",
+            decision.step,
             node_name(decision.selected_src),
             node_name(decision.selected_dst),
             node_name(decision.first_hop),
@@ -102,88 +93,86 @@ fn main() {
         );
 
         if decision.halted != 0 {
-            println!("System execution chain reached terminal halt safely.");
+            println!("Tensor execution chain reached terminal halt safely.");
             break;
         }
 
         if decision.blocked != 0 {
-            // GPU could not advance the frontier; no operator to run this tick.
             continue;
         }
 
-        // Decode the frontier node to resolve its operator name.
-        let Some(active_node) = Node::decode(decision.selected_dst) else {
-            eprintln!("Invalid selected_dst index: {}", decision.selected_dst);
+        let Some(active_node) = Node::decode(decision.first_hop) else {
+            eprintln!("Invalid first_hop index: {}", decision.first_hop);
             break;
         };
         let active_node_name = active_node.name();
 
-        println!("[STEP] Frontier advanced to node: {active_node_name}");
+        println!("[STEP] Tensor frontier advanced to node: {active_node_name}");
 
-        // Run the operator mapped to this node (may be an LLM call, a patch, tests, etc.).
         let process_receipt =
             executor.execute_abstract_node_blocking(active_node_name, &current_payload);
-        let feedback_weight = process_receipt.calculate_algebraic_feedback();
+        let outcome = ExecutionOutcome::from(&process_receipt);
 
         println!(
-            "[STEP] operator={} exit={} weight={} stdout_len={}",
+            "[STEP] operator={} exit={} outcome={:?} stdout_len={}",
             active_node_name,
             process_receipt.exit_code,
-            feedback_weight.raw(),
+            outcome,
             process_receipt.stdout_payload.len(),
         );
         if !process_receipt.stderr_payload.is_empty() {
             eprintln!("[STEP] stderr: {}", process_receipt.stderr_payload.trim());
         }
 
-        // Flash the feedback weight onto the selected edge in GPU VRAM.
         if let Err(error) =
-            world.inject_dynamic_weight(decision.selected_src, decision.selected_dst, feedback_weight.raw())
+            world.update_lattice_edge(decision.selected_src, decision.first_hop, outcome)
         {
             eprintln!("{error}");
             std::process::exit(1);
         }
 
-        // Also apply the structured receipt routing edges (ReceiptAccepted/Rejected paths).
         let execution_receipt = process_receipt.to_execution_receipt();
-        if let Err(error) = world.join_receipt_edges(execution_receipt.clone()) {
+        let receipt_edges = build_tensor_receipt_edges(execution_receipt.clone());
+        if let Err(error) = world.embed_tensor_edges(&receipt_edges) {
             eprintln!("{error}");
             std::process::exit(1);
         }
-        let receipt_edges = build_receipt_edges(execution_receipt.clone());
         if let Err(error) = tlog.append_receipt(&execution_receipt) {
             eprintln!("{error}");
             std::process::exit(1);
         }
-        if let Err(error) = tlog.append_edges("egress:receipt", &receipt_edges) {
+        if let Err(error) = tlog.append_tensor_edges("egress:receipt", &receipt_edges) {
             eprintln!("{error}");
             std::process::exit(1);
         }
 
-        // Only compile a JSON edge plan if the operator explicitly declares output_mode=plan.
-        // Other operators (cargo test, patch, etc.) produce non-plan stdout that should
-        // never be parsed as an edge array or penalised for not being one.
         if process_receipt.exit_code == 0 && !process_receipt.stdout_payload.is_empty() {
-            if executor.output_mode(active_node_name) == Some("plan") {
-                match compile_llm_plan(&process_receipt.stdout_payload) {
+            if executor.output_mode(active_node_name) == Some("tensor_plan") {
+                match compile_llm_tensor_plan(&process_receipt.stdout_payload) {
                     Ok(plan_edges) if !plan_edges.is_empty() => {
-                        println!("[ALGEBRA] LLM plan: {} edge(s) → VRAM", plan_edges.len());
-                        if let Err(error) = world.load_edges(&plan_edges) {
+                        println!(
+                            "[ALGEBRA] Tensor LLM plan: {} edge(s) → VRAM",
+                            plan_edges.len()
+                        );
+                        if let Err(error) = world.embed_tensor_edges(&plan_edges) {
                             eprintln!("{error}");
                             std::process::exit(1);
                         }
-                        if let Err(error) = tlog.append_edges("plan:llm", &plan_edges) {
+                        if let Err(error) = tlog.append_tensor_edges("plan:tensor_llm", &plan_edges)
+                        {
                             eprintln!("{error}");
                             std::process::exit(1);
                         }
                     }
                     Ok(_) => {}
                     Err(reason) => {
-                        println!("[WARN] LLM plan invalid ({reason}); penalising edge");
-                        if let Err(error) = world.inject_dynamic_weight(
+                        println!(
+                            "[WARN] Tensor LLM plan invalid ({reason}); dampening selected edge"
+                        );
+                        if let Err(error) = world.update_lattice_edge(
                             decision.selected_src,
-                            decision.selected_dst,
-                            0.0,
+                            decision.first_hop,
+                            ExecutionOutcome::Failure,
                         ) {
                             eprintln!("{error}");
                             std::process::exit(1);
@@ -191,15 +180,20 @@ fn main() {
                     }
                 }
             }
-            // Always carry stdout forward as context for the next prompt.
             current_payload = json!({ "context": process_receipt.stdout_payload });
         }
 
-        // Append fused step record to the transaction log.
+        if let Err(error) = world.decay(0.995) {
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
+
         if let Err(error) = tlog.log_step(&process_receipt, &decision) {
             eprintln!("{error}");
             std::process::exit(1);
         }
+
+        let _ = world.reconstruct_projected_tensor_path(LAYER_CONFIDENCE);
     }
 
     if let Err(error) = tlog.flush() {

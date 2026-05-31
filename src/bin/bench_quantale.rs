@@ -78,10 +78,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut closure_world = CudaWorld::from_edges(&edges)?;
     let closure = bench(iterations, || {
         closure_world.reset()?;
-        closure_world.load_edges(&edges)?;
+        closure_world.embed_elements(&edges)?;
         closure_world.synchronize()?;
         timed(|| {
-            closure_world.closure_assign()?;
+            closure_world.star_assign()?;
             closure_world.synchronize()?;
             Ok(())
         })
@@ -89,7 +89,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     print_sample("closure", closure);
 
     let mut projection_world = CudaWorld::from_edges(&edges)?;
-    projection_world.closure_assign()?;
+    projection_world.star_assign()?;
     projection_world.synchronize()?;
     let projection = bench(iterations, || {
         timed(|| {

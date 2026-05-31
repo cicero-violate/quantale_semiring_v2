@@ -4,7 +4,7 @@ use quantale_semiring_v2::{
     drain_available, read_record_meta,
 };
 
-fn has_dst(edges: &[quantale_semiring_v2::TransitionEdge], dst: Node) -> bool {
+fn has_dst(edges: &[quantale_semiring_v2::LatticeEdge], dst: Node) -> bool {
     edges.iter().any(|edge| edge.dst == dst.encode())
 }
 
@@ -39,7 +39,7 @@ fn failure_receipt_routes_to_rejected_rollback_repair() {
 #[test]
 fn blocked_frontier_fixture_does_not_advance_open_loop() {
     let active = [Node::state(StateNode::Goal)];
-    let available_edges: [quantale_semiring_v2::TransitionEdge; 0] = [];
+    let available_edges: [quantale_semiring_v2::LatticeEdge; 0] = [];
 
     assert_eq!(active, [Node::state(StateNode::Goal)]);
     assert!(available_edges.is_empty());
