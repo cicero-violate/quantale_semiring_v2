@@ -131,3 +131,42 @@ fn gpu_tensor_update_and_decay_mutate_layers() {
     assert!(tensor[tensor_idx(LAYER_COST, goal, plan)] > 2.0);
     assert_eq!(tensor[tensor_idx(LAYER_SAFETY, goal, plan)], 0.0);
 }
+
+#[test]
+fn gpu_tensor_frontier_step_advances_active_state() {
+    let goal = Node::state(StateNode::Goal).encode();
+    let plan = Node::state(StateNode::Plan).encode();
+    let execute = Node::state(StateNode::Execute).encode();
+    let edges = [
+        TensorEdge::new(goal, plan, 0.95, 1.0, 0.95),
+        TensorEdge::new(plan, execute, 0.90, 1.0, 0.90),
+    ];
+    let mut world = TensorQuantaleWorld::from_tensor_edges(&edges).unwrap();
+    world.close().unwrap();
+    let first = world.frontier_step(ProjectionBias::default()).unwrap();
+    assert_eq!(first.blocked, 0);
+    assert_eq!(first.first_hop, plan);
+
+    let second = world.frontier_step(ProjectionBias::default()).unwrap();
+    assert_eq!(second.blocked, 0);
+    assert_eq!(second.selected_src, plan);
+    assert_eq!(second.first_hop, execute);
+}
+
+#[test]
+fn gpu_tensor_tick_closes_and_advances_frontier() {
+    let goal = Node::state(StateNode::Goal).encode();
+    let plan = Node::state(StateNode::Plan).encode();
+    let execute = Node::state(StateNode::Execute).encode();
+    let edges = [
+        TensorEdge::new(goal, plan, 0.95, 1.0, 0.95),
+        TensorEdge::new(plan, execute, 0.90, 1.0, 0.90),
+    ];
+    let mut world = TensorQuantaleWorld::from_tensor_edges(&edges).unwrap();
+    let decision = world.tick(ProjectionBias::default()).unwrap();
+    assert_eq!(decision.blocked, 0);
+    assert_eq!(decision.first_hop, plan);
+
+    let tensor = world.tensor().unwrap();
+    assert!((tensor[tensor_idx(LAYER_CONFIDENCE, goal, execute)] - 0.855).abs() < 1e-5);
+}

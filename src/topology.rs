@@ -6,10 +6,11 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use crate::algebra::{Q_BOTTOM, Q_UNIT};
-use crate::edge::TransitionEdge;
+use crate::algebra::{BOTTOM, Q_UNIT};
+use crate::edge::LatticeEdge;
 use crate::error::CudaError;
 use crate::node::{MATRIX_LEN, NODE_COUNT, Node};
+use crate::tensor::TensorEdge;
 use crate::types::QuantaleWeight;
 
 pub const DEFAULT_TOPOLOGY_JSON: &str = include_str!("../assets/topology.json");
@@ -27,6 +28,12 @@ pub struct TopologyTransition {
     pub from: String,
     pub to: String,
     pub default_weight: QuantaleWeight,
+    #[serde(default)]
+    pub confidence: Option<QuantaleWeight>,
+    #[serde(default)]
+    pub cost: Option<f32>,
+    #[serde(default)]
+    pub safety: Option<QuantaleWeight>,
     #[serde(default)]
     pub policy_effect: Option<String>,
 }
@@ -53,7 +60,8 @@ pub struct CompiledTopology {
     pub node_count: usize,
     pub matrix_len: usize,
     pub registry: NodeRegistry,
-    pub edges: Vec<TransitionEdge>,
+    pub edges: Vec<LatticeEdge>,
+    pub tensor_edges: Vec<TensorEdge>,
     pub pages: Vec<TopologyPage>,
 }
 
@@ -99,6 +107,7 @@ impl GraphTopology {
     pub fn compile(&self) -> Result<CompiledTopology, CudaError> {
         let registry = self.build_registry()?;
         let mut edges = Vec::with_capacity(self.transitions.len());
+        let mut tensor_edges = Vec::with_capacity(self.transitions.len());
 
         for transition in &self.transitions {
             let src = registry.id_of(&transition.from).ok_or_else(|| {
@@ -107,10 +116,17 @@ impl GraphTopology {
             let dst = registry.id_of(&transition.to).ok_or_else(|| {
                 CudaError::invalid_input(format!("destination '{}' missing", transition.to))
             })?;
-            edges.push(TransitionEdge::new(
+            let scalar_weight = transition.default_weight.raw();
+            edges.push(LatticeEdge::new(src as i32, dst as i32, scalar_weight));
+            tensor_edges.push(TensorEdge::new(
                 src as i32,
                 dst as i32,
-                transition.default_weight.raw(),
+                transition
+                    .confidence
+                    .unwrap_or(transition.default_weight)
+                    .raw(),
+                transition.cost.unwrap_or(1.0 - scalar_weight),
+                transition.safety.unwrap_or(transition.default_weight).raw(),
             ));
         }
 
@@ -122,6 +138,7 @@ impl GraphTopology {
             matrix_len: registry.len() * registry.len(),
             registry,
             edges,
+            tensor_edges,
             pages: self.pages.clone(),
         })
     }
@@ -152,7 +169,7 @@ impl GraphTopology {
 
 impl CompiledTopology {
     pub fn dense_matrix(&self) -> Vec<f32> {
-        let mut matrix = vec![Q_BOTTOM; MATRIX_LEN];
+        let mut matrix = vec![BOTTOM; MATRIX_LEN];
         for edge in &self.edges {
             let idx = (edge.src as usize) * NODE_COUNT + edge.dst as usize;
             matrix[idx] = matrix[idx].max(edge.value);
@@ -164,8 +181,12 @@ impl CompiledTopology {
     }
 }
 
-pub fn load_default_topology_edges() -> Result<Vec<TransitionEdge>, CudaError> {
+pub fn load_default_topology_edges() -> Result<Vec<LatticeEdge>, CudaError> {
     Ok(GraphTopology::default_asset()?.compile()?.edges)
+}
+
+pub fn load_default_tensor_topology_edges() -> Result<Vec<TensorEdge>, CudaError> {
+    Ok(GraphTopology::default_asset()?.compile()?.tensor_edges)
 }
 
 fn validate_pages(registry: &NodeRegistry, pages: &[TopologyPage]) -> Result<(), CudaError> {
@@ -187,4 +208,59 @@ fn validate_pages(registry: &NodeRegistry, pages: &[TopologyPage]) -> Result<(),
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tensor_topology_fields_compile_to_tensor_edges() {
+        let raw = r#"{
+            "matrix_name": "test",
+            "nodes": [
+                {"id": 0, "name": "State::Goal", "type": "State"},
+                {"id": 1, "name": "State::Input", "type": "State"}
+            ],
+            "transitions": [
+                {
+                    "from": "State::Goal",
+                    "to": "State::Input",
+                    "default_weight": 0.7,
+                    "confidence": 0.9,
+                    "cost": 2.5,
+                    "safety": 0.8
+                }
+            ]
+        }"#;
+        let compiled = GraphTopology::from_json_str(raw)
+            .unwrap()
+            .compile()
+            .unwrap();
+        assert_eq!(compiled.edges[0].value, 0.7);
+        assert_eq!(compiled.tensor_edges[0].confidence, 0.9);
+        assert_eq!(compiled.tensor_edges[0].cost, 2.5);
+        assert_eq!(compiled.tensor_edges[0].safety, 0.8);
+    }
+
+    #[test]
+    fn tensor_topology_defaults_from_scalar_weight() {
+        let raw = r#"{
+            "matrix_name": "test",
+            "nodes": [
+                {"id": 0, "name": "State::Goal", "type": "State"},
+                {"id": 1, "name": "State::Input", "type": "State"}
+            ],
+            "transitions": [
+                {"from": "State::Goal", "to": "State::Input", "default_weight": 0.75}
+            ]
+        }"#;
+        let compiled = GraphTopology::from_json_str(raw)
+            .unwrap()
+            .compile()
+            .unwrap();
+        assert_eq!(compiled.tensor_edges[0].confidence, 0.75);
+        assert!((compiled.tensor_edges[0].cost - 0.25).abs() < f32::EPSILON);
+        assert_eq!(compiled.tensor_edges[0].safety, 0.75);
+    }
 }

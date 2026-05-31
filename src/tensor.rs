@@ -31,6 +31,8 @@ const CLOSURE_KERNEL: &str = "tensor_quantale_closure";
 const PROJECT_KERNEL: &str = "tensor_quantale_project";
 const UPDATE_KERNEL: &str = "tensor_quantale_update_edge";
 const DECAY_KERNEL: &str = "tensor_quantale_decay";
+const FRONTIER_STEP_KERNEL: &str = "tensor_quantale_frontier_step";
+const TICK_KERNEL: &str = "tensor_quantale_tick";
 const KERNEL_SOURCE: &str = include_str!("../cuda/quantale_world.cu");
 
 #[repr(C)]
@@ -109,6 +111,7 @@ pub struct TensorQuantaleWorld {
     scratch_witness: CudaSlice<i32>,
     consumed: CudaSlice<i32>,
     active: CudaSlice<i32>,
+    next_active: CudaSlice<i32>,
     decision: CudaSlice<DecisionReport>,
 }
 
@@ -127,6 +130,8 @@ impl TensorQuantaleWorld {
                 PROJECT_KERNEL,
                 UPDATE_KERNEL,
                 DECAY_KERNEL,
+                FRONTIER_STEP_KERNEL,
+                TICK_KERNEL,
             ],
         )
         .map_err(|error| CudaError::new("load_ptx tensor", error))?;
@@ -149,6 +154,9 @@ impl TensorQuantaleWorld {
         let active = dev
             .htod_copy(vec![0_i32; NODE_COUNT])
             .map_err(|error| CudaError::new("htod_copy tensor active", error))?;
+        let next_active = dev
+            .htod_copy(vec![0_i32; NODE_COUNT])
+            .map_err(|error| CudaError::new("htod_copy tensor next_active", error))?;
         let decision = dev
             .htod_copy(vec![DecisionReport::default()])
             .map_err(|error| CudaError::new("htod_copy tensor decision", error))?;
@@ -161,6 +169,7 @@ impl TensorQuantaleWorld {
             scratch_witness,
             consumed,
             active,
+            next_active,
             decision,
         };
         world.reset()?;
@@ -262,6 +271,63 @@ impl TensorQuantaleWorld {
             )
         }
         .map_err(|error| CudaError::new("tensor_quantale_project", error))?;
+        self.decision_report()
+    }
+
+    /// Project and advance the tensor frontier on CUDA.
+    pub fn frontier_step(&mut self, bias: ProjectionBias) -> Result<DecisionReport, CudaError> {
+        let bias_buffer = self
+            .dev
+            .htod_copy(vec![bias])
+            .map_err(|error| CudaError::new("htod_copy tensor frontier bias", error))?;
+        let kernel = self
+            .dev
+            .get_func(MODULE_NAME, FRONTIER_STEP_KERNEL)
+            .ok_or(CudaError::missing_function(FRONTIER_STEP_KERNEL))?;
+        unsafe {
+            kernel.launch(
+                kernel_config(),
+                (
+                    &self.tensor,
+                    &self.witness,
+                    &mut self.consumed,
+                    &mut self.active,
+                    &mut self.next_active,
+                    &bias_buffer,
+                    &mut self.decision,
+                ),
+            )
+        }
+        .map_err(|error| CudaError::new("tensor_quantale_frontier_step", error))?;
+        self.decision_report()
+    }
+
+    /// Fused tensor closure plus frontier projection/update.
+    pub fn tick(&mut self, bias: ProjectionBias) -> Result<DecisionReport, CudaError> {
+        let bias_buffer = self
+            .dev
+            .htod_copy(vec![bias])
+            .map_err(|error| CudaError::new("htod_copy tensor tick bias", error))?;
+        let kernel = self
+            .dev
+            .get_func(MODULE_NAME, TICK_KERNEL)
+            .ok_or(CudaError::missing_function(TICK_KERNEL))?;
+        unsafe {
+            kernel.launch(
+                kernel_config(),
+                (
+                    &mut self.tensor,
+                    &mut self.scratch,
+                    &mut self.witness,
+                    &mut self.consumed,
+                    &mut self.active,
+                    &mut self.next_active,
+                    &bias_buffer,
+                    &mut self.decision,
+                ),
+            )
+        }
+        .map_err(|error| CudaError::new("tensor_quantale_tick", error))?;
         self.decision_report()
     }
 

@@ -64,6 +64,9 @@ fn parse_line(line: &str, line_number: usize) -> Result<TopologyTransition, Cuda
         from: from.trim().to_string(),
         to: rest[..open].trim().to_string(),
         default_weight: QuantaleWeight::new(weight),
+        confidence: None,
+        cost: None,
+        safety: None,
         policy_effect: Some(action.trim().to_string()),
     })
 }
