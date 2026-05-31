@@ -1,3 +1,4 @@
 #!/usr/bin/env bash
 set -euo pipefail
-cargo run --release
+cargo run --bin  quantale_semiring_v2
+
