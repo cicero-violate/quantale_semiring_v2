@@ -1,14 +1,13 @@
-//! Policy and receipt evidence compiled into lattice-edge deltas.
+//! Policy and receipt evidence compiled into tensor-edge deltas.
 //!
 //! Rule routing is owned by `assets/rule_delta.json`; this module evaluates the
 //! current policy/receipt state against that data contract and compiles matching
-//! node-name edges into matrix deltas.
+//! node-name edges into tensor matrix deltas.
 
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::edge::LatticeEdge;
 use crate::tensor::TensorEdge;
 use crate::topology::GraphTopology;
 use crate::types::QuantaleWeight;
@@ -209,29 +208,6 @@ enum ReceiptWeight {
     Field(String),
 }
 
-/// Compile execution-side policy conditions into ordinary matrix edges.
-///
-/// The returned edges are intended to be joined into the CUDA-resident
-/// transition matrix with the same max-times semantics as all other movement:
-/// `M := M ∨ M_policy`.
-///
-/// Policy is represented as ordinary matrix structure; projection reads the
-/// closed matrix rather than a side-channel projection mask.
-pub fn build_policy_edges(policy: ExecutionGatePolicy) -> Vec<LatticeEdge> {
-    build_policy_edges_from_json(policy, DEFAULT_RULE_DELTA_JSON)
-        .expect("bundled assets/rule_delta.json policy rules must compile")
-}
-
-/// Compile a runtime execution receipt into ordinary matrix edges.
-///
-/// These edges are joined into the same CUDA-resident transition matrix as the
-/// static graph and policy graph. This lets concrete receipt evidence alter the
-/// reachable path weights without introducing a separate CPU planner.
-pub fn build_receipt_edges(receipt: ExecutionReceipt) -> Vec<LatticeEdge> {
-    build_receipt_edges_from_json(receipt, DEFAULT_RULE_DELTA_JSON)
-        .expect("bundled assets/rule_delta.json receipt rules must compile")
-}
-
 /// Compile execution-side policy conditions into tensor matrix edges.
 ///
 /// If a rule edge omits tensor-specific fields, the scalar weight is converted
@@ -248,66 +224,6 @@ pub fn build_tensor_policy_edges(policy: ExecutionGatePolicy) -> Vec<TensorEdge>
 pub fn build_tensor_receipt_edges(receipt: ExecutionReceipt) -> Vec<TensorEdge> {
     build_tensor_receipt_edges_from_json(receipt, DEFAULT_RULE_DELTA_JSON)
         .expect("bundled assets/rule_delta.json tensor receipt rules must compile")
-}
-
-fn build_policy_edges_from_json(
-    policy: ExecutionGatePolicy,
-    input: &str,
-) -> Result<Vec<LatticeEdge>, String> {
-    let asset: RuleDeltaAsset =
-        serde_json::from_str(input).map_err(|error| format!("parse rule delta asset: {error}"))?;
-    let topology = compiled_topology()?;
-
-    let mut edges = Vec::new();
-    for rule in asset.policy.rules {
-        if !rule.when.matches(&policy) {
-            continue;
-        }
-        for edge in rule.edges {
-            let src = topology
-                .registry
-                .id_of(&edge.from)
-                .ok_or_else(|| format!("policy edge source '{}' is not declared", edge.from))?;
-            let dst = topology
-                .registry
-                .id_of(&edge.to)
-                .ok_or_else(|| format!("policy edge destination '{}' is not declared", edge.to))?;
-            edges.push(LatticeEdge::new(src as i32, dst as i32, edge.weight));
-        }
-    }
-    Ok(edges)
-}
-
-fn build_receipt_edges_from_json(
-    receipt: ExecutionReceipt,
-    input: &str,
-) -> Result<Vec<LatticeEdge>, String> {
-    let asset: RuleDeltaAsset =
-        serde_json::from_str(input).map_err(|error| format!("parse rule delta asset: {error}"))?;
-    let topology = compiled_topology()?;
-
-    let mut edges = Vec::new();
-    for rule in asset.receipt.rules {
-        if !rule.when.matches(&receipt) {
-            continue;
-        }
-        for edge in rule.edges {
-            let src = topology
-                .registry
-                .id_of(&edge.from)
-                .ok_or_else(|| format!("receipt edge source '{}' is not declared", edge.from))?;
-            let dst = topology
-                .registry
-                .id_of(&edge.to)
-                .ok_or_else(|| format!("receipt edge destination '{}' is not declared", edge.to))?;
-            edges.push(LatticeEdge::new(
-                src as i32,
-                dst as i32,
-                edge.weight.resolve(&receipt)?,
-            ));
-        }
-    }
-    Ok(edges)
 }
 
 fn build_tensor_policy_edges_from_json(

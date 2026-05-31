@@ -1,9 +1,7 @@
 use std::env;
 use std::time::{Duration, Instant};
 
-use quantale_semiring_v2::{
-    ProjectionBias, TensorQuantaleWorld, default_tensor_edges_from_scalar, full_transition_edges,
-};
+use quantale_semiring_v2::{ProjectionBias, TensorQuantaleWorld, full_tensor_transition_edges};
 
 #[derive(Clone, Copy, Debug)]
 struct Sample {
@@ -65,8 +63,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         "release"
     };
-    let scalar_edges = full_transition_edges();
-    let tensor_edges = default_tensor_edges_from_scalar(&scalar_edges);
+    let tensor_edges = full_tensor_transition_edges();
     let bias = ProjectionBias::default();
 
     println!("quantale_semiring_v2 tensor benchmark");

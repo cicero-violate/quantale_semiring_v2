@@ -11,7 +11,6 @@ use cudarc::driver::{CudaDevice, CudaSlice, DeviceRepr, LaunchAsync, LaunchConfi
 use cudarc::nvrtc::compile_ptx;
 use serde::Serialize;
 
-use crate::edge::LatticeEdge;
 use crate::error::CudaError;
 use crate::node::{MATRIX_LEN, NODE_COUNT, Node, START_NODE, THREAD_COUNT};
 use crate::path::reconstruct_path_from_witness_matrix;
@@ -58,11 +57,6 @@ impl TensorEdge {
             cost,
             safety,
         }
-    }
-
-    pub fn from_scalar(edge: LatticeEdge) -> Self {
-        let confidence = edge.value.clamp(0.0, 1.0);
-        Self::new(edge.src, edge.dst, confidence, 1.0 - confidence, confidence)
     }
 }
 
@@ -192,11 +186,6 @@ impl TensorQuantaleWorld {
         let mut world = Self::empty()?;
         world.embed_tensor_edges(edges)?;
         Ok(world)
-    }
-
-    pub fn from_scalar_edges(edges: &[LatticeEdge]) -> Result<Self, CudaError> {
-        let tensor_edges: Vec<_> = edges.iter().copied().map(TensorEdge::from_scalar).collect();
-        Self::from_tensor_edges(&tensor_edges)
     }
 
     pub fn reset(&mut self) -> Result<(), CudaError> {
@@ -436,10 +425,6 @@ impl TensorQuantaleWorld {
 
 pub fn tensor_idx(layer: i32, src: i32, dst: i32) -> usize {
     layer as usize * MATRIX_LEN + src as usize * NODE_COUNT + dst as usize
-}
-
-pub fn default_tensor_edges_from_scalar(edges: &[LatticeEdge]) -> Vec<TensorEdge> {
-    edges.iter().copied().map(TensorEdge::from_scalar).collect()
 }
 
 fn kernel_config() -> LaunchConfig {

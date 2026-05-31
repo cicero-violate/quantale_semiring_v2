@@ -6,22 +6,7 @@ use serde::Serialize;
 use crate::algebra::{BOTTOM, Q_UNIT};
 use crate::node::{ControlNode, EventNode, Node, StateNode};
 
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize)]
-pub struct QuantaleCudaReport {
-    pub step: i32,
-    pub best_src: i32,
-    pub best_dst: i32,
-    pub best_value: f32,
-    pub event_count: i32,
-    pub goal_to_execute: f32,
-    pub goal_to_learn: f32,
-}
-
-unsafe impl DeviceRepr for QuantaleCudaReport {}
-
 /// Compact report for π(A*): the gated executable projection of least fixed point.
-#[repr(C)]
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize)]
 pub struct DecisionReport {
@@ -35,10 +20,6 @@ pub struct DecisionReport {
 }
 
 unsafe impl DeviceRepr for DecisionReport {}
-
-/// Alias used when the algebraic role matters: this is not closure A*,
-/// but the decision projection π(A*) plus the W witness first hop.
-pub type DecisionProjection = DecisionReport;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum QuantaleAction {

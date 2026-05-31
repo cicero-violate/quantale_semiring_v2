@@ -6,10 +6,8 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use crate::algebra::{BOTTOM, Q_UNIT};
-use crate::edge::LatticeEdge;
 use crate::error::CudaError;
-use crate::node::{MATRIX_LEN, NODE_COUNT, Node};
+use crate::node::{NODE_COUNT, Node};
 use crate::tensor::TensorEdge;
 use crate::types::QuantaleWeight;
 
@@ -60,7 +58,6 @@ pub struct CompiledTopology {
     pub node_count: usize,
     pub matrix_len: usize,
     pub registry: NodeRegistry,
-    pub edges: Vec<LatticeEdge>,
     pub tensor_edges: Vec<TensorEdge>,
     pub pages: Vec<TopologyPage>,
 }
@@ -106,7 +103,6 @@ impl GraphTopology {
 
     pub fn compile(&self) -> Result<CompiledTopology, CudaError> {
         let registry = self.build_registry()?;
-        let mut edges = Vec::with_capacity(self.transitions.len());
         let mut tensor_edges = Vec::with_capacity(self.transitions.len());
 
         for transition in &self.transitions {
@@ -116,8 +112,7 @@ impl GraphTopology {
             let dst = registry.id_of(&transition.to).ok_or_else(|| {
                 CudaError::invalid_input(format!("destination '{}' missing", transition.to))
             })?;
-            let scalar_weight = transition.default_weight.raw();
-            edges.push(LatticeEdge::new(src as i32, dst as i32, scalar_weight));
+            let default_weight = transition.default_weight.raw();
             tensor_edges.push(TensorEdge::new(
                 src as i32,
                 dst as i32,
@@ -125,7 +120,7 @@ impl GraphTopology {
                     .confidence
                     .unwrap_or(transition.default_weight)
                     .raw(),
-                transition.cost.unwrap_or(1.0 - scalar_weight),
+                transition.cost.unwrap_or(1.0 - default_weight),
                 transition.safety.unwrap_or(transition.default_weight).raw(),
             ));
         }
@@ -137,7 +132,6 @@ impl GraphTopology {
             node_count: registry.len(),
             matrix_len: registry.len() * registry.len(),
             registry,
-            edges,
             tensor_edges,
             pages: self.pages.clone(),
         })
@@ -165,24 +159,6 @@ impl GraphTopology {
         }
         Ok(NodeRegistry { by_name, by_id })
     }
-}
-
-impl CompiledTopology {
-    pub fn dense_matrix(&self) -> Vec<f32> {
-        let mut matrix = vec![BOTTOM; MATRIX_LEN];
-        for edge in &self.edges {
-            let idx = (edge.src as usize) * NODE_COUNT + edge.dst as usize;
-            matrix[idx] = matrix[idx].max(edge.value);
-        }
-        for node in 0..self.node_count {
-            matrix[node * NODE_COUNT + node] = matrix[node * NODE_COUNT + node].max(Q_UNIT);
-        }
-        matrix
-    }
-}
-
-pub fn load_default_topology_edges() -> Result<Vec<LatticeEdge>, CudaError> {
-    Ok(GraphTopology::default_asset()?.compile()?.edges)
 }
 
 pub fn load_default_tensor_topology_edges() -> Result<Vec<TensorEdge>, CudaError> {
@@ -237,7 +213,6 @@ mod tests {
             .unwrap()
             .compile()
             .unwrap();
-        assert_eq!(compiled.edges[0].value, 0.7);
         assert_eq!(compiled.tensor_edges[0].confidence, 0.9);
         assert_eq!(compiled.tensor_edges[0].cost, 2.5);
         assert_eq!(compiled.tensor_edges[0].safety, 0.8);

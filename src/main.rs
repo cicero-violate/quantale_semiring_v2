@@ -1,22 +1,14 @@
 use serde_json::json;
 
 use quantale_semiring_v2::{
-    DomainCandidate, ExecutionOutcome, InboundEvent, IngressServer, LAYER_CONFIDENCE, Node,
-    ProjectionBias, SystemConfig, TensorQuantaleWorld, TlogWriter, UniversalExecutor,
-    build_tensor_candidate_edges, build_tensor_receipt_edges, compile_llm_tensor_plan,
-    drain_available, format_quantale_value, full_tensor_transition_edges, node_name,
+    ExecutionOutcome, LAYER_CONFIDENCE, Node, ProjectionBias, SystemConfig, TensorQuantaleWorld,
+    TlogWriter, UniversalExecutor, build_tensor_receipt_edges, compile_tensor_plan,
+    format_quantale_value, full_tensor_transition_edges, node_name,
 };
 
 fn main() {
     let config = SystemConfig::default();
     let projection_bias = ProjectionBias::default();
-
-    let (ingress, inbound) = IngressServer::new();
-    if let Err(error) = ingress.push_event(InboundEvent::new("demo", "candidate", b"seed".to_vec()))
-    {
-        eprintln!("{error}");
-        std::process::exit(1);
-    }
 
     let mut tlog = match TlogWriter::open(&config.tlog_path) {
         Ok(tlog) => tlog,
@@ -38,28 +30,6 @@ fn main() {
     if let Err(error) = tlog.append_tensor_edges("topology:tensor", &tensor_edges) {
         eprintln!("{error}");
         std::process::exit(1);
-    }
-
-    for event in drain_available(&inbound, 32) {
-        let candidate = DomainCandidate::new(
-            format!("{}:{}", event.source, event.event_name),
-            String::from_utf8_lossy(&event.payload).to_string(),
-            0.92,
-            0.88,
-            0.02,
-            0.04,
-        );
-        let (_top, edges) = build_tensor_candidate_edges([candidate], 1);
-        if !edges.is_empty() {
-            if let Err(error) = world.embed_tensor_edges(&edges) {
-                eprintln!("{error}");
-                std::process::exit(1);
-            }
-            if let Err(error) = tlog.append_tensor_edges("ingress:candidate", &edges) {
-                eprintln!("{error}");
-                std::process::exit(1);
-            }
-        }
     }
 
     println!("Starting Tensor Quantale Neuro-Symbolic Agent Loop...");
@@ -148,7 +118,7 @@ fn main() {
 
         if process_receipt.exit_code == 0 && !process_receipt.stdout_payload.is_empty() {
             if executor.output_mode(active_node_name) == Some("tensor_plan") {
-                match compile_llm_tensor_plan(&process_receipt.stdout_payload) {
+                match compile_tensor_plan(&process_receipt.stdout_payload) {
                     Ok(plan_edges) if !plan_edges.is_empty() => {
                         println!(
                             "[ALGEBRA] Tensor LLM plan: {} edge(s) → VRAM",
