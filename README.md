@@ -99,6 +99,16 @@ blocked
 
 Paths are reconstructed from the witness matrix.
 
+### Tensor witnesses
+
+The tensor runtime stores per-layer witnesses:
+
+```text
+W_L ∈ Int^(3 × 44 × 44)
+```
+
+Confidence, cost, and safety can reconstruct different paths for the same source and destination.
+
 ## Default runtime
 
 `cargo run` starts the tensor quantale runtime. The scalar matrix engine remains available for compatibility and tests, but `main.rs` uses `TensorQuantaleWorld`.

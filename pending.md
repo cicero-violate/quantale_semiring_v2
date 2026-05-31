@@ -15,6 +15,8 @@
 - Tensor closure, projection, frontier step, tick, feedback update, and decay are CUDA kernels.
 - `main.rs` uses `TensorQuantaleWorld`.
 - `assets/topology.json` is explicit tensor-valued across all transitions.
+- Tensor witness path reconstruction is tested per layer.
+- Lean proof-boundary artifact names tensor closure, projection, frontier, and tick contracts.
 - Legacy `policy.rs`, `receipt.rs`, `assets/policy.json`, `assets/receipt.json`, `pending.v2.md`, `plan.md`, and `plan_1.md` are removed.
 
 ## Validation
@@ -53,7 +55,7 @@ Tensor witness storage is implemented. Add tests for:
 
 Current benchmark is available. Add recorded release baseline once hardware target is fixed.
 
-### 4. Decide scalar engine lifecycle
+### 3. Decide scalar engine lifecycle
 
 The scalar engine is still useful for compatibility and law tests. Later decision:
 

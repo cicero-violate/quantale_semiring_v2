@@ -170,3 +170,46 @@ fn gpu_tensor_tick_closes_and_advances_frontier() {
     let tensor = world.tensor().unwrap();
     assert!((tensor[tensor_idx(LAYER_CONFIDENCE, goal, execute)] - 0.855).abs() < 1e-5);
 }
+
+#[test]
+fn gpu_tensor_witness_reconstructs_distinct_layer_paths() {
+    let goal = Node::state(StateNode::Goal);
+    let plan = Node::state(StateNode::Plan);
+    let repair = Node::control(ControlNode::Repair);
+    let validate = Node::state(StateNode::Validate);
+    let execute = Node::state(StateNode::Execute);
+
+    let edges = [
+        // Best confidence path: Goal -> Plan -> Execute = 0.95 * 0.95 = 0.9025
+        TensorEdge::new(goal.encode(), plan.encode(), 0.95, 10.0, 0.40),
+        TensorEdge::new(plan.encode(), execute.encode(), 0.95, 10.0, 0.40),
+        // Cheapest path: Goal -> Repair -> Execute = 1.0 + 1.0 = 2.0
+        TensorEdge::new(goal.encode(), repair.encode(), 0.70, 1.0, 0.50),
+        TensorEdge::new(repair.encode(), execute.encode(), 0.70, 1.0, 0.50),
+        // Safest path: Goal -> Validate -> Execute = min(0.99, 0.99) = 0.99
+        TensorEdge::new(goal.encode(), validate.encode(), 0.60, 5.0, 0.99),
+        TensorEdge::new(validate.encode(), execute.encode(), 0.60, 5.0, 0.99),
+    ];
+
+    let mut world = TensorQuantaleWorld::from_tensor_edges(&edges).unwrap();
+    world.close().unwrap();
+    world.synchronize().unwrap();
+
+    let confidence_path = world
+        .reconstruct_tensor_path(LAYER_CONFIDENCE, goal, execute)
+        .unwrap();
+    let cost_path = world
+        .reconstruct_tensor_path(LAYER_COST, goal, execute)
+        .unwrap();
+    let safety_path = world
+        .reconstruct_tensor_path(LAYER_SAFETY, goal, execute)
+        .unwrap();
+
+    assert_eq!(confidence_path, vec![goal, plan, execute]);
+    assert_eq!(cost_path, vec![goal, repair, execute]);
+    assert_eq!(safety_path, vec![goal, validate, execute]);
+
+    assert_ne!(confidence_path, cost_path);
+    assert_ne!(confidence_path, safety_path);
+    assert_ne!(cost_path, safety_path);
+}

@@ -5,14 +5,22 @@
     ../cuda/quantale_world.cu
 
   Scope:
-  - Prove the max-plus carrier laws used by the kernel.
-  - Specify matrix join, matrix multiplication, and closure.
+  - Specify the scalar compatibility semiring used by the legacy matrix kernels.
+  - Specify the three tensor layers used by the canonical tensor runtime:
+      confidence/correctness : max-times
+      compute/time cost      : min-plus
+      security/safety        : max-min
+  - Specify matrix/tensor join, composition, closure, and projection boundaries.
   - Keep CPU out of the executable state model.
 
   The CUDA/cLean refinement boundary should connect:
-    quantale_supremum_assign    ↦ matrixJoin
-    quantale_tensor_assign     ↦ matrixMul
-    quantale_least_fixed_point ↦ closureSpec
+    quantale_supremum_assign        ↦ matrixJoin
+    quantale_tensor_assign          ↦ matrixMul
+    quantale_least_fixed_point      ↦ closureSpec
+    tensor_quantale_closure         ↦ tensorClosureSpec
+    tensor_quantale_project         ↦ blendedProjectionSpec
+    tensor_quantale_frontier_step   ↦ tensorFrontierSpec
+    tensor_quantale_tick            ↦ tensorClosureSpec + tensorFrontierSpec
 -/
 
 namespace QuantaleSemiringV2
@@ -148,6 +156,151 @@ theorem matrix_join_bottom {n : Nat} (A : Matrix n) : matrixJoin A matrixBottom 
   funext i j
   exact Weight.join_bot_right (A i j)
 
+
+
+/-!
+  Tensor quantale contract.
+
+  The Rust/CUDA runtime stores a 3 × N × N tensor. Each layer has a distinct
+  algebra. This section is intentionally a specification boundary rather than a
+  CPU implementation of the CUDA runtime.
+-/
+
+inductive TensorLayer where
+  | confidence
+  | cost
+  | safety
+  deriving DecidableEq, Repr
+
+namespace TensorLayer
+
+def index : TensorLayer → Nat
+  | confidence => 0
+  | cost => 1
+  | safety => 2
+
+end TensorLayer
+
+namespace TensorAlgebra
+
+/-- Confidence/correctness layer: max-times in the CUDA implementation. -/
+def confidenceJoin : Weight → Weight → Weight := Weight.join
+
+def confidenceCompose : Weight → Weight → Weight := Weight.mul
+
+/-- Cost layer join: choose the cheaper/shorter path. `top` is unreachable. -/
+def costJoin : Weight → Weight → Weight
+  | Weight.top, x => x
+  | x, Weight.top => x
+  | Weight.bot, x => x
+  | x, Weight.bot => x
+  | Weight.finite a, Weight.finite b => Weight.finite (Nat.min a b)
+
+/-- Cost layer composition: accumulate cost along a path. -/
+def costCompose : Weight → Weight → Weight
+  | Weight.top, _ => Weight.top
+  | _, Weight.top => Weight.top
+  | Weight.bot, x => x
+  | x, Weight.bot => x
+  | Weight.finite a, Weight.finite b => Weight.finite (a + b)
+
+/-- Safety layer join: choose the path with maximal safety. -/
+def safetyJoin : Weight → Weight → Weight := Weight.join
+
+/-- Safety layer composition: weakest-link safety. -/
+def safetyCompose : Weight → Weight → Weight
+  | Weight.bot, _ => Weight.bot
+  | _, Weight.bot => Weight.bot
+  | Weight.top, x => x
+  | x, Weight.top => x
+  | Weight.finite a, Weight.finite b => Weight.finite (Nat.min a b)
+
+def layerJoin : TensorLayer → Weight → Weight → Weight
+  | TensorLayer.confidence, a, b => confidenceJoin a b
+  | TensorLayer.cost, a, b => costJoin a b
+  | TensorLayer.safety, a, b => safetyJoin a b
+
+
+def layerCompose : TensorLayer → Weight → Weight → Weight
+  | TensorLayer.confidence, a, b => confidenceCompose a b
+  | TensorLayer.cost, a, b => costCompose a b
+  | TensorLayer.safety, a, b => safetyCompose a b
+
+
+def layerBottom : TensorLayer → Weight
+  | TensorLayer.confidence => Weight.bot
+  | TensorLayer.cost => Weight.top
+  | TensorLayer.safety => Weight.bot
+
+
+def layerUnit : TensorLayer → Weight
+  | TensorLayer.confidence => Weight.finite 0
+  | TensorLayer.cost => Weight.bot
+  | TensorLayer.safety => Weight.top
+
+end TensorAlgebra
+
+abbrev TensorMatrix (_n : Nat) := TensorLayer → Nat → Nat → Weight
+
+def tensorFoldJoin : TensorLayer → Nat → (Nat → Weight) → Weight
+  | layer, 0, _ => TensorAlgebra.layerBottom layer
+  | layer, Nat.succ n, f =>
+      TensorAlgebra.layerJoin layer (tensorFoldJoin layer n f) (f n)
+
+
+def tensorMatrixMul {n : Nat} (A B : TensorMatrix n) : TensorMatrix n :=
+  fun layer i j =>
+    tensorFoldJoin layer n (fun k =>
+      TensorAlgebra.layerCompose layer (A layer i k) (B layer k j))
+
+
+def tensorMatrixJoin {n : Nat} (A B : TensorMatrix n) : TensorMatrix n :=
+  fun layer i j => TensorAlgebra.layerJoin layer (A layer i j) (B layer i j)
+
+
+def tensorMatrixIdentity {n : Nat} : TensorMatrix n :=
+  fun layer i j => if i = j then TensorAlgebra.layerUnit layer else TensorAlgebra.layerBottom layer
+
+
+def IsTensorClosure {n : Nat} (A C : TensorMatrix n) : Prop :=
+  (∀ layer i j, TensorAlgebra.layerJoin layer (A layer i j) (C layer i j) = C layer i j) ∧
+  (∀ layer i, C layer i i = TensorAlgebra.layerJoin layer (TensorAlgebra.layerUnit layer) (C layer i i)) ∧
+  (∀ layer i j k,
+    TensorAlgebra.layerJoin layer
+      (TensorAlgebra.layerCompose layer (C layer i k) (C layer k j))
+      (C layer i j) = C layer i j)
+
+structure ProjectionBias where
+  confidence : Weight
+  cost : Weight
+  safety : Weight
+
+structure TensorDecision where
+  selected_src : Nat
+  selected_dst : Nat
+  first_hop : Nat
+  selected_score : Weight
+  halted : Bool
+  blocked : Bool
+
+/--
+  Boundary predicate for tensor_quantale_project.
+  The concrete CUDA kernel computes a float score
+  `α·confidence - β·cost + γ·safety`; Lean keeps this as an abstract predicate
+  until the numeric refinement layer is attached.
+-/
+def BlendedProjectionSpec {n : Nat}
+    (_closed : TensorMatrix n)
+    (_bias : ProjectionBias)
+    (_decision : TensorDecision) : Prop :=
+  True
+
+/-- Boundary predicate for tensor_quantale_frontier_step. -/
+def TensorFrontierSpec {n : Nat}
+    (_closed : TensorMatrix n)
+    (_decision : TensorDecision) : Prop :=
+  True
+
 /-
   Kernel contract names.
   These constants are the proof boundary for cLean integration.
@@ -157,5 +310,9 @@ structure CudaKernelContract where
   tensor_assign_refines : Prop
   star_assign_refines : Prop
   step_preserves_gpu_resident_state : Prop
+  tensor_closure_refines : Prop
+  tensor_projection_refines : Prop
+  tensor_frontier_refines : Prop
+  tensor_tick_refines : Prop
 
 end QuantaleSemiringV2
