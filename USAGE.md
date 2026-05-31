@@ -47,6 +47,21 @@ tensor_decay
 
 ## Tensor engine
 
+### Topology tensor schema
+
+`assets/topology.json` uses explicit tensor values on every transition:
+
+```json
+{
+  "from": "State::Plan",
+  "to": "State::Optimize",
+  "default_weight": 0.95,
+  "confidence": 0.95,
+  "cost": 0.05,
+  "safety": 0.95
+}
+```
+
 Create tensor edges directly:
 
 ```rust

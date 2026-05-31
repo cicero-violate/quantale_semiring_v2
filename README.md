@@ -61,6 +61,23 @@ assets/operators.json
 
 Topology, receipt routing, policy routing, and operator contracts are data-driven.
 
+### Topology tensor fields
+
+Every topology transition carries explicit tensor values:
+
+```json
+{
+  "from": "State::Goal",
+  "to": "Control::GateInput",
+  "default_weight": 0.99,
+  "confidence": 0.99,
+  "cost": 0.01,
+  "safety": 0.99
+}
+```
+
+`default_weight` remains only for scalar compatibility.
+
 ## Decision model
 
 ```text
