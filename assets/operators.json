@@ -775,6 +775,126 @@
         ],
         "locks": []
       }
+    },
+    {
+      "node_name": "Execution::DynamicAlphaSignalEvaluator",
+      "executable": "cuda_ptx",
+      "static_args": [],
+      "input_mapping": {
+        "module": "addons/cuda/trading_execution_kernels.ptx",
+        "module_name": "quantale_trading_execution_addons",
+        "kernel": "dyn_alpha_signal_evaluator_kernel",
+        "plane": "execution",
+        "category": "quant_trading.dynamic_alpha_signal_evaluator",
+        "scheduler_contract": "atomic_operator_fixed_budget"
+      },
+      "effects": {
+        "reads": [
+          "market.feed",
+          "portfolio.state",
+          "trading.signals"
+        ],
+        "writes": [
+          "execution.gpu.results"
+        ],
+        "locks": []
+      }
+    },
+    {
+      "node_name": "Execution::OrderBookImbalanceWeaver",
+      "executable": "cuda_ptx",
+      "static_args": [],
+      "input_mapping": {
+        "module": "addons/cuda/trading_execution_kernels.ptx",
+        "module_name": "quantale_trading_execution_addons",
+        "kernel": "order_book_imbalance_weaver_kernel",
+        "plane": "execution",
+        "category": "quant_trading.order_book_imbalance_weaver",
+        "scheduler_contract": "atomic_operator_fixed_budget"
+      },
+      "effects": {
+        "reads": [
+          "market.feed",
+          "portfolio.state",
+          "trading.signals"
+        ],
+        "writes": [
+          "execution.gpu.results"
+        ],
+        "locks": []
+      }
+    },
+    {
+      "node_name": "Execution::PortfolioRiskConstraintFilter",
+      "executable": "cuda_ptx",
+      "static_args": [],
+      "input_mapping": {
+        "module": "addons/cuda/trading_execution_kernels.ptx",
+        "module_name": "quantale_trading_execution_addons",
+        "kernel": "portfolio_risk_constraint_filter_kernel",
+        "plane": "execution",
+        "category": "quant_trading.portfolio_risk_constraint_filter",
+        "scheduler_contract": "atomic_operator_fixed_budget"
+      },
+      "effects": {
+        "reads": [
+          "market.feed",
+          "portfolio.state",
+          "trading.signals"
+        ],
+        "writes": [
+          "execution.gpu.results"
+        ],
+        "locks": []
+      }
+    },
+    {
+      "node_name": "Execution::AdaptiveOptionsPricingArray",
+      "executable": "cuda_ptx",
+      "static_args": [],
+      "input_mapping": {
+        "module": "addons/cuda/trading_execution_kernels.ptx",
+        "module_name": "quantale_trading_execution_addons",
+        "kernel": "adaptive_options_pricing_array_kernel",
+        "plane": "execution",
+        "category": "quant_trading.adaptive_options_pricing_array",
+        "scheduler_contract": "atomic_operator_fixed_budget"
+      },
+      "effects": {
+        "reads": [
+          "market.feed",
+          "portfolio.state",
+          "trading.signals"
+        ],
+        "writes": [
+          "execution.gpu.results"
+        ],
+        "locks": []
+      }
+    },
+    {
+      "node_name": "Execution::HardwareTailoredFeedHandler",
+      "executable": "cuda_ptx",
+      "static_args": [],
+      "input_mapping": {
+        "module": "addons/cuda/trading_execution_kernels.ptx",
+        "module_name": "quantale_trading_execution_addons",
+        "kernel": "hardware_tailored_feed_handler_kernel",
+        "plane": "execution",
+        "category": "quant_trading.hardware_tailored_feed_handler",
+        "scheduler_contract": "atomic_operator_fixed_budget"
+      },
+      "effects": {
+        "reads": [
+          "market.feed",
+          "portfolio.state",
+          "trading.signals"
+        ],
+        "writes": [
+          "execution.gpu.results"
+        ],
+        "locks": []
+      }
     }
   ]
 }
