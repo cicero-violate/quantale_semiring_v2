@@ -143,6 +143,11 @@ pub struct TensorQuantaleWorld {
     exploration_selected: CudaSlice<ExplorationCandidate>,
     exploration_token_count: CudaSlice<i32>,
     exploration_selected_count: CudaSlice<i32>,
+    /// Invariant 23: CPU snapshot of the tensor taken immediately after the
+    /// first embed_tensor_edges call.  Hard reset restores from this rather
+    /// than re-uploading from the host edge list, so it works even when the
+    /// original edge list is no longer in scope.
+    base_tensor: Vec<f32>,
 }
 
 impl TensorQuantaleWorld {
@@ -236,6 +241,7 @@ impl TensorQuantaleWorld {
             exploration_selected,
             exploration_token_count,
             exploration_selected_count,
+            base_tensor: Vec::new(),
         };
         world.reset()?;
         Ok(world)
@@ -244,7 +250,40 @@ impl TensorQuantaleWorld {
     pub fn from_tensor_edges(edges: &[TensorEdge]) -> Result<Self, CudaError> {
         let mut world = Self::empty()?;
         world.embed_tensor_edges(edges)?;
+        world.snapshot_base_tensor()?;
         Ok(world)
+    }
+
+    /// Invariant 23: take a CPU snapshot of the current tensor state.
+    ///
+    /// Called once by `from_tensor_edges` after the initial embed.  The
+    /// snapshot is used by `restore_base_tensor` to perform a clean hard reset
+    /// without needing the original edge list in scope.
+    pub fn snapshot_base_tensor(&mut self) -> Result<(), CudaError> {
+        self.base_tensor = self.tensor()?;
+        Ok(())
+    }
+
+    /// Invariant 23: restore the tensor to its post-embed baseline and reset
+    /// all runtime state (active[], consumed[], decision[]).
+    ///
+    /// Prefer this over `reset() + embed_tensor_edges()` for hard resets
+    /// because it restores from a known-good snapshot rather than trying to
+    /// lift a potentially broken `W_t`.
+    pub fn restore_base_tensor(&mut self) -> Result<(), CudaError> {
+        if self.base_tensor.is_empty() {
+            return Err(CudaError::invalid_input(
+                "no base tensor snapshot; use from_tensor_edges to create the world",
+            ));
+        }
+        // Reset clears active[], consumed[], decision[], scratch, witness.
+        self.reset()?;
+        // Overwrite the zeroed tensor with the base snapshot.
+        self.tensor = self
+            .dev
+            .htod_copy(self.base_tensor.clone())
+            .map_err(|error| CudaError::new("htod_copy tensor base restore", error))?;
+        Ok(())
     }
 
     pub fn reset(&mut self) -> Result<(), CudaError> {

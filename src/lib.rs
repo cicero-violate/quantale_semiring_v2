@@ -1,5 +1,6 @@
 pub mod algebra;
 pub mod batch;
+pub mod runtime_check;
 pub mod config;
 pub mod egress;
 pub mod error;

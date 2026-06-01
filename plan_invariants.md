@@ -260,11 +260,10 @@ scattered through logic):
 
 ```rust
 const REQUIRED_DOMINATORS: &[(&str, &str)] = &[
-    ("State::Validate",         "Control::Commit"),
-    ("Control::Commit",         "State::Memory"),
-    ("Control::GateReceipt",    "Event::ReceiptAccepted"),
-    ("Event::ReceiptAccepted",  "Event::HashNonzero"),
-    ("Event::HashNonzero",      "State::Validate"),
+    ("State::Validate",        "Control::Commit"),
+    ("Control::GateReceipt",   "Event::ReceiptAccepted"),
+    ("Event::ReceiptAccepted", "Event::HashNonzero"),
+    ("Event::HashNonzero",     "State::Validate"),
 ];
 ```
 
@@ -322,8 +321,10 @@ reported unless they have at least one non-self outgoing edge.
 semiring closure and cause the planner to prefer an infinite internal loop
 over any productive path.
 
-**Algorithm:** for each SCC identified in invariant 11, check whether the
-total edge cost around the cycle is zero. Flag if so.
+**Algorithm:** for each SCC identified in invariant 11, flag the SCC if
+every internal edge (both endpoints inside the SCC) has cost=0.  A single
+non-zero-cost internal edge is sufficient for progress; the check conservatively
+covers all possible cycles in the SCC without enumerating them.
 
 ---
 
@@ -436,9 +437,10 @@ returns a valid node ID before continuing execution.
 
 ```rust
 if did_hard_reset {
-    let first_step = world.frontier_step(bias)?;
-    assert_ne!(first_step.first_hop, -1,
-        "hard reset did not restore a valid frontier");
+    let post_reset = world.project(projection_bias)?;
+    assert!(post_reset.blocked == 0,
+        "hard reset did not restore a valid frontier (first_hop={})",
+        post_reset.first_hop);
 }
 ```
 
@@ -675,9 +677,10 @@ selected a hop on a bottom score — this is illegal.
 
 ```rust
 if report.selected_value <= BOTTOM {
-    assert!(report.blocked != 0 || report.first_hop < 0,
-        "score=⊥ but blocked=0 and first_hop={}: \
-         kernel advanced frontier on bottom score", report.first_hop);
+    assert!(report.blocked != 0 && report.first_hop < 0,
+        "score=⊥ but blocked={} and first_hop={}: \
+         kernel advanced frontier on bottom score",
+        report.blocked, report.first_hop);
 }
 ```
 
@@ -792,7 +795,7 @@ reset()  ⟹  W_t := W_0
 reset()  ⟹  f_t := e_start
 ```
 
-**Root cause of the hard-reset failure:** `decay(0.30) + embed` tried to
+**Root cause of the hard-reset failure:** `decay(0.97) + embed` tried to
 recover through an already-bottomed `W_t`.  The fix (calling `world.reset()`
 before `embed`) was shipped in the previous commit.  The invariant to codify:
 

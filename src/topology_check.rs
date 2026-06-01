@@ -103,6 +103,9 @@ pub enum ViolationKind {
     // ── Phase 2: operator binding ─────────────────────────────────────────────
     /// A State::* / Control::* node has no entry in operators.json.
     MissingOperator,
+    /// A State::* / Control::* node's operator entry has no `action` or
+    /// `output_mode` field — executor will report action="unknown".
+    UnknownActionSemantics,
 
     // ── Phase 3: dominator and cycle checks ───────────────────────────────────
     /// A required gate does not dominate its protected node.
@@ -134,6 +137,7 @@ impl std::fmt::Display for ViolationKind {
             Self::ZeroConfidenceEdge => write!(f, "zero_confidence_edge"),
             Self::IndeterminateOrdering => write!(f, "indeterminate_ordering"),
             Self::MissingOperator => write!(f, "missing_operator"),
+            Self::UnknownActionSemantics => write!(f, "unknown_action_semantics"),
             Self::DominanceViolation => write!(f, "dominance_violation"),
             Self::ReceiptCutsetViolation => write!(f, "receipt_cutset_violation"),
             Self::UnsafeSCC => write!(f, "unsafe_scc"),
@@ -548,16 +552,42 @@ fn check_phase2(
         if node.action.as_deref() == Some("halt") {
             continue;
         }
-        if operator_registry.get(&node.name).is_none() {
-            violations.push(TopologyViolation {
-                kind: ViolationKind::MissingOperator,
-                node: node.name.clone(),
-                detail: format!(
-                    "'{}' (type={}) has no operator binding in operators.json; \
-                     executor will return exit 127",
-                    node.name, node.node_type
-                ),
-            });
+        match operator_registry.get(&node.name) {
+            None => {
+                violations.push(TopologyViolation {
+                    kind: ViolationKind::MissingOperator,
+                    node: node.name.clone(),
+                    detail: format!(
+                        "'{}' (type={}) has no operator binding in operators.json; \
+                         executor will return exit 127",
+                        node.name, node.node_type
+                    ),
+                });
+            }
+            // Invariant 25: operator entry must have a non-empty action or output_mode
+            Some(op) => {
+                let has_action = op
+                    .get("action")
+                    .and_then(|v| v.as_str())
+                    .map(|s| !s.is_empty())
+                    .unwrap_or(false);
+                let has_output_mode = op
+                    .get("output_mode")
+                    .and_then(|v| v.as_str())
+                    .map(|s| !s.is_empty())
+                    .unwrap_or(false);
+                if !has_action && !has_output_mode {
+                    violations.push(TopologyViolation {
+                        kind: ViolationKind::UnknownActionSemantics,
+                        node: node.name.clone(),
+                        detail: format!(
+                            "'{}' operator entry has neither 'action' nor 'output_mode'; \
+                             executor will report action=\"unknown\"",
+                            node.name
+                        ),
+                    });
+                }
+            }
         }
     }
 }

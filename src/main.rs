@@ -7,7 +7,7 @@ use quantale_semiring_v2::{
     ProjectionBias, SystemConfig, TensorQuantaleWorld, TlogWriter, UniversalExecutor, action_label,
     compile_pattern, compile_tensor_plan, dispatch_decision_batch_blocking, format_quantale_value,
     full_tensor_transition_edges, load_default_patterns, load_learned_tensor_edges,
-    project_ready_batch_plan, topology_check,
+    project_ready_batch_plan, runtime_check, topology_check,
 };
 
 fn main() {
@@ -488,17 +488,14 @@ fn main() {
         if decision.blocked != 0 {
             consecutive_blocks += 1;
             if consecutive_blocks >= 3 {
-                // Hard reset: decay alone does not restore a valid frontier
-                // because active[] tracks the current position and is not
-                // affected by decay or embed.  world.reset() clears active[],
-                // consumed[], and the tensor to a known-good initial state.
-                // Re-embedding the topology edges then lifts the world above ⊥.
+                // Hard reset: restore from the base tensor snapshot taken at
+                // startup (invariant 23).  This resets active[], consumed[],
+                // decision[], and the tensor to the post-embed baseline without
+                // requiring tensor_edges to still be in scope, and avoids
+                // trying to lift an already-bottomed W_t through decay+embed.
                 eprintln!("[WARN] {consecutive_blocks} consecutive blocked steps; hard reset.");
-                if let Err(error) = world.reset() {
-                    eprintln!("[WARN] hard reset world.reset() failed: {error}");
-                }
-                if let Err(error) = world.embed_tensor_edges(&tensor_edges) {
-                    eprintln!("[WARN] hard reset embed failed: {error}");
+                if let Err(error) = world.restore_base_tensor() {
+                    eprintln!("[WARN] hard reset restore_base_tensor failed: {error}");
                 }
                 current_payload = json!({ "context": "market_analysis_loop" });
                 consecutive_blocks = 0;
@@ -520,6 +517,17 @@ fn main() {
         }
         consecutive_blocks = 0;
 
+        // Invariant 20: refuse to advance the executor on a bottom score.
+        if !runtime_check::decision_is_safe(&decision) {
+            eprintln!(
+                "[WARN] invariant 20: score=⊥ with blocked=0 (first_hop={}); \
+                 skipping executor call",
+                decision.first_hop
+            );
+            consecutive_blocks += 1;
+            continue;
+        }
+
         let Some(active_node) = Node::decode(decision.first_hop, &topology.registry) else {
             eprintln!("Invalid first_hop index: {}", decision.first_hop);
             break;
@@ -528,6 +536,11 @@ fn main() {
             eprintln!("Invalid first_hop index: {}", decision.first_hop);
             break;
         };
+
+        // Invariants 18 + 19: validate decision report before running executor.
+        for v in runtime_check::check_decision(&decision, active_node_name) {
+            eprintln!("[runtime_check] {v}");
+        }
 
         println!("[STEP] Tensor frontier advanced to node: {active_node_name}");
 
@@ -544,6 +557,14 @@ fn main() {
         );
         if !process_receipt.stderr_payload.is_empty() {
             eprintln!("[STEP] stderr: {}", process_receipt.stderr_payload.trim());
+        }
+        // Invariant 24: Control::Block must result in blocked or halted state.
+        if active_node_name.contains("Control::Block") && outcome == ExecutionOutcome::Success {
+            for v in runtime_check::check_decision(&decision, active_node_name) {
+                if v.kind == runtime_check::RuntimeViolationKind::BlockNodeNotBlocked {
+                    eprintln!("[runtime_check] {v}");
+                }
+            }
         }
 
         if let Err(error) =
