@@ -616,3 +616,330 @@ Uses `project()` (read-only) so the active set is not advanced by the check.
 - Cross-session invariant discovery / mining
 - Automatic topology repair
 - Fixing cycle structure (cycles are valid as long as they have exit edges)
+
+---
+
+# Phase 6 — Runtime Tensor Invariants (planned)
+
+## Motivation
+
+The static checker validates the **declared** graph `A`.  At runtime the
+effective tensor matrix `W_t` diverges from `A` through learning, decay, and
+LLM overlay:
+
+```
+A ≠ W_t
+```
+
+The failures at steps 92–97 are not graph-structure violations.  They are
+**runtime tensor violations** — the effective matrix at step-time had bottom
+rows that the static checker never saw.
+
+---
+
+## Variables
+
+| Symbol | Meaning |
+|--------|---------|
+| `A` | static topology adjacency (declared transitions) |
+| `W_0` | base tensor matrix after initial embed (immutable reference copy) |
+| `W_t` | effective runtime tensor at step `t` (after decay / learn / overlay) |
+| `P_t` | printed projection `(u → v)` at step `t` |
+| `h_t` | selected `first_hop` node id |
+| `s_t` | selected score value |
+| `⊥` | bottom — invalid / no live transition |
+| `B` | blocked flag |
+| `L` | learned LLM overlay edge set |
+
+---
+
+## New Invariants
+
+### 18. Score-Bottom Implies Blocked
+
+```
+s_t = ⊥  ⟹  blocked = 1  ∧  h_t ∈ V_recovery ∪ {-1}
+```
+
+**Observed violation (steps 92–94):**
+
+```
+projection=(State::Learn->Control::Block)
+first_hop=State::Validate  score=⊥  blocked=0
+```
+
+Score is bottom but `blocked=0` and `first_hop` is a real node.  The kernel
+selected a hop on a bottom score — this is illegal.
+
+**Check:** in `frontier_step`, after the kernel returns, assert:
+
+```rust
+if report.selected_value <= BOTTOM {
+    assert!(report.blocked != 0 || report.first_hop < 0,
+        "score=⊥ but blocked=0 and first_hop={}: \
+         kernel advanced frontier on bottom score", report.first_hop);
+}
+```
+
+---
+
+### 19. Projection–First-Hop Consistency
+
+```
+P_t = (u → v)  ∧  s_t ≠ ⊥  ⟹  h_t = v
+```
+
+**Detects:** cases where the printed projection destination and the committed
+`first_hop` disagree — a sign the decision report was read from a stale buffer
+or two kernels raced.
+
+**Check:**
+
+```rust
+if report.selected_value > BOTTOM {
+    assert_eq!(report.first_hop, report.selected_dst,
+        "projection says {} but first_hop is {}",
+        report.selected_dst, report.first_hop);
+}
+```
+
+---
+
+### 20. No Frontier Advance on Bottom
+
+```
+s_t = ⊥  ⟹  f_{t+1} = f_t  ∨  f_{t+1} = r
+```
+
+where `r` is a declared recovery node.
+
+**Observed violation:**
+
+```
+score=⊥
+[STEP] Tensor frontier advanced to node: State::Validate
+```
+
+**Biggest missing check.**  The executor must not be called when score is
+bottom.  Add a guard in the main loop before `executor.execute_abstract_node`:
+
+```rust
+if decision.selected_value <= BOTTOM && decision.blocked == 0 {
+    eprintln!("[WARN] score=⊥ but not blocked; skipping executor call");
+    consecutive_blocks += 1;
+    continue;
+}
+```
+
+---
+
+### 21. Runtime Matrix Liveness After Overlay
+
+```
+∀ v ∈ Reach(W_t), v ∉ H  ⟹  ∃ u : W_t[v, u] ≠ ⊥
+```
+
+**Detects:** LLM overlay or decay that creates bottom rows for reachable
+non-halt nodes — the runtime equivalent of the static `DeadEnd` check, but
+applied to `W_t` rather than `A`.
+
+**Implementation:** after any `embed_tensor_edges` or `decay` call, download
+the confidence layer and verify no reachable non-halt node has an all-zero
+row.  Expensive in the hot path; run on a debug flag or after every N steps.
+
+---
+
+### 22. LLM Overlay Topology Check Before VRAM
+
+```
+L must pass check(L | W_0) = true  before  W_t = W_0 ⊕ L
+```
+
+**Observed trigger:**
+
+```
+[ALGEBRA] Tensor LLM plan: 20 edge(s) → VRAM
+```
+
+Learned edges are currently uploaded unconditionally.  Required pipeline:
+
+```
+LLM plan edges
+  → endpoint validity (all names in node registry)
+  → no bottom weights (confidence > 0, safety ≥ 0, cost ≥ 0, all finite)
+  → no required-edge deletion (edges in W_0 must not be zeroed by L)
+  → dominance-safe (L must not add bypass edges that violate REQUIRED_DOMINATORS)
+  → receipt cutset safe (L must not create ExecuteFinished→Commit shortcuts)
+  → then upload to VRAM
+```
+
+New entry point needed:
+
+```rust
+pub fn check_overlay(
+    overlay_edges: &[TensorEdge],
+    base_topology: &GraphTopology,
+    registry: &NodeRegistry,
+) -> Vec<OverlayViolation>
+```
+
+---
+
+### 23. Base Matrix Preserved on Reset
+
+```
+reset()  ⟹  W_t := W_0
+reset()  ⟹  f_t := e_start
+```
+
+**Root cause of the hard-reset failure:** `decay(0.30) + embed` tried to
+recover through an already-bottomed `W_t`.  The fix (calling `world.reset()`
+before `embed`) was shipped in the previous commit.  The invariant to codify:
+
+Keep an immutable copy `W_base` at startup (after initial embed, before any
+decay or learning).  Hard reset must restore from `W_base`, not try to lift
+the current broken matrix.
+
+**Required change:** in `TensorQuantaleWorld`, store a `base_tensor: Vec<f32>`
+snapshot taken immediately after the first `embed_tensor_edges` call.  Hard
+reset copies `base_tensor` back to the device rather than calling
+`embed_tensor_edges` again from the host.
+
+---
+
+### 24. Block Node Enforces Blocked Semantics
+
+```
+node = Control::Block  ⟹  blocked = 1  ∨  halted = 1  ∨  f_{t+1} = recovery
+```
+
+**Observed violation:**
+
+```
+operator=Control::Block  exit=0  outcome=Success  blocked=0  score=⊥
+```
+
+`Control::Block` executing with `outcome=Success` and `blocked=0` is
+semantically contradictory.  A block node must either set the blocked flag,
+transition to halt, or transition to a declared recovery node.  It must not
+silently succeed and return to normal flow on a bottom score.
+
+**Check:** after executing a node whose name starts with `Control::Block`,
+assert the resulting decision has `blocked=1` or `halted=1`.
+
+---
+
+### 25. Executable Nodes Have Known Action Semantics
+
+```
+v ∈ State ∪ Control  ⟹  action(v) ≠ "unknown"
+```
+
+**Observed in logs:**
+
+```
+action="unknown"  for  State::Learn, State::Validate, Control::Block, State::Input
+```
+
+The existing `MissingOperator` check (Phase 2) only verifies that an operator
+entry exists in `operators.json`.  It does not verify the operator has a
+declared `action` field that maps to a known semantic.
+
+**Stronger check:** in `check_with_operators`, additionally verify that every
+`State` / `Control` node's operator entry contains a non-empty `action` or
+`output_mode` field.
+
+---
+
+## Canonical Fix Equation
+
+```
+W_t = W_0 ⊕ L_t
+
+with:
+
+check(W_0) = true           (static topology checker, phases 1–3)
+check(L_t | W_0) = true     (overlay checker, invariant 22)
+reset(W_t) = W_0            (base matrix preservation, invariant 23)
+s_t = ⊥  ⟹  blocked = 1   (score-bottom implies blocked, invariant 18)
+```
+
+The learned runtime matrix can extend the base topology, but it cannot erase
+recovery paths, bypass gates, or advance on bottom.
+
+---
+
+## Diagnosis
+
+```
+Missing layer = runtime tensor invariant checker
+```
+
+The static graph checker is correct and complete for `A`.  The current failure
+class is:
+
+```
+runtime selected a hop while score was ⊥
+→ executor ran on an invalid node
+→ reset tried to recover through a bottomed tensor
+→ active[] stayed at -1
+→ Unknown(-1) loop
+```
+
+The next fix layer is **not** more static topology checks.  It is a runtime
+gate applied before each executor call:
+
+```rust
+// Before every executor.execute_abstract_node call:
+assert!(decision.selected_value > BOTTOM || decision.blocked != 0,
+    "invariant 18: score=⊥ with blocked=0; refusing to advance frontier");
+assert!(decision.blocked == 0 || decision.first_hop < 0,
+    "invariant 18/19: inconsistent decision report");
+```
+
+---
+
+## Phase 6 Implementation Plan
+
+### New `ViolationKind` variants (runtime)
+
+```rust
+ScoreBottomNotBlocked,          // invariant 18
+ProjectionFirstHopMismatch,     // invariant 19
+FrontierAdvancedOnBottom,       // invariant 20
+RuntimeDeadRow,                 // invariant 21
+OverlayEndpointInvalid,         // invariant 22
+OverlayWeightOutOfDomain,       // invariant 22
+OverlayDominanceViolation,      // invariant 22
+BaseMatrixCorrupted,            // invariant 23
+BlockNodeNotBlocked,            // invariant 24
+UnknownActionSemantics,         // invariant 25
+```
+
+### New files
+
+| File | Purpose |
+|------|---------|
+| `src/overlay_check.rs` | `check_overlay()` — validates LLM edge sets before VRAM upload |
+| `src/runtime_check.rs` | `check_decision()` — validates `DecisionReport` before executor |
+
+### Changes to existing files
+
+| File | Change |
+|------|--------|
+| `src/tensor.rs` | Store `base_tensor` snapshot; `reset()` restores from it |
+| `src/main.rs` | Call `check_decision()` before every `execute_abstract_node` |
+| `src/main.rs` | Call `check_overlay()` before every `embed_tensor_edges` from LLM plan |
+
+### Priority Order
+
+```
+18. score_bottom_blocks                    (main.rs guard — fast)
+19. projection_first_hop_consistency       (tensor.rs assertion)
+20. no_frontier_advance_on_bottom          (main.rs guard — fast)
+22. llm_overlay_topology_check_before_vram (new overlay_check.rs)
+23. base_matrix_preserved_on_reset         (tensor.rs base snapshot)
+24. block_node_sets_blocked_or_halted      (main.rs post-exec check)
+21. runtime_matrix_liveness_after_overlay  (debug flag — expensive)
+25. executable_nodes_have_known_action     (extend check_with_operators)
+```
