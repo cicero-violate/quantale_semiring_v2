@@ -1,4 +1,5 @@
 # Goal
+Data defines execution; CPU only launches kernels, never decides orchestration. GPU runs the show.
 
 Build a CUDA-resident tensor quantale orchestrator where workflow routing is algebraic, data-driven, and receipt-grounded.
 
