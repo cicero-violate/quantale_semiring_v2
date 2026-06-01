@@ -1,0 +1,42 @@
+{
+  "engine": {
+    "beam_width": 8,
+    "max_depth": 4,
+    "max_batches": 4,
+    "novelty_weight": 0.15,
+    "receipt_weight": 0.30,
+    "entropy_penalty": 0.10,
+    "repeat_penalty": 1.25,
+    "max_terminal_visits": 1,
+    "max_first_hop_visits": 1
+  },
+  "strategies": [
+    {
+      "name": "fast_path",
+      "start": "State::Plan",
+      "bias": {
+        "confidence": 0.70,
+        "cost": 1.50,
+        "safety": 0.80
+      }
+    },
+    {
+      "name": "safe_path",
+      "start": "State::Validate",
+      "bias": {
+        "confidence": 0.60,
+        "cost": 0.80,
+        "safety": 1.80
+      }
+    },
+    {
+      "name": "repair_path",
+      "start": "Control::Repair",
+      "bias": {
+        "confidence": 0.80,
+        "cost": 1.00,
+        "safety": 1.20
+      }
+    }
+  ]
+}

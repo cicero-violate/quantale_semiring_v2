@@ -7,6 +7,8 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+use crate::batch::BatchPlan;
+use crate::exploration::ExplorationCommitRecord;
 use crate::projection::DecisionReport;
 use crate::rule_delta::{ExecutionReceipt, ProcessReceipt};
 use crate::tensor::TensorEdge;
@@ -17,6 +19,11 @@ pub enum TlogRecordKind {
     Receipt,
     TensorEdges,
     AgentStep,
+    ExplorationSeed,
+    ExplorationExpand,
+    ExplorationTopK,
+    ExplorationCommit,
+    ExplorationReceipt,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -91,6 +98,36 @@ impl TlogWriter {
         self.append_record(
             TlogRecordKind::TensorEdges,
             &json!({ "label": label, "edges": edges }),
+        )
+    }
+
+    pub fn append_exploration_seed<T: Serialize>(&mut self, payload: &T) -> io::Result<u64> {
+        self.append_record(TlogRecordKind::ExplorationSeed, payload)
+    }
+
+    pub fn append_exploration_expand<T: Serialize>(&mut self, payload: &T) -> io::Result<u64> {
+        self.append_record(TlogRecordKind::ExplorationExpand, payload)
+    }
+
+    pub fn append_exploration_topk<T: Serialize>(&mut self, payload: &T) -> io::Result<u64> {
+        self.append_record(TlogRecordKind::ExplorationTopK, payload)
+    }
+
+    pub fn append_exploration_commit(
+        &mut self,
+        record: &ExplorationCommitRecord,
+    ) -> io::Result<u64> {
+        self.append_record(TlogRecordKind::ExplorationCommit, record)
+    }
+
+    pub fn append_exploration_receipt<T: Serialize>(&mut self, payload: &T) -> io::Result<u64> {
+        self.append_record(TlogRecordKind::ExplorationReceipt, payload)
+    }
+
+    pub fn append_batch_plan(&mut self, label: &str, batch_plan: &BatchPlan) -> io::Result<u64> {
+        self.append_record(
+            TlogRecordKind::Decision,
+            &json!({ "label": label, "batch_plan": batch_plan }),
         )
     }
 

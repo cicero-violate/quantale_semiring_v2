@@ -12,9 +12,15 @@ Exit codes:
 import sys
 import json
 import argparse
+import os
 
-BROWSER_ROUTER_URL = "http://127.0.0.1:8090/v1/chat/completions"
-MODEL = "chatgpt-cdp"
+BROWSER_ROUTER_URL = os.environ.get(
+    "BROWSER_ROUTER_URL",
+    "http://127.0.0.1:8090/v1/chat/completions",
+)
+MODEL = os.environ.get("BROWSER_ROUTER_MODEL", "chatgpt-cdp")
+BROWSER_PROVIDER = os.environ.get("BROWSER_ROUTER_PROVIDER", "chatgpt_private")
+BROWSER_TARGET_URL = os.environ.get("BROWSER_ROUTER_TARGET_URL", "https://chatgpt.com/")
 
 # Valid node names the LLM may reference in edge proposals.
 VALID_NODES = (
@@ -94,6 +100,10 @@ def main() -> None:
     payload = json.dumps({
         "model": MODEL,
         "messages": [{"role": "user", "content": prompt}],
+        "browser": {
+            "provider": BROWSER_PROVIDER,
+            "target_url": BROWSER_TARGET_URL,
+        },
     }).encode()
 
     req = urllib.request.Request(
@@ -111,7 +121,9 @@ def main() -> None:
             sys.exit(0)
 
     except urllib.error.HTTPError as exc:
-        sys.stderr.write(f"LLM API HTTP error {exc.code}: {exc.reason}\n")
+        error_body = exc.read().decode(errors="replace").strip()
+        detail = f": {error_body}" if error_body else ""
+        sys.stderr.write(f"LLM API HTTP error {exc.code}: {exc.reason}{detail}\n")
         sys.exit(1)
     except urllib.error.URLError as exc:
         sys.stderr.write(f"browser-router connection failed: {exc.reason}\n")

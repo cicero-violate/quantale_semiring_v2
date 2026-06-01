@@ -1,9 +1,12 @@
 pub mod algebra;
+pub mod batch;
 pub mod config;
 pub mod egress;
 pub mod error;
+pub mod exploration;
 pub mod node;
 pub mod path;
+pub mod pattern;
 pub mod plan;
 pub mod projection;
 pub mod rule_delta;
@@ -14,11 +17,14 @@ pub mod transitions;
 pub mod types;
 
 pub use algebra::*;
+pub use batch::*;
 pub use config::*;
 pub use egress::*;
 pub use error::*;
+pub use exploration::*;
 pub use node::*;
 pub use path::*;
+pub use pattern::*;
 pub use plan::*;
 pub use projection::*;
 pub use rule_delta::*;

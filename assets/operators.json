@@ -3,44 +3,778 @@
     {
       "node_name": "Control::GateExecution",
       "executable": "patch",
-      "static_args": ["-p1", "--batch"],
+      "static_args": [
+        "-p1",
+        "--batch"
+      ],
       "input_mapping": {
         "stdin_source": "diff"
+      },
+      "effects": {
+        "reads": [
+          "workspace.diff"
+        ],
+        "writes": [
+          "workspace.files"
+        ],
+        "locks": [
+          "workspace"
+        ]
       }
     },
     {
       "node_name": "State::Validate",
       "executable": "cargo",
-      "static_args": ["test", "--release"],
+      "static_args": [
+        "test",
+        "--release"
+      ],
       "input_mapping": {
         "stdin_source": null
+      },
+      "effects": {
+        "reads": [
+          "workspace.files"
+        ],
+        "writes": [
+          "validation.report"
+        ],
+        "locks": []
       }
     },
     {
       "node_name": "State::Plan",
       "executable": "python3",
-      "static_args": ["assets/call_llm.py", "--template", "plan"],
+      "static_args": [
+        "assets/call_llm.py",
+        "--template",
+        "plan"
+      ],
       "input_mapping": {
         "stdin_mode": "json"
       },
-      "output_mode": "tensor_plan"
+      "output_mode": "tensor_plan",
+      "effects": {
+        "reads": [
+          "task.context"
+        ],
+        "writes": [
+          "plan.tensor"
+        ],
+        "locks": []
+      }
     },
     {
       "node_name": "State::Memory",
       "executable": "python3",
-      "static_args": ["assets/memory.py"],
+      "static_args": [
+        "assets/memory.py"
+      ],
       "input_mapping": {
         "stdin_mode": "json"
+      },
+      "effects": {
+        "reads": [
+          "task.context"
+        ],
+        "writes": [
+          "memory.store"
+        ],
+        "locks": [
+          "memory"
+        ]
       }
     },
     {
       "node_name": "Control::Repair",
       "executable": "python3",
-      "static_args": ["assets/call_llm.py", "--template", "repair"],
+      "static_args": [
+        "assets/call_llm.py",
+        "--template",
+        "repair"
+      ],
       "input_mapping": {
         "stdin_mode": "json"
       },
-      "output_mode": "tensor_plan"
+      "output_mode": "tensor_plan",
+      "effects": {
+        "reads": [
+          "receipt.report",
+          "task.context"
+        ],
+        "writes": [
+          "repair.tensor"
+        ],
+        "locks": []
+      }
+    },
+    {
+      "node_name": "Control::Retry",
+      "executable": "true",
+      "static_args": [],
+      "input_mapping": {
+        "stdin_source": null
+      },
+      "effects": {
+        "reads": [
+          "receipt.report"
+        ],
+        "writes": [
+          "retry.intent"
+        ],
+        "locks": []
+      }
+    },
+    {
+      "node_name": "State::Optimize",
+      "executable": "true",
+      "static_args": [],
+      "input_mapping": {
+        "stdin_source": null
+      },
+      "effects": {
+        "reads": [
+          "plan.tensor"
+        ],
+        "writes": [
+          "optimized.tensor"
+        ],
+        "locks": []
+      }
+    },
+    {
+      "node_name": "State::Execute",
+      "executable": "true",
+      "static_args": [],
+      "input_mapping": {
+        "stdin_source": null
+      },
+      "effects": {
+        "reads": [
+          "optimized.tensor"
+        ],
+        "writes": [
+          "execution.report"
+        ],
+        "locks": [
+          "executor"
+        ]
+      }
+    },
+    {
+      "node_name": "State::Learn",
+      "executable": "true",
+      "static_args": [],
+      "input_mapping": {
+        "stdin_source": null
+      },
+      "effects": {
+        "reads": [
+          "memory.store",
+          "validation.report"
+        ],
+        "writes": [
+          "learning.model"
+        ],
+        "locks": [
+          "learning"
+        ]
+      }
+    },
+    {
+      "node_name": "State::Map",
+      "executable": "true",
+      "static_args": [],
+      "input_mapping": {
+        "stdin_source": null
+      },
+      "effects": {
+        "reads": [
+          "task.context"
+        ],
+        "writes": [
+          "map.candidates"
+        ],
+        "locks": []
+      }
+    },
+    {
+      "node_name": "State::Search",
+      "executable": "true",
+      "static_args": [],
+      "input_mapping": {
+        "stdin_source": null
+      },
+      "effects": {
+        "reads": [
+          "map.candidates"
+        ],
+        "writes": [
+          "search.results"
+        ],
+        "locks": []
+      }
+    },
+    {
+      "node_name": "State::Parse",
+      "executable": "true",
+      "static_args": [],
+      "input_mapping": {
+        "stdin_source": null
+      },
+      "effects": {
+        "reads": [
+          "task.context"
+        ],
+        "writes": [
+          "parse.tree"
+        ],
+        "locks": []
+      }
+    },
+    {
+      "node_name": "State::Score",
+      "executable": "true",
+      "static_args": [],
+      "input_mapping": {
+        "stdin_source": null
+      },
+      "effects": {
+        "reads": [
+          "parse.tree"
+        ],
+        "writes": [
+          "score.report"
+        ],
+        "locks": []
+      }
+    },
+    {
+      "node_name": "State::Goal",
+      "executable": "true",
+      "static_args": [],
+      "input_mapping": {
+        "stdin_source": null
+      },
+      "effects": {
+        "reads": [
+          "state.symbolic"
+        ],
+        "writes": [
+          "state.goal.observed"
+        ],
+        "locks": []
+      }
+    },
+    {
+      "node_name": "State::Input",
+      "executable": "true",
+      "static_args": [],
+      "input_mapping": {
+        "stdin_source": null
+      },
+      "effects": {
+        "reads": [
+          "state.symbolic"
+        ],
+        "writes": [
+          "state.input.observed"
+        ],
+        "locks": []
+      }
+    },
+    {
+      "node_name": "State::Select",
+      "executable": "true",
+      "static_args": [],
+      "input_mapping": {
+        "stdin_source": null
+      },
+      "effects": {
+        "reads": [
+          "state.symbolic"
+        ],
+        "writes": [
+          "state.select.observed"
+        ],
+        "locks": []
+      }
+    },
+    {
+      "node_name": "Control::Allow",
+      "executable": "true",
+      "static_args": [],
+      "input_mapping": {
+        "stdin_source": null
+      },
+      "effects": {
+        "reads": [
+          "control.symbolic"
+        ],
+        "writes": [
+          "control.allow.observed"
+        ],
+        "locks": []
+      }
+    },
+    {
+      "node_name": "Control::Block",
+      "executable": "true",
+      "static_args": [],
+      "input_mapping": {
+        "stdin_source": null
+      },
+      "effects": {
+        "reads": [
+          "control.symbolic"
+        ],
+        "writes": [
+          "control.block.observed"
+        ],
+        "locks": []
+      }
+    },
+    {
+      "node_name": "Control::Commit",
+      "executable": "true",
+      "static_args": [],
+      "input_mapping": {
+        "stdin_source": null
+      },
+      "effects": {
+        "reads": [
+          "control.symbolic"
+        ],
+        "writes": [
+          "control.commit.observed"
+        ],
+        "locks": []
+      }
+    },
+    {
+      "node_name": "Control::Rollback",
+      "executable": "true",
+      "static_args": [],
+      "input_mapping": {
+        "stdin_source": null
+      },
+      "effects": {
+        "reads": [
+          "control.symbolic"
+        ],
+        "writes": [
+          "control.rollback.observed"
+        ],
+        "locks": []
+      }
+    },
+    {
+      "node_name": "Control::Halt",
+      "executable": "true",
+      "static_args": [],
+      "input_mapping": {
+        "stdin_source": null
+      },
+      "effects": {
+        "reads": [
+          "control.symbolic"
+        ],
+        "writes": [
+          "control.halt.observed"
+        ],
+        "locks": []
+      }
+    },
+    {
+      "node_name": "Control::GateInput",
+      "executable": "true",
+      "static_args": [],
+      "input_mapping": {
+        "stdin_source": null
+      },
+      "effects": {
+        "reads": [
+          "control.symbolic"
+        ],
+        "writes": [
+          "control.gateinput.observed"
+        ],
+        "locks": []
+      }
+    },
+    {
+      "node_name": "Control::GateReceipt",
+      "executable": "true",
+      "static_args": [],
+      "input_mapping": {
+        "stdin_source": null
+      },
+      "effects": {
+        "reads": [
+          "control.symbolic"
+        ],
+        "writes": [
+          "control.gatereceipt.observed"
+        ],
+        "locks": []
+      }
+    },
+    {
+      "node_name": "Control::GateMemory",
+      "executable": "true",
+      "static_args": [],
+      "input_mapping": {
+        "stdin_source": null
+      },
+      "effects": {
+        "reads": [
+          "control.symbolic"
+        ],
+        "writes": [
+          "control.gatememory.observed"
+        ],
+        "locks": []
+      }
+    },
+    {
+      "node_name": "Control::GateLearn",
+      "executable": "true",
+      "static_args": [],
+      "input_mapping": {
+        "stdin_source": null
+      },
+      "effects": {
+        "reads": [
+          "control.symbolic"
+        ],
+        "writes": [
+          "control.gatelearn.observed"
+        ],
+        "locks": []
+      }
+    },
+    {
+      "node_name": "Control::ChooseBest",
+      "executable": "true",
+      "static_args": [],
+      "input_mapping": {
+        "stdin_source": null
+      },
+      "effects": {
+        "reads": [
+          "control.symbolic"
+        ],
+        "writes": [
+          "control.choosebest.observed"
+        ],
+        "locks": []
+      }
+    },
+    {
+      "node_name": "Event::FactArrived",
+      "executable": "true",
+      "static_args": [],
+      "input_mapping": {
+        "stdin_source": null
+      },
+      "effects": {
+        "reads": [
+          "event.symbolic"
+        ],
+        "writes": [
+          "event.factarrived.observed"
+        ],
+        "locks": []
+      }
+    },
+    {
+      "node_name": "Event::InputAccepted",
+      "executable": "true",
+      "static_args": [],
+      "input_mapping": {
+        "stdin_source": null
+      },
+      "effects": {
+        "reads": [
+          "event.symbolic"
+        ],
+        "writes": [
+          "event.inputaccepted.observed"
+        ],
+        "locks": []
+      }
+    },
+    {
+      "node_name": "Event::ParseOk",
+      "executable": "true",
+      "static_args": [],
+      "input_mapping": {
+        "stdin_source": null
+      },
+      "effects": {
+        "reads": [
+          "event.symbolic"
+        ],
+        "writes": [
+          "event.parseok.observed"
+        ],
+        "locks": []
+      }
+    },
+    {
+      "node_name": "Event::ParseErr",
+      "executable": "true",
+      "static_args": [],
+      "input_mapping": {
+        "stdin_source": null
+      },
+      "effects": {
+        "reads": [
+          "event.symbolic"
+        ],
+        "writes": [
+          "event.parseerr.observed"
+        ],
+        "locks": []
+      }
+    },
+    {
+      "node_name": "Event::MapReady",
+      "executable": "true",
+      "static_args": [],
+      "input_mapping": {
+        "stdin_source": null
+      },
+      "effects": {
+        "reads": [
+          "event.symbolic"
+        ],
+        "writes": [
+          "event.mapready.observed"
+        ],
+        "locks": []
+      }
+    },
+    {
+      "node_name": "Event::CandidateFound",
+      "executable": "true",
+      "static_args": [],
+      "input_mapping": {
+        "stdin_source": null
+      },
+      "effects": {
+        "reads": [
+          "event.symbolic"
+        ],
+        "writes": [
+          "event.candidatefound.observed"
+        ],
+        "locks": []
+      }
+    },
+    {
+      "node_name": "Event::ScoreReady",
+      "executable": "true",
+      "static_args": [],
+      "input_mapping": {
+        "stdin_source": null
+      },
+      "effects": {
+        "reads": [
+          "event.symbolic"
+        ],
+        "writes": [
+          "event.scoreready.observed"
+        ],
+        "locks": []
+      }
+    },
+    {
+      "node_name": "Event::TopKSelected",
+      "executable": "true",
+      "static_args": [],
+      "input_mapping": {
+        "stdin_source": null
+      },
+      "effects": {
+        "reads": [
+          "event.symbolic"
+        ],
+        "writes": [
+          "event.topkselected.observed"
+        ],
+        "locks": []
+      }
+    },
+    {
+      "node_name": "Event::PlanReady",
+      "executable": "true",
+      "static_args": [],
+      "input_mapping": {
+        "stdin_source": null
+      },
+      "effects": {
+        "reads": [
+          "event.symbolic"
+        ],
+        "writes": [
+          "event.planready.observed"
+        ],
+        "locks": []
+      }
+    },
+    {
+      "node_name": "Event::OptimizeReady",
+      "executable": "true",
+      "static_args": [],
+      "input_mapping": {
+        "stdin_source": null
+      },
+      "effects": {
+        "reads": [
+          "event.symbolic"
+        ],
+        "writes": [
+          "event.optimizeready.observed"
+        ],
+        "locks": []
+      }
+    },
+    {
+      "node_name": "Event::ExecuteStarted",
+      "executable": "true",
+      "static_args": [],
+      "input_mapping": {
+        "stdin_source": null
+      },
+      "effects": {
+        "reads": [
+          "event.symbolic"
+        ],
+        "writes": [
+          "event.executestarted.observed"
+        ],
+        "locks": []
+      }
+    },
+    {
+      "node_name": "Event::ExecuteFinished",
+      "executable": "true",
+      "static_args": [],
+      "input_mapping": {
+        "stdin_source": null
+      },
+      "effects": {
+        "reads": [
+          "event.symbolic"
+        ],
+        "writes": [
+          "event.executefinished.observed"
+        ],
+        "locks": []
+      }
+    },
+    {
+      "node_name": "Event::ReceiptAttached",
+      "executable": "true",
+      "static_args": [],
+      "input_mapping": {
+        "stdin_source": null
+      },
+      "effects": {
+        "reads": [
+          "event.symbolic"
+        ],
+        "writes": [
+          "event.receiptattached.observed"
+        ],
+        "locks": []
+      }
+    },
+    {
+      "node_name": "Event::ReceiptAccepted",
+      "executable": "true",
+      "static_args": [],
+      "input_mapping": {
+        "stdin_source": null
+      },
+      "effects": {
+        "reads": [
+          "event.symbolic"
+        ],
+        "writes": [
+          "event.receiptaccepted.observed"
+        ],
+        "locks": []
+      }
+    },
+    {
+      "node_name": "Event::ReceiptRejected",
+      "executable": "true",
+      "static_args": [],
+      "input_mapping": {
+        "stdin_source": null
+      },
+      "effects": {
+        "reads": [
+          "event.symbolic"
+        ],
+        "writes": [
+          "event.receiptrejected.observed"
+        ],
+        "locks": []
+      }
+    },
+    {
+      "node_name": "Event::HashNonzero",
+      "executable": "true",
+      "static_args": [],
+      "input_mapping": {
+        "stdin_source": null
+      },
+      "effects": {
+        "reads": [
+          "event.symbolic"
+        ],
+        "writes": [
+          "event.hashnonzero.observed"
+        ],
+        "locks": []
+      }
+    },
+    {
+      "node_name": "Event::MemoryWritten",
+      "executable": "true",
+      "static_args": [],
+      "input_mapping": {
+        "stdin_source": null
+      },
+      "effects": {
+        "reads": [
+          "event.symbolic"
+        ],
+        "writes": [
+          "event.memorywritten.observed"
+        ],
+        "locks": []
+      }
+    },
+    {
+      "node_name": "Event::LearnUpdated",
+      "executable": "true",
+      "static_args": [],
+      "input_mapping": {
+        "stdin_source": null
+      },
+      "effects": {
+        "reads": [
+          "event.symbolic"
+        ],
+        "writes": [
+          "event.learnupdated.observed"
+        ],
+        "locks": []
+      }
     }
   ]
 }

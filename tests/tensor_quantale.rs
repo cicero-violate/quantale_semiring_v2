@@ -213,3 +213,32 @@ fn gpu_tensor_witness_reconstructs_distinct_layer_paths() {
     assert_ne!(confidence_path, safety_path);
     assert_ne!(cost_path, safety_path);
 }
+
+#[test]
+fn gpu_tensor_projects_and_commits_parallel_group() {
+    let goal = Node::state(StateNode::Goal).encode();
+    let map = Node::state(StateNode::Map).encode();
+    let search = Node::state(StateNode::Search).encode();
+    let parse = Node::state(StateNode::Parse).encode();
+    let score = Node::state(StateNode::Score).encode();
+    let edges = [
+        TensorEdge::new(goal, map, 0.95, 1.0, 0.95),
+        TensorEdge::new(goal, parse, 0.94, 1.0, 0.94),
+        TensorEdge::new(map, search, 0.93, 1.0, 0.93),
+        TensorEdge::new(parse, score, 0.92, 1.0, 0.92),
+    ];
+    let mut world = TensorQuantaleWorld::from_tensor_edges(&edges).unwrap();
+    world.close().unwrap();
+
+    let decisions = world
+        .project_parallel_group(&[map, parse], ProjectionBias::default())
+        .unwrap();
+    assert_eq!(decisions.len(), 2);
+    assert!(decisions.iter().all(|decision| decision.blocked == 0));
+    assert_eq!(decisions[0].first_hop, map);
+    assert_eq!(decisions[1].first_hop, parse);
+
+    world.commit_decision_batch(&decisions).unwrap();
+    let next = world.project(ProjectionBias::default()).unwrap();
+    assert!(next.selected_src == map || next.selected_src == parse);
+}

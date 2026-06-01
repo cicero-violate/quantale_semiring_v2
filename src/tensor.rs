@@ -9,9 +9,10 @@ use std::sync::Arc;
 
 use cudarc::driver::{CudaDevice, CudaSlice, DeviceRepr, LaunchAsync, LaunchConfig};
 use cudarc::nvrtc::compile_ptx;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::error::CudaError;
+use crate::exploration::{ExplorationCandidate, ExplorationEngine, ExplorationToken};
 use crate::node::{MATRIX_LEN, NODE_COUNT, Node, START_NODE, THREAD_COUNT};
 use crate::path::reconstruct_path_from_witness_matrix;
 use crate::projection::DecisionReport;
@@ -30,10 +31,20 @@ const RESET_KERNEL: &str = "tensor_quantale_reset";
 const EMBED_KERNEL: &str = "tensor_quantale_embed_edges";
 const CLOSURE_KERNEL: &str = "tensor_quantale_closure";
 const PROJECT_KERNEL: &str = "tensor_quantale_project";
+const PROJECT_BATCH_KERNEL: &str = "tensor_quantale_project_batch";
+const COMMIT_BATCH_KERNEL: &str = "tensor_quantale_commit_batch";
 const UPDATE_KERNEL: &str = "tensor_quantale_update_edge";
 const DECAY_KERNEL: &str = "tensor_quantale_decay";
 const FRONTIER_STEP_KERNEL: &str = "tensor_quantale_frontier_step";
 const TICK_KERNEL: &str = "tensor_quantale_tick";
+const EXPLORATION_SEED_KERNEL: &str = "tensor_quantale_seed_exploration";
+const EXPLORATION_EXPAND_KERNEL: &str = "tensor_quantale_expand_tokens";
+const EXPLORATION_SCORE_KERNEL: &str = "tensor_quantale_score_tokens";
+const EXPLORATION_TOPK_KERNEL: &str = "tensor_quantale_select_topk_tokens";
+const EXPLORATION_COMMIT_KERNEL: &str = "tensor_quantale_commit_exploration";
+
+pub const EXPLORATION_MAX_TOKENS: usize = NODE_COUNT * NODE_COUNT;
+pub const EXPLORATION_MAX_SELECTED: usize = NODE_COUNT;
 const KERNEL_SOURCE: &str = include_str!("../cuda/quantale_world.cu");
 
 #[repr(C)]
@@ -61,7 +72,7 @@ impl TensorEdge {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ProjectionBias {
     pub confidence: f32,
     pub cost: f32,
@@ -119,6 +130,12 @@ pub struct TensorQuantaleWorld {
     active: CudaSlice<i32>,
     next_active: CudaSlice<i32>,
     decision: CudaSlice<DecisionReport>,
+    exploration_tokens: CudaSlice<ExplorationToken>,
+    exploration_scores: CudaSlice<f32>,
+    exploration_parents: CudaSlice<i32>,
+    exploration_selected: CudaSlice<ExplorationCandidate>,
+    exploration_token_count: CudaSlice<i32>,
+    exploration_selected_count: CudaSlice<i32>,
 }
 
 impl TensorQuantaleWorld {
@@ -134,10 +151,17 @@ impl TensorQuantaleWorld {
                 EMBED_KERNEL,
                 CLOSURE_KERNEL,
                 PROJECT_KERNEL,
+                PROJECT_BATCH_KERNEL,
+                COMMIT_BATCH_KERNEL,
                 UPDATE_KERNEL,
                 DECAY_KERNEL,
                 FRONTIER_STEP_KERNEL,
                 TICK_KERNEL,
+                EXPLORATION_SEED_KERNEL,
+                EXPLORATION_EXPAND_KERNEL,
+                EXPLORATION_SCORE_KERNEL,
+                EXPLORATION_TOPK_KERNEL,
+                EXPLORATION_COMMIT_KERNEL,
             ],
         )
         .map_err(|error| CudaError::new("load_ptx tensor", error))?;
@@ -166,6 +190,27 @@ impl TensorQuantaleWorld {
         let decision = dev
             .htod_copy(vec![DecisionReport::default()])
             .map_err(|error| CudaError::new("htod_copy tensor decision", error))?;
+        let exploration_tokens = dev
+            .htod_copy(vec![ExplorationToken::default(); EXPLORATION_MAX_TOKENS])
+            .map_err(|error| CudaError::new("htod_copy exploration tokens", error))?;
+        let exploration_scores = dev
+            .htod_copy(vec![-COST_INFINITY; EXPLORATION_MAX_TOKENS])
+            .map_err(|error| CudaError::new("htod_copy exploration scores", error))?;
+        let exploration_parents = dev
+            .htod_copy(vec![-1_i32; EXPLORATION_MAX_TOKENS])
+            .map_err(|error| CudaError::new("htod_copy exploration parents", error))?;
+        let exploration_selected = dev
+            .htod_copy(vec![
+                ExplorationCandidate::default();
+                EXPLORATION_MAX_SELECTED
+            ])
+            .map_err(|error| CudaError::new("htod_copy exploration selected", error))?;
+        let exploration_token_count = dev
+            .htod_copy(vec![0_i32])
+            .map_err(|error| CudaError::new("htod_copy exploration token_count", error))?;
+        let exploration_selected_count = dev
+            .htod_copy(vec![0_i32])
+            .map_err(|error| CudaError::new("htod_copy exploration selected_count", error))?;
 
         let mut world = Self {
             dev,
@@ -177,6 +222,12 @@ impl TensorQuantaleWorld {
             active,
             next_active,
             decision,
+            exploration_tokens,
+            exploration_scores,
+            exploration_parents,
+            exploration_selected,
+            exploration_token_count,
+            exploration_selected_count,
         };
         world.reset()?;
         Ok(world)
@@ -275,6 +326,122 @@ impl TensorQuantaleWorld {
         self.decision_report()
     }
 
+    pub fn project_parallel_group(
+        &mut self,
+        group_nodes: &[i32],
+        bias: ProjectionBias,
+    ) -> Result<Vec<DecisionReport>, CudaError> {
+        if group_nodes.len() < 2 {
+            return Err(CudaError::invalid_input(
+                "parallel projection requires at least two group nodes",
+            ));
+        }
+        if group_nodes.len() > NODE_COUNT {
+            return Err(CudaError::invalid_input(
+                "parallel projection group too large",
+            ));
+        }
+        for node in group_nodes {
+            if Node::decode(*node).is_none() {
+                return Err(CudaError::invalid_input(format!(
+                    "invalid parallel projection node {node}"
+                )));
+            }
+        }
+
+        let group_len = i32::try_from(group_nodes.len())
+            .map_err(|_| CudaError::invalid_input("parallel projection group too large"))?;
+        let bias_buffer = self
+            .dev
+            .htod_copy(vec![bias])
+            .map_err(|error| CudaError::new("htod_copy tensor batch bias", error))?;
+        let group_buffer = self
+            .dev
+            .htod_copy(group_nodes.to_vec())
+            .map_err(|error| CudaError::new("htod_copy tensor batch group", error))?;
+        let mut out_decisions = self
+            .dev
+            .htod_copy(vec![DecisionReport::default(); group_nodes.len()])
+            .map_err(|error| CudaError::new("htod_copy tensor batch decisions", error))?;
+        let kernel = self
+            .dev
+            .get_func(MODULE_NAME, PROJECT_BATCH_KERNEL)
+            .ok_or(CudaError::missing_function(PROJECT_BATCH_KERNEL))?;
+        unsafe {
+            kernel.launch(
+                kernel_config(),
+                (
+                    &self.tensor,
+                    &self.witness,
+                    &self.consumed,
+                    &self.active,
+                    &bias_buffer,
+                    &group_buffer,
+                    group_len,
+                    &self.decision,
+                    &mut out_decisions,
+                ),
+            )
+        }
+        .map_err(|error| CudaError::new("tensor_quantale_project_batch", error))?;
+        self.dev
+            .dtoh_sync_copy(&out_decisions)
+            .map_err(|error| CudaError::new("dtoh_sync_copy tensor batch decisions", error))
+    }
+
+    pub fn commit_decision_batch(&mut self, decisions: &[DecisionReport]) -> Result<(), CudaError> {
+        if decisions.len() < 2 {
+            return Err(CudaError::invalid_input(
+                "decision batch commit requires at least two decisions",
+            ));
+        }
+        if decisions.len() > NODE_COUNT {
+            return Err(CudaError::invalid_input("decision batch is too large"));
+        }
+        if decisions
+            .iter()
+            .any(|decision| decision.blocked != 0 || decision.halted != 0)
+        {
+            return Err(CudaError::invalid_input(
+                "cannot commit blocked or halted decision batch",
+            ));
+        }
+        for decision in decisions {
+            if Node::decode(decision.selected_src).is_none()
+                || Node::decode(decision.first_hop).is_none()
+            {
+                return Err(CudaError::invalid_input(
+                    "cannot commit decision batch with invalid node IDs",
+                ));
+            }
+        }
+
+        let decision_count = i32::try_from(decisions.len())
+            .map_err(|_| CudaError::invalid_input("decision batch is too large"))?;
+        let decision_buffer = self
+            .dev
+            .htod_copy(decisions.to_vec())
+            .map_err(|error| CudaError::new("htod_copy tensor batch commit decisions", error))?;
+        let kernel = self
+            .dev
+            .get_func(MODULE_NAME, COMMIT_BATCH_KERNEL)
+            .ok_or(CudaError::missing_function(COMMIT_BATCH_KERNEL))?;
+        unsafe {
+            kernel.launch(
+                kernel_config(),
+                (
+                    &mut self.consumed,
+                    &mut self.active,
+                    &mut self.next_active,
+                    &decision_buffer,
+                    decision_count,
+                    &mut self.decision,
+                ),
+            )
+        }
+        .map_err(|error| CudaError::new("tensor_quantale_commit_batch", error))
+    }
+
     /// Project and advance the tensor frontier on CUDA.
     pub fn frontier_step(&mut self, bias: ProjectionBias) -> Result<DecisionReport, CudaError> {
         let bias_buffer = self
@@ -358,6 +525,195 @@ impl TensorQuantaleWorld {
             .ok_or(CudaError::missing_function(DECAY_KERNEL))?;
         unsafe { kernel.launch(kernel_config(), (&mut self.tensor, factor)) }
             .map_err(|error| CudaError::new("tensor_quantale_decay", error))
+    }
+
+    pub fn seed_exploration(&mut self, engine: &mut ExplorationEngine) -> Result<(), CudaError> {
+        let strategy_nodes = engine.strategy_nodes()?;
+        let strategy_biases = engine.strategy_biases();
+        let receipt_priors = engine.receipt_prior_vector();
+        let strategy_count = i32::try_from(strategy_nodes.len())
+            .map_err(|_| CudaError::invalid_input("too many exploration strategies"))?;
+        let strategy_node_buffer = self
+            .dev
+            .htod_copy(strategy_nodes)
+            .map_err(|error| CudaError::new("htod_copy exploration strategy nodes", error))?;
+        let strategy_bias_buffer = self
+            .dev
+            .htod_copy(strategy_biases)
+            .map_err(|error| CudaError::new("htod_copy exploration strategy bias", error))?;
+        let receipt_prior_buffer = self
+            .dev
+            .htod_copy(receipt_priors)
+            .map_err(|error| CudaError::new("htod_copy exploration receipt priors", error))?;
+        let kernel = self
+            .dev
+            .get_func(MODULE_NAME, EXPLORATION_SEED_KERNEL)
+            .ok_or(CudaError::missing_function(EXPLORATION_SEED_KERNEL))?;
+        unsafe {
+            kernel.launch(
+                kernel_config(),
+                (
+                    &self.tensor,
+                    &strategy_node_buffer,
+                    &strategy_bias_buffer,
+                    &receipt_prior_buffer,
+                    strategy_count,
+                    EXPLORATION_MAX_TOKENS as i32,
+                    &mut self.exploration_tokens,
+                    &mut self.exploration_scores,
+                    &mut self.exploration_parents,
+                    &mut self.exploration_token_count,
+                ),
+            )
+        }
+        .map_err(|error| CudaError::new("tensor_quantale_seed_exploration", error))?;
+        self.sync_exploration_engine(engine)
+    }
+
+    pub fn expand_exploration(
+        &mut self,
+        engine: &mut ExplorationEngine,
+    ) -> Result<Vec<ExplorationCandidate>, CudaError> {
+        self.seed_exploration(engine)?;
+        let max_depth = i32::try_from(engine.config().max_depth)
+            .map_err(|_| CudaError::invalid_input("exploration max_depth too large"))?;
+        let beam_width = i32::try_from(engine.config().beam_width)
+            .map_err(|_| CudaError::invalid_input("exploration beam_width too large"))?;
+        for source_depth in 0..max_depth {
+            let expand = self
+                .dev
+                .get_func(MODULE_NAME, EXPLORATION_EXPAND_KERNEL)
+                .ok_or(CudaError::missing_function(EXPLORATION_EXPAND_KERNEL))?;
+            unsafe {
+                expand.launch(
+                    kernel_config(),
+                    (
+                        &self.tensor,
+                        &mut self.exploration_token_count,
+                        source_depth,
+                        max_depth,
+                        EXPLORATION_MAX_TOKENS as i32,
+                        &mut self.exploration_tokens,
+                        &mut self.exploration_parents,
+                    ),
+                )
+            }
+            .map_err(|error| CudaError::new("tensor_quantale_expand_tokens", error))?;
+        }
+        let score = self
+            .dev
+            .get_func(MODULE_NAME, EXPLORATION_SCORE_KERNEL)
+            .ok_or(CudaError::missing_function(EXPLORATION_SCORE_KERNEL))?;
+        unsafe {
+            score.launch(
+                kernel_config(),
+                (
+                    &self.exploration_tokens,
+                    &self.exploration_token_count,
+                    engine.config().novelty_weight,
+                    engine.config().receipt_weight,
+                    engine.config().entropy_penalty,
+                    &mut self.exploration_scores,
+                ),
+            )
+        }
+        .map_err(|error| CudaError::new("tensor_quantale_score_tokens", error))?;
+        let terminal_visits = self
+            .dev
+            .htod_copy(engine.terminal_visit_vector())
+            .map_err(|error| CudaError::new("htod_copy exploration terminal visits", error))?;
+        let first_hop_visits = self
+            .dev
+            .htod_copy(engine.first_hop_visit_vector())
+            .map_err(|error| CudaError::new("htod_copy exploration first-hop visits", error))?;
+        let max_terminal_visits = i32::try_from(engine.config().max_terminal_visits)
+            .map_err(|_| CudaError::invalid_input("exploration max_terminal_visits too large"))?;
+        let max_first_hop_visits = i32::try_from(engine.config().max_first_hop_visits)
+            .map_err(|_| CudaError::invalid_input("exploration max_first_hop_visits too large"))?;
+        let topk = self
+            .dev
+            .get_func(MODULE_NAME, EXPLORATION_TOPK_KERNEL)
+            .ok_or(CudaError::missing_function(EXPLORATION_TOPK_KERNEL))?;
+        unsafe {
+            topk.launch(
+                kernel_config(),
+                (
+                    &self.exploration_tokens,
+                    &self.exploration_scores,
+                    &self.exploration_token_count,
+                    beam_width,
+                    engine.config().repeat_penalty,
+                    max_terminal_visits,
+                    max_first_hop_visits,
+                    &terminal_visits,
+                    &first_hop_visits,
+                    &mut self.exploration_selected,
+                    &mut self.exploration_selected_count,
+                ),
+            )
+        }
+        .map_err(|error| CudaError::new("tensor_quantale_select_topk_tokens", error))?;
+        self.sync_exploration_engine(engine)?;
+        Ok(engine.selected().to_vec())
+    }
+
+    pub fn commit_exploration_candidate(
+        &mut self,
+        candidate: &ExplorationCandidate,
+    ) -> Result<DecisionReport, CudaError> {
+        let candidate_buffer = self
+            .dev
+            .htod_copy(vec![*candidate])
+            .map_err(|error| CudaError::new("htod_copy exploration commit candidate", error))?;
+        let kernel = self
+            .dev
+            .get_func(MODULE_NAME, EXPLORATION_COMMIT_KERNEL)
+            .ok_or(CudaError::missing_function(EXPLORATION_COMMIT_KERNEL))?;
+        unsafe {
+            kernel.launch(
+                kernel_config(),
+                (
+                    &mut self.consumed,
+                    &mut self.active,
+                    &mut self.next_active,
+                    &candidate_buffer,
+                    &mut self.decision,
+                ),
+            )
+        }
+        .map_err(|error| CudaError::new("tensor_quantale_commit_exploration", error))?;
+        self.decision_report()
+    }
+
+    fn sync_exploration_engine(&self, engine: &mut ExplorationEngine) -> Result<(), CudaError> {
+        let token_count = self
+            .dev
+            .dtoh_sync_copy(&self.exploration_token_count)
+            .map_err(|error| CudaError::new("dtoh_sync_copy exploration token_count", error))?
+            .into_iter()
+            .next()
+            .unwrap_or(0)
+            .clamp(0, EXPLORATION_MAX_TOKENS as i32) as usize;
+        let selected_count = self
+            .dev
+            .dtoh_sync_copy(&self.exploration_selected_count)
+            .map_err(|error| CudaError::new("dtoh_sync_copy exploration selected_count", error))?
+            .into_iter()
+            .next()
+            .unwrap_or(0)
+            .clamp(0, EXPLORATION_MAX_SELECTED as i32) as usize;
+        let mut tokens = self
+            .dev
+            .dtoh_sync_copy(&self.exploration_tokens)
+            .map_err(|error| CudaError::new("dtoh_sync_copy exploration tokens", error))?;
+        let mut selected = self
+            .dev
+            .dtoh_sync_copy(&self.exploration_selected)
+            .map_err(|error| CudaError::new("dtoh_sync_copy exploration selected", error))?;
+        tokens.truncate(token_count);
+        selected.truncate(selected_count);
+        engine.load_gpu_state(tokens, selected);
+        Ok(())
     }
 
     pub fn tensor(&self) -> Result<Vec<f32>, CudaError> {
