@@ -113,44 +113,42 @@ registry.matrix_len()               // len * len
 
 To add a node: edit `assets/topology.json`. No Rust code changes required.
 
-Operator CUDA kernels (`cuda_ptx` backend) declare fused paths as normal operator entries in `assets/operators.json` and normal graph nodes in `assets/topology.json`. Fusion is expressed as a `choice` in `assets/patterns.json` with lower-cost topology weights — the quantale scheduler selects the fused path when cost favors it. No Rust `if fused` logic.
+Operator CUDA kernels (`jit_cuda` backend) declare fused paths as normal operator entries in `assets/operators.json` and normal graph nodes in `assets/topology.json`. Fusion is expressed as a `choice` in `assets/patterns.json` with lower-cost topology weights — the quantale scheduler selects the fused path when cost favors it. No Rust `if fused` logic.
 
 ## CUDA kernel split
 
-Two separate compilation paths — both use cudarc at runtime:
+CUDA execution uses cudarc for both the quantale world and operator JIT path:
 
 ```text
 cuda/quantale_world.cu
   → compiled at runtime via NVRTC (cudarc::nvrtc::compile_ptx)
   → kernels: closure, projection, exploration, frontier, tick, decay
 
-cuda/trading_execution_kernels.cu
-  → compiled at build time via nvcc (build.rs, --features cuda)
-  → output: $OUT_DIR/trading_execution_kernels.ptx
-  → loaded at runtime via cudarc::driver (CudaDevice::load_ptx)
-  → kernels: fused_alpha_and_risk_kernel, fused_orderbook_and_alpha_kernel,
-             fused_feed_alpha_and_risk_kernel
+jit_cuda operator chains
+  → synthesized from assets/operators.json at runtime
+  → compiled via NVRTC (cudarc::nvrtc::compile_ptx)
+  → loaded and cached via cudarc::driver
 ```
 
-Operator kernels use nvcc because they require full optimization flags, specific GPU arch targeting, and cooperative-group / cub primitives that NVRTC does not support. The quantale world kernel uses NVRTC for fast iteration without a build step.
+The `cuda` feature is enabled by default. Use `--no-default-features` to test the
+explicit non-CUDA fallback path.
 
 ## Operator CUDA dispatch
 
-When an operator declares `"executable": "cuda_ptx"` in `operators.json`, `egress.rs` routes to the CUDA PTX executor instead of spawning a process:
+When an operator declares `"executable": "jit_cuda"` in `operators.json`, `egress.rs` routes to the CUDA JIT executor instead of spawning a process:
 
 ```json
 {
-  "node_name": "Execution::FusedAlphaAndRisk",
-  "executable": "cuda_ptx",
-  "input_mapping": {
-    "module_name": "quantale_trading_execution_kernels",
-    "kernel": "fused_alpha_and_risk_kernel",
-    "scheduler_contract": "atomic_operator_fixed_budget"
+  "node_name": "Analysis::Return1",
+  "executable": "jit_cuda",
+  "effects": {
+    "reads": ["market_feed"],
+    "writes": ["return_1"]
   }
 }
 ```
 
-Without `--features cuda` the dispatcher returns an explicit capability error — never a process-spawn failure.
+With `--no-default-features`, the dispatcher returns an explicit capability error — never a process-spawn failure.
 
 ## Exploration anti-repeat policy
 
@@ -263,7 +261,7 @@ src/topology_check.rs   static invariant checker — phases 1–3 and operator b
 src/runtime_check.rs    runtime invariant checker — decision_is_safe(), check_decision()
 src/pattern.rs          CKA pattern compiler
 src/batch.rs            DecisionBatch, BatchPlan, scheduler dispatch (backend-agnostic)
-src/egress.rs           data-driven executor: process operators and cuda_ptx operators
+src/egress.rs           data-driven executor: process operators and jit_cuda operators
 src/config.rs           operator registry and runtime config (dimensions from registry)
 src/projection.rs       DecisionReport and action_label (data-driven via registry)
 src/transitions.rs      bundled tensor topology entrypoint
@@ -284,7 +282,7 @@ At each loop iteration:
 3. Exploration seeds strategies from `assets/exploration.json`.
 4. CUDA expands, scores, top-k selects, and commits the best effect-safe exploration candidate that passes terminal and first-hop anti-repeat limits.
 5. If exploration cannot commit, the scheduler attempts a CKA batch projection for compiled `par` groups.
-6. If a full batch is runnable and effect-safe, CUDA commits the batch and host workers execute operators concurrently. All backends (`cuda_ptx`, process) go through the same dispatch path; routing by backend is `egress.rs`'s responsibility.
+6. If a full batch is runnable and effect-safe, CUDA commits the batch and host workers execute operators concurrently. All backends (`jit_cuda`, process) go through the same dispatch path; routing by backend is `egress.rs`'s responsibility.
 7. If no batch is ready, CUDA runs the normal single frontier step.
 8. Before execution, `runtime_check::decision_is_safe()` guards against score=⊥ with blocked=0 (invariant 20). `runtime_check::check_decision()` logs invariant 18/19 violations.
 9. Process results become `ProcessReceipt` evidence.
@@ -297,6 +295,8 @@ At each loop iteration:
 
 ```bash
 cargo fmt --check
+cargo check
+cargo test
 cargo check --no-default-features
 cargo test --no-default-features
 cargo run --bin bench_tensor_quantale -- 3
@@ -304,16 +304,14 @@ cargo run --bin quantale_semiring_v2 -- --check-topology
 cargo run --bin quantale_semiring_v2
 ```
 
-With a CUDA build host:
-
-```bash
-cargo test --features cuda
-```
+CUDA operator execution is enabled by default. Use `--no-default-features` to
+exercise the explicit non-CUDA fallback path.
 
 Current validated test counts:
 
 ```text
-cargo test --no-default-features   99 passed (8 suites)
+cargo test                         101 passed (8 suites)
+cargo test --no-default-features   101 passed (8 suites)
 ```
 
 Current debug benchmark sample (recorded on 44-node topology; recapture for 60):

@@ -4,24 +4,22 @@
 
 - Rust nightly compatible with the workspace
 - CUDA with NVRTC support (for the quantale world kernels — always required)
-- nvcc (for `--features cuda` operator kernel compilation — optional)
+- CUDA feature support is enabled by default for `jit_cuda` operator execution
 - Compatible NVIDIA GPU
 
 ## Build and test
 
 ```bash
 cargo fmt --check
+cargo check
+cargo test
 cargo check --no-default-features
 cargo test --no-default-features
 ```
 
-With a CUDA build host (compiles `cuda/trading_execution_kernels.cu` via nvcc):
+Use `--no-default-features` to exercise the explicit non-CUDA fallback path.
 
-```bash
-cargo test --features cuda
-```
-
-Current no-default-features test count: **99 passed** across 8 suites.
+Current default and no-default-features test count: **101 passed** across 8 suites.
 
 ## Validate topology
 
@@ -90,17 +88,11 @@ The node universe lives entirely in `assets/topology.json`. No Rust code changes
 
 ```json
 {
-  "node_name": "Execution::FusedAlphaAndRisk",
-  "executable": "cuda_ptx",
-  "static_args": [],
-  "input_mapping": {
-    "module_name": "quantale_trading_execution_kernels",
-    "kernel": "fused_alpha_and_risk_kernel",
-    "scheduler_contract": "atomic_operator_fixed_budget"
-  },
+  "node_name": "Analysis::Return1",
+  "executable": "jit_cuda",
   "effects": {
-    "reads": ["market.feed", "portfolio.state"],
-    "writes": ["execution.gpu.results"],
+    "reads": ["market_feed"],
+    "writes": ["return_1"],
     "locks": []
   }
 }
@@ -117,24 +109,20 @@ When adding nodes beyond id 59 (current N=60), the CUDA kernel `quantale_world.c
 
 And `TENSOR_NODE_COUNT` in `src/tensor.rs` must be updated to match.
 
-## Operator CUDA kernels (`--features cuda`)
+## Operator CUDA kernels
 
-Operator kernels in `cuda/trading_execution_kernels.cu` are compiled by `build.rs` when `--features cuda` is active:
-
-```bash
-cargo build --features cuda
-```
-
-`build.rs` invokes nvcc:
+`jit_cuda` operator execution is compiled by default through the `cuda` feature:
 
 ```bash
-nvcc cuda/trading_execution_kernels.cu -ptx -o $OUT_DIR/trading_execution_kernels.ptx \
-     -std=c++17 --use_fast_math -Xcompiler -fPIC
+cargo build
 ```
 
-The PTX is embedded at compile time via `include_bytes!(concat!(env!("OUT_DIR"), "/trading_execution_kernels.ptx"))` and loaded at runtime via cudarc. nvcc is found from `CUDA_HOME/bin/nvcc`, `/usr/local/cuda/bin/nvcc`, or PATH in that order.
+`jit_cuda` operators synthesize CUDA source for the selected operator chain,
+compile it with NVRTC through cudarc, cache the loaded module, and keep
+intermediate slots on device where possible.
 
-Without `--features cuda`, any operator declaring `"executable": "cuda_ptx"` returns an explicit error receipt — no process-spawn attempt is made.
+With `--no-default-features`, operators declaring `"executable": "jit_cuda"`
+return an explicit capability error receipt — no process-spawn attempt is made.
 
 ## Tensor engine API
 

@@ -8,7 +8,7 @@ members = ["."]
 resolver = "3"
 
 [features]
-default = []
+default = ["cuda"]
 cuda = []
 
 [dependencies]
