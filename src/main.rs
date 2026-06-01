@@ -488,14 +488,22 @@ fn main() {
         if decision.blocked != 0 {
             consecutive_blocks += 1;
             if consecutive_blocks >= 3 {
-                // Hard reset: restore from the base tensor snapshot taken at
-                // startup (invariant 23).  This resets active[], consumed[],
-                // decision[], and the tensor to the post-embed baseline without
-                // requiring tensor_edges to still be in scope, and avoids
-                // trying to lift an already-bottomed W_t through decay+embed.
+                // Hard reset: decay alone does not restore a valid frontier
+                // because active[] tracks the current position and is not
+                // affected by decay or embed.  world.reset() clears active[],
+                // consumed[], and the tensor to a known-good initial state.
+                // Re-embedding the topology edges then lifts the world above ⊥.
+                // close() runs here so the invariant-17 project check below is
+                // a real validation, not a pre-closure false alarm.
                 eprintln!("[WARN] {consecutive_blocks} consecutive blocked steps; hard reset.");
-                if let Err(error) = world.restore_base_tensor() {
-                    eprintln!("[WARN] hard reset restore_base_tensor failed: {error}");
+                if let Err(error) = world.reset() {
+                    eprintln!("[WARN] hard reset world.reset() failed: {error}");
+                }
+                if let Err(error) = world.embed_tensor_edges(&tensor_edges) {
+                    eprintln!("[WARN] hard reset embed failed: {error}");
+                }
+                if let Err(error) = world.close() {
+                    eprintln!("[WARN] hard reset close failed: {error}");
                 }
                 current_payload = json!({ "context": "market_analysis_loop" });
                 consecutive_blocks = 0;
@@ -515,9 +523,9 @@ fn main() {
             }
             continue;
         }
-        consecutive_blocks = 0;
-
         // Invariant 20: refuse to advance the executor on a bottom score.
+        // Check BEFORE resetting consecutive_blocks so that score=⊥ steps
+        // accumulate toward the hard-reset threshold alongside blocked steps.
         if !runtime_check::decision_is_safe(&decision) {
             eprintln!(
                 "[WARN] invariant 20: score=⊥ with blocked=0 (first_hop={}); \
@@ -527,6 +535,8 @@ fn main() {
             consecutive_blocks += 1;
             continue;
         }
+
+        consecutive_blocks = 0;
 
         let Some(active_node) = Node::decode(decision.first_hop, &topology.registry) else {
             eprintln!("Invalid first_hop index: {}", decision.first_hop);
