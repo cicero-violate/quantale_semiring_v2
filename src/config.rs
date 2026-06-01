@@ -7,9 +7,10 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::node::{MATRIX_LEN, NODE_COUNT, THREAD_COUNT};
+use crate::topology::GraphTopology;
 
 pub const DEFAULT_OPERATORS_JSON: &str = include_str!("../assets/operators.json");
+pub const DEFAULT_BLOCK_SIZE: usize = 512;
 
 pub type OperatorRegistry = HashMap<String, Value>;
 
@@ -24,6 +25,7 @@ pub struct SystemConfig {
     pub matrix_len: usize,
     pub block_size: usize,
     pub tlog_path: PathBuf,
+    pub learned_edges_path: PathBuf,
     pub operators_path: PathBuf,
     pub operator_registry: OperatorRegistry,
     pub ingress_capacity_hint: usize,
@@ -36,12 +38,16 @@ impl Default for SystemConfig {
         let operator_registry = load_operator_registry(&operators_path)
             .or_else(|_| parse_operator_registry_str(DEFAULT_OPERATORS_JSON))
             .unwrap_or_default();
+        let (matrix_dim, matrix_len) = GraphTopology::bundled_registry()
+            .map(|registry| (registry.len(), registry.matrix_len()))
+            .unwrap_or((0, 0));
 
         Self {
-            matrix_dim: NODE_COUNT,
-            matrix_len: MATRIX_LEN,
-            block_size: THREAD_COUNT,
-            tlog_path: PathBuf::from("quantale.tlog"),
+            matrix_dim,
+            matrix_len,
+            block_size: DEFAULT_BLOCK_SIZE,
+            tlog_path: PathBuf::from("state/quantale.tlog"),
+            learned_edges_path: PathBuf::from("state/learned_edges.jsonl"),
             operators_path,
             operator_registry,
             ingress_capacity_hint: 1024,
@@ -73,16 +79,20 @@ impl SystemConfig {
     }
 
     pub fn validate(&self) -> Result<(), String> {
-        if self.matrix_dim != NODE_COUNT {
+        let registry = GraphTopology::bundled_registry()
+            .map_err(|error| format!("load bundled topology: {error}"))?;
+        if self.matrix_dim != registry.len() {
             return Err(format!(
-                "matrix_dim {} does not match NODE_COUNT {}",
-                self.matrix_dim, NODE_COUNT
+                "matrix_dim {} does not match bundled registry len {}",
+                self.matrix_dim,
+                registry.len()
             ));
         }
-        if self.matrix_len != MATRIX_LEN {
+        if self.matrix_len != registry.matrix_len() {
             return Err(format!(
-                "matrix_len {} does not match MATRIX_LEN {}",
-                self.matrix_len, MATRIX_LEN
+                "matrix_len {} does not match bundled registry matrix_len {}",
+                self.matrix_len,
+                registry.matrix_len()
             ));
         }
         if self.block_size == 0 {

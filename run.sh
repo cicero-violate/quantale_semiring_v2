@@ -1,4 +1,3 @@
 #!/usr/bin/env bash
 set -euo pipefail
-cargo run --bin  quantale_semiring_v2
-
+rtk cargo run --bin quantale_semiring_v2

@@ -5,7 +5,6 @@
 //! legal node IDs come from topology, effects come from `operators.json`, and
 //! receipt priors are updated from execution receipts.
 
-use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
@@ -16,12 +15,12 @@ use serde_json::Value;
 
 use crate::config::OperatorRegistry;
 use crate::error::CudaError;
-use crate::node::{Node, START_NODE, node_name};
-use crate::rule_delta::ProcessReceipt;
+use crate::node::Node;
+use crate::receipt::ProcessReceipt;
 use crate::tensor::{
-    COST_INFINITY, LAYER_CONFIDENCE, LAYER_COST, LAYER_SAFETY, ProjectionBias, tensor_idx,
+    tensor_idx, ProjectionBias, COST_INFINITY, LAYER_CONFIDENCE, LAYER_COST, LAYER_SAFETY,
 };
-use crate::topology::GraphTopology;
+use crate::topology::{GraphTopology, NodeRegistry};
 
 pub const DEFAULT_EXPLORATION_JSON: &str = include_str!("../assets/exploration.json");
 
@@ -112,17 +111,10 @@ pub struct ExplorationCommitRecord {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub enum ExplorationDecision {
-    CommitExploration(ExplorationCandidate),
-    UseCkaBatch,
-    SingleFrontier,
-    Blocked,
-}
-
-#[derive(Clone, Debug, PartialEq)]
 pub struct ExplorationEngine {
     config: ExplorationConfig,
-    adjacency: Vec<Vec<i32>>,
+    node_count: usize,
+    node_registry: NodeRegistry,
     operator_registry: OperatorRegistry,
     receipt_priors: HashMap<i32, f32>,
     terminal_visits: HashMap<i32, i32>,
@@ -237,17 +229,10 @@ impl ExplorationEngine {
     ) -> Result<Self, CudaError> {
         config.validate_against_topology(topology)?;
         let compiled = topology.compile()?;
-        let mut adjacency = vec![Vec::new(); compiled.node_count];
-        for edge in &compiled.tensor_edges {
-            let src = usize::try_from(edge.src)
-                .map_err(|_| CudaError::invalid_input("negative exploration edge src"))?;
-            if src < adjacency.len() && Node::decode(edge.dst).is_some() {
-                adjacency[src].push(edge.dst);
-            }
-        }
         Ok(Self {
             config,
-            adjacency,
+            node_count: compiled.registry.len(),
+            node_registry: compiled.registry,
             operator_registry,
             receipt_priors: HashMap::new(),
             terminal_visits: HashMap::new(),
@@ -255,12 +240,6 @@ impl ExplorationEngine {
             tokens: Vec::new(),
             selected: Vec::new(),
         })
-    }
-
-    pub fn from_default_assets(operator_registry: OperatorRegistry) -> Result<Self, CudaError> {
-        let config = ExplorationConfig::default_asset()?;
-        let topology = GraphTopology::default_asset()?;
-        Self::new(config, &topology, operator_registry)
     }
 
     pub fn config(&self) -> &ExplorationConfig {
@@ -279,7 +258,7 @@ impl ExplorationEngine {
         self.config
             .strategies
             .iter()
-            .map(|strategy| node_id_from_name(&strategy.start))
+            .map(|strategy| self.node_id_from_name(&strategy.start))
             .collect()
     }
 
@@ -292,7 +271,7 @@ impl ExplorationEngine {
     }
 
     pub fn receipt_prior_vector(&self) -> Vec<f32> {
-        let mut priors = vec![0.0; crate::node::NODE_COUNT];
+        let mut priors = vec![0.0; self.node_count];
         for (node, prior) in &self.receipt_priors {
             if let Ok(index) = usize::try_from(*node) {
                 if index < priors.len() {
@@ -303,11 +282,11 @@ impl ExplorationEngine {
         priors
     }
     pub fn terminal_visit_vector(&self) -> Vec<i32> {
-        visit_vector(&self.terminal_visits)
+        visit_vector(&self.terminal_visits, self.node_count)
     }
 
     pub fn first_hop_visit_vector(&self) -> Vec<i32> {
-        visit_vector(&self.first_hop_visits)
+        visit_vector(&self.first_hop_visits, self.node_count)
     }
 
     pub fn terminal_visit_count(&self, node: i32) -> i32 {
@@ -353,9 +332,9 @@ impl ExplorationEngine {
 
     pub fn seed_tokens(&mut self, tensor: &[f32]) -> Result<&[ExplorationToken], CudaError> {
         self.tokens.clear();
-        let start = START_NODE.encode();
+        let start = self.node_id_from_name("State::Goal")?;
         for (strategy_id, strategy) in self.config.strategies.iter().enumerate() {
-            let node = node_id_from_name(&strategy.start)?;
+            let node = self.node_id_from_name(&strategy.start)?;
             let confidence = tensor_value(tensor, LAYER_CONFIDENCE, start, node, 0.0);
             let safety = tensor_value(tensor, LAYER_SAFETY, start, node, 0.0);
             if confidence <= 0.0 && safety <= 0.0 {
@@ -377,123 +356,11 @@ impl ExplorationEngine {
         Ok(&self.tokens)
     }
 
-    pub fn host_expand_exploration(
-        &mut self,
-        tensor: &[f32],
-    ) -> Result<Vec<ExplorationCandidate>, CudaError> {
-        validate_tensor_len(tensor)?;
-        if self.tokens.is_empty() {
-            self.seed_tokens(tensor)?;
-        }
-        let mut frontier: Vec<i32> = (0..self.tokens.len() as i32).collect();
-        let mut candidates = Vec::new();
-        for depth in 0..self.config.max_depth {
-            if depth > 0 {
-                candidates.extend(
-                    frontier
-                        .iter()
-                        .map(|token_id| self.candidate_for_token(*token_id)),
-                );
-            }
-            let mut next_frontier = Vec::new();
-            for &token_id in &frontier {
-                let token = self.tokens[token_id as usize];
-                let Some(children) = usize::try_from(token.node)
-                    .ok()
-                    .and_then(|idx| self.adjacency.get(idx))
-                else {
-                    continue;
-                };
-                for &child in children {
-                    let confidence = tensor_value(tensor, LAYER_CONFIDENCE, token.node, child, 0.0);
-                    let cost = tensor_cost(tensor, token.node, child);
-                    let safety = tensor_value(tensor, LAYER_SAFETY, token.node, child, 0.0);
-                    if confidence <= 0.0 && safety <= 0.0 {
-                        continue;
-                    }
-                    self.tokens.push(ExplorationToken {
-                        strategy_id: token.strategy_id,
-                        node: child,
-                        depth: token.depth + 1,
-                        confidence: token.confidence + confidence,
-                        cost: token.cost + cost,
-                        safety: token.safety + safety,
-                        novelty: token.novelty + novelty_for_node(child),
-                        receipt_prior: token.receipt_prior + self.receipt_prior_for(child),
-                        entropy: token.entropy + entropy_for_node(child),
-                        parent: token_id,
-                    });
-                    next_frontier.push((self.tokens.len() - 1) as i32);
-                }
-            }
-            if next_frontier.is_empty() {
-                break;
-            }
-            next_frontier.sort_by(|a, b| {
-                self.token_value(*b)
-                    .partial_cmp(&self.token_value(*a))
-                    .unwrap_or(Ordering::Equal)
-            });
-            if next_frontier.len() > self.config.beam_width {
-                next_frontier.truncate(self.config.beam_width);
-            }
-            frontier = next_frontier;
-        }
-        candidates.extend(
-            frontier
-                .iter()
-                .map(|token_id| self.candidate_for_token(*token_id)),
-        );
-        let selected = self.host_select_topk(candidates);
-        self.selected = selected.clone();
-        Ok(selected)
-    }
-
-    pub fn host_select_topk(
-        &self,
-        mut candidates: Vec<ExplorationCandidate>,
-    ) -> Vec<ExplorationCandidate> {
-        candidates.retain(|candidate| self.candidate_allowed_by_repeat_policy(candidate));
-        candidates.sort_by(|a, b| {
-            self.repeat_adjusted_value(*b)
-                .partial_cmp(&self.repeat_adjusted_value(*a))
-                .unwrap_or(Ordering::Equal)
-                .then_with(|| a.terminal_node.cmp(&b.terminal_node))
-        });
-        candidates.dedup_by_key(|candidate| candidate.terminal_node);
-        for candidate in &mut candidates {
-            candidate.value = self.repeat_adjusted_value(*candidate);
-        }
-        if candidates.len() > self.config.beam_width {
-            candidates.truncate(self.config.beam_width);
-        }
-        candidates
-    }
-
-    pub fn propose(
-        &mut self,
-        tensor: &[f32],
-        cka_batch_ready: bool,
-        single_frontier_ready: bool,
-    ) -> Result<ExplorationDecision, CudaError> {
-        self.host_expand_exploration(tensor)?;
-        if let Some(candidate) = self.best_commit_candidate() {
-            return Ok(ExplorationDecision::CommitExploration(candidate));
-        }
-        if cka_batch_ready {
-            Ok(ExplorationDecision::UseCkaBatch)
-        } else if single_frontier_ready {
-            Ok(ExplorationDecision::SingleFrontier)
-        } else {
-            Ok(ExplorationDecision::Blocked)
-        }
-    }
-
     pub fn validate_candidate_effect(
         &self,
         candidate: &ExplorationCandidate,
     ) -> Result<(), CudaError> {
-        let terminal = node_name(candidate.terminal_node);
+        let terminal = self.node_name(candidate.terminal_node);
         let Some(operator) = self.operator_registry.get(&terminal) else {
             return Ok(());
         };
@@ -528,7 +395,7 @@ impl ExplorationEngine {
             let Some(token) = self.tokens.get(cursor as usize) else {
                 break;
             };
-            if let Some(node) = Node::decode(token.node) {
+            if let Some(node) = Node::decode(token.node, &self.node_registry) {
                 out.push(node);
             }
             cursor = token.parent;
@@ -552,7 +419,11 @@ impl ExplorationEngine {
         let path = self
             .reconstruct_exploration_path(candidate)
             .into_iter()
-            .map(|node| node.name().to_string())
+            .map(|node| {
+                node.name(&self.node_registry)
+                    .unwrap_or("Unknown")
+                    .to_string()
+            })
             .collect();
         ExplorationCommitRecord {
             strategy,
@@ -578,44 +449,18 @@ impl ExplorationEngine {
         self.receipt_priors.get(&node).copied().unwrap_or(0.0)
     }
 
-    fn repeat_adjusted_value(&self, candidate: ExplorationCandidate) -> f32 {
-        let visits = self.terminal_visit_count(candidate.terminal_node)
-            + self.first_hop_visit_count(candidate.first_hop);
-        candidate.value - self.config.repeat_penalty * visits as f32
+    fn node_id_from_name(&self, name: &str) -> Result<i32, CudaError> {
+        self.node_registry
+            .id_of(name)
+            .map(|id| id as i32)
+            .ok_or_else(|| CudaError::invalid_input(format!("unknown exploration node '{name}'")))
     }
 
-    fn candidate_for_token(&self, token_id: i32) -> ExplorationCandidate {
-        let token = self.tokens[token_id as usize];
-        ExplorationCandidate {
-            token_id,
-            first_hop: self.first_hop(token_id),
-            terminal_node: token.node,
-            value: self.token_value(token_id),
-        }
-    }
-
-    fn first_hop(&self, token_id: i32) -> i32 {
-        let mut current = token_id;
-        let mut parent = self.tokens[current as usize].parent;
-        while parent >= 0 {
-            let grandparent = self.tokens[parent as usize].parent;
-            if grandparent < 0 {
-                return self.tokens[current as usize].node;
-            }
-            current = parent;
-            parent = grandparent;
-        }
-        self.tokens[token_id as usize].node
-    }
-
-    fn token_value(&self, token_id: i32) -> f32 {
-        let token = self.tokens[token_id as usize];
-        let depth = (token.depth + 1) as f32;
-        (token.confidence / depth) - (token.cost / depth)
-            + (token.safety / depth)
-            + self.config.novelty_weight * (token.novelty / depth)
-            + self.config.receipt_weight * (token.receipt_prior / depth)
-            - self.config.entropy_penalty * (token.entropy / depth)
+    fn node_name(&self, node_id: i32) -> String {
+        Node::decode(node_id, &self.node_registry)
+            .and_then(|node| node.name(&self.node_registry))
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("Unknown({node_id})"))
     }
 }
 
@@ -627,8 +472,8 @@ fn default_max_visits() -> usize {
     1
 }
 
-fn visit_vector(visits: &HashMap<i32, i32>) -> Vec<i32> {
-    let mut out = vec![0; crate::node::NODE_COUNT];
+fn visit_vector(visits: &HashMap<i32, i32>, node_count: usize) -> Vec<i32> {
+    let mut out = vec![0; node_count];
     for (node, count) in visits {
         if let Ok(index) = usize::try_from(*node) {
             if index < out.len() {
@@ -639,29 +484,13 @@ fn visit_vector(visits: &HashMap<i32, i32>) -> Vec<i32> {
     out
 }
 
-fn validate_tensor_len(tensor: &[f32]) -> Result<(), CudaError> {
-    if tensor.len() < crate::tensor::TENSOR_LEN {
-        return Err(CudaError::invalid_input(format!(
-            "exploration tensor length {} < {}",
-            tensor.len(),
-            crate::tensor::TENSOR_LEN
-        )));
-    }
-    Ok(())
-}
-
-fn node_id_from_name(name: &str) -> Result<i32, CudaError> {
-    let topology = GraphTopology::default_asset()?.compile()?;
-    topology
-        .registry
-        .id_of(name)
-        .map(|id| id as i32)
-        .ok_or_else(|| CudaError::invalid_input(format!("unknown exploration node '{name}'")))
-}
-
 fn tensor_value(tensor: &[f32], layer: i32, src: i32, dst: i32, fallback: f32) -> f32 {
     let value = tensor[tensor_idx(layer, src, dst)];
-    if value.is_finite() { value } else { fallback }
+    if value.is_finite() {
+        value
+    } else {
+        fallback
+    }
 }
 
 fn tensor_cost(tensor: &[f32], src: i32, dst: i32) -> f32 {

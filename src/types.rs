@@ -5,7 +5,7 @@ use std::ops::{Add, AddAssign, Mul, MulAssign};
 
 use serde::{Deserialize, Serialize};
 
-use crate::algebra::{BOTTOM, Q_UNIT, clamp_quantale_value};
+use crate::algebra::{clamp_quantale_value, BOTTOM, Q_UNIT};
 
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]

@@ -28,8 +28,6 @@ tensor_quantale_closure           ↔ IsTensorClosure
 tensor_quantale_project           ↔ BlendedProjectionSpec
 tensor_quantale_frontier_step     ↔ TensorFrontierSpec
 tensor_quantale_tick              ↔ IsTensorClosure + TensorFrontierSpec
-build_tensor_policy_edges         ↔ tensor policyEdgeSpec
-build_tensor_receipt_edges        ↔ tensor receiptEdgeSpec
 witness[3 × N × N]                ↔ per-layer path witness tensor W_L
 ```
 

@@ -11,14 +11,19 @@ use cudarc::driver::{CudaDevice, CudaSlice, DeviceRepr, LaunchAsync, LaunchConfi
 use cudarc::nvrtc::compile_ptx;
 use serde::{Deserialize, Serialize};
 
+use crate::config::DEFAULT_BLOCK_SIZE;
 use crate::error::CudaError;
 use crate::exploration::{ExplorationCandidate, ExplorationEngine, ExplorationToken};
-use crate::node::{MATRIX_LEN, NODE_COUNT, Node, START_NODE, THREAD_COUNT};
+use crate::node::Node;
 use crate::path::reconstruct_path_from_witness_matrix;
 use crate::projection::DecisionReport;
-use crate::rule_delta::ProcessReceipt;
+use crate::receipt::ProcessReceipt;
+use crate::topology::{GraphTopology, NodeRegistry};
 
 pub const TENSOR_LAYER_COUNT: usize = 3;
+// Must match N in cuda/quantale_world.cu (STATE+CONTROL+EVENT = 13+13+18 = 44).
+pub const TENSOR_NODE_COUNT: usize = 44;
+pub const MATRIX_LEN: usize = TENSOR_NODE_COUNT * TENSOR_NODE_COUNT;
 pub const TENSOR_LEN: usize = TENSOR_LAYER_COUNT * MATRIX_LEN;
 pub const COST_INFINITY: f32 = 1.0e20;
 
@@ -43,8 +48,8 @@ const EXPLORATION_SCORE_KERNEL: &str = "tensor_quantale_score_tokens";
 const EXPLORATION_TOPK_KERNEL: &str = "tensor_quantale_select_topk_tokens";
 const EXPLORATION_COMMIT_KERNEL: &str = "tensor_quantale_commit_exploration";
 
-pub const EXPLORATION_MAX_TOKENS: usize = NODE_COUNT * NODE_COUNT;
-pub const EXPLORATION_MAX_SELECTED: usize = NODE_COUNT;
+pub const EXPLORATION_MAX_TOKENS: usize = TENSOR_NODE_COUNT * TENSOR_NODE_COUNT;
+pub const EXPLORATION_MAX_SELECTED: usize = TENSOR_NODE_COUNT;
 const KERNEL_SOURCE: &str = include_str!("../cuda/quantale_world.cu");
 
 #[repr(C)]
@@ -182,10 +187,10 @@ impl TensorQuantaleWorld {
             .htod_copy(vec![0_i32; MATRIX_LEN])
             .map_err(|error| CudaError::new("htod_copy tensor consumed", error))?;
         let active = dev
-            .htod_copy(vec![0_i32; NODE_COUNT])
+            .htod_copy(vec![0_i32; TENSOR_NODE_COUNT])
             .map_err(|error| CudaError::new("htod_copy tensor active", error))?;
         let next_active = dev
-            .htod_copy(vec![0_i32; NODE_COUNT])
+            .htod_copy(vec![0_i32; TENSOR_NODE_COUNT])
             .map_err(|error| CudaError::new("htod_copy tensor next_active", error))?;
         let decision = dev
             .htod_copy(vec![DecisionReport::default()])
@@ -336,13 +341,13 @@ impl TensorQuantaleWorld {
                 "parallel projection requires at least two group nodes",
             ));
         }
-        if group_nodes.len() > NODE_COUNT {
+        if group_nodes.len() > TENSOR_NODE_COUNT {
             return Err(CudaError::invalid_input(
                 "parallel projection group too large",
             ));
         }
         for node in group_nodes {
-            if Node::decode(*node).is_none() {
+            if Node::decode(*node, &bundled_registry()?).is_none() {
                 return Err(CudaError::invalid_input(format!(
                     "invalid parallel projection node {node}"
                 )));
@@ -395,7 +400,7 @@ impl TensorQuantaleWorld {
                 "decision batch commit requires at least two decisions",
             ));
         }
-        if decisions.len() > NODE_COUNT {
+        if decisions.len() > TENSOR_NODE_COUNT {
             return Err(CudaError::invalid_input("decision batch is too large"));
         }
         if decisions
@@ -407,8 +412,9 @@ impl TensorQuantaleWorld {
             ));
         }
         for decision in decisions {
-            if Node::decode(decision.selected_src).is_none()
-                || Node::decode(decision.first_hop).is_none()
+            let registry = bundled_registry()?;
+            if Node::decode(decision.selected_src, &registry).is_none()
+                || Node::decode(decision.first_hop, &registry).is_none()
             {
                 return Err(CudaError::invalid_input(
                     "cannot commit decision batch with invalid node IDs",
@@ -741,18 +747,25 @@ impl TensorQuantaleWorld {
         }
         let witness = self.witness()?;
         let offset = layer as usize * MATRIX_LEN;
-        reconstruct_path_from_witness_matrix(&witness[offset..offset + MATRIX_LEN], src, dst)
+        let registry = bundled_registry()?;
+        reconstruct_path_from_witness_matrix(
+            &witness[offset..offset + MATRIX_LEN],
+            src,
+            dst,
+            &registry,
+        )
     }
 
     pub fn reconstruct_projected_tensor_path(&self, layer: i32) -> Result<Vec<Node>, CudaError> {
         let decision = self.decision_report()?;
-        let src = Node::decode(decision.selected_src).ok_or_else(|| {
+        let registry = bundled_registry()?;
+        let src = Node::decode(decision.selected_src, &registry).ok_or_else(|| {
             CudaError::invalid_input(format!(
                 "cannot reconstruct tensor path with invalid selected_src {}",
                 decision.selected_src
             ))
         })?;
-        let dst = Node::decode(decision.selected_dst).ok_or_else(|| {
+        let dst = Node::decode(decision.selected_dst, &registry).ok_or_else(|| {
             CudaError::invalid_input(format!(
                 "cannot reconstruct tensor path with invalid selected_dst {}",
                 decision.selected_dst
@@ -780,17 +793,24 @@ impl TensorQuantaleWorld {
 }
 
 pub fn tensor_idx(layer: i32, src: i32, dst: i32) -> usize {
-    layer as usize * MATRIX_LEN + src as usize * NODE_COUNT + dst as usize
+    layer as usize * MATRIX_LEN + src as usize * TENSOR_NODE_COUNT + dst as usize
 }
 
 fn kernel_config() -> LaunchConfig {
     LaunchConfig {
         grid_dim: (1, 1, 1),
-        block_dim: (THREAD_COUNT as u32, 1, 1),
+        block_dim: (DEFAULT_BLOCK_SIZE as u32, 1, 1),
         shared_mem_bytes: 0,
     }
 }
 
 pub fn tensor_start_node() -> i32 {
-    START_NODE.encode()
+    GraphTopology::bundled_registry()
+        .ok()
+        .and_then(|registry| registry.id_of("State::Goal"))
+        .unwrap_or(0) as i32
+}
+
+fn bundled_registry() -> Result<NodeRegistry, CudaError> {
+    GraphTopology::bundled_registry()
 }

@@ -49,7 +49,8 @@
     {
       "id": 9,
       "name": "State::Execute",
-      "type": "State"
+      "type": "State",
+      "action": "execute"
     },
     {
       "id": 10,
@@ -79,27 +80,32 @@
     {
       "id": 15,
       "name": "Control::Retry",
-      "type": "Control"
+      "type": "Control",
+      "action": "retry"
     },
     {
       "id": 16,
       "name": "Control::Repair",
-      "type": "Control"
+      "type": "Control",
+      "action": "repair"
     },
     {
       "id": 17,
       "name": "Control::Commit",
-      "type": "Control"
+      "type": "Control",
+      "action": "commit"
     },
     {
       "id": 18,
       "name": "Control::Rollback",
-      "type": "Control"
+      "type": "Control",
+      "action": "rollback"
     },
     {
       "id": 19,
       "name": "Control::Halt",
-      "type": "Control"
+      "type": "Control",
+      "action": "halt"
     },
     {
       "id": 20,

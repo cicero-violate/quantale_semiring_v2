@@ -3,18 +3,25 @@
 ## Requirements
 
 - Rust nightly compatible with the workspace
-- CUDA with NVRTC support
+- CUDA with NVRTC support (for the quantale world kernels — always required)
+- nvcc (for `--features cuda` operator kernel compilation — optional)
 - Compatible NVIDIA GPU
 
 ## Build and test
 
 ```bash
 cargo fmt --check
-cargo check
-cargo test --lib
-cargo test --test exploration
-cargo test --test tensor_quantale
+cargo check --no-default-features
+cargo test --no-default-features
 ```
+
+With a CUDA build host (compiles `cuda/trading_execution_kernels.cu` via nvcc):
+
+```bash
+cargo test --features cuda
+```
+
+Current no-default-features test count: **47 passed** across 6 suites.
 
 ## Run orchestrator
 
@@ -22,7 +29,7 @@ cargo test --test tensor_quantale
 cargo run --bin quantale_semiring_v2
 ```
 
-The default executable uses `TensorQuantaleWorld`, loads topology, exploration, and CKA pattern assets, tries GPU exploration first, falls back to effect-safe CKA batch scheduling, then falls back to single frontier projection when no higher-level route is ready. Operators execute on the host; receipts update tensor deltas and exploration priors; all records are logged to `quantale.tlog`.
+The default executable uses `TensorQuantaleWorld`, loads topology, learned edge checkpoints, exploration, and CKA pattern assets, tries GPU exploration first, falls back to effect-safe CKA batch scheduling, then falls back to single frontier projection when no higher-level route is ready. Operators execute on the host; receipts update tensor deltas and exploration priors; all records are logged to `state/quantale.tlog`.
 
 Expected runtime batch smoke lines:
 
@@ -32,8 +39,6 @@ batch_step=5 projection=(Event::InputAccepted->State::Parse) first_hop=State::Pa
 [BATCH] operator=State::Map exit=0 outcome=Success
 [BATCH] operator=State::Parse exit=0 outcome=Success
 ```
-
-All compact node IDs now have operator contracts in `assets/operators.json`. Symbolic Control/Event nodes use safe `true` no-op contracts unless a real operator is required.
 
 ## Run tensor benchmark
 
@@ -52,12 +57,6 @@ tensor_decay
 
 ## Release benchmark baseline
 
-Captured with the already-built release binary:
-
-```bash
-../../target/release/bench_tensor_quantale 10
-```
-
 ```text
 profile=release
 iterations=10
@@ -67,6 +66,67 @@ tensor_projection  avg_us=33.412
 tensor_decay       avg_us=12.782
 ```
 
+## Adding nodes
+
+The node universe lives entirely in `assets/topology.json`. No Rust code changes are required to add a new node.
+
+1. Add an entry to `assets/topology.json`:
+
+```json
+{ "id": 44, "name": "Execution::FusedAlphaAndRisk", "type": "Execution" }
+```
+
+2. Add an operator contract to `assets/operators.json`:
+
+```json
+{
+  "node_name": "Execution::FusedAlphaAndRisk",
+  "executable": "cuda_ptx",
+  "static_args": [],
+  "input_mapping": {
+    "module_name": "quantale_trading_execution_kernels",
+    "kernel": "fused_alpha_and_risk_kernel",
+    "scheduler_contract": "atomic_operator_fixed_budget"
+  },
+  "effects": {
+    "reads": ["market.feed", "portfolio.state"],
+    "writes": ["execution.gpu.results"],
+    "locks": []
+  }
+}
+```
+
+3. Optionally add graph edges in `assets/topology.json` and a CKA pattern in `assets/patterns.json`.
+
+When adding nodes beyond id 43 (current N=44), the CUDA kernel `quantale_world.cu` must also be updated:
+
+```c
+#define STATE_NODE_COUNT   13
+#define CONTROL_NODE_COUNT 13
+#define EVENT_NODE_COUNT   18
+// add new category counts here and update N
+```
+
+And `TENSOR_NODE_COUNT` in `src/tensor.rs` must be updated to match.
+
+## Operator CUDA kernels (`--features cuda`)
+
+Operator kernels in `cuda/trading_execution_kernels.cu` are compiled by `build.rs` when `--features cuda` is active:
+
+```bash
+cargo build --features cuda
+```
+
+`build.rs` invokes nvcc:
+
+```bash
+nvcc cuda/trading_execution_kernels.cu -ptx -o $OUT_DIR/trading_execution_kernels.ptx \
+     -std=c++17 --use_fast_math -Xcompiler -fPIC
+```
+
+The PTX is embedded at compile time via `include_bytes!(concat!(env!("OUT_DIR"), "/trading_execution_kernels.ptx"))` and loaded at runtime via cudarc. nvcc is found from `CUDA_HOME/bin/nvcc`, `/usr/local/cuda/bin/nvcc`, or PATH in that order.
+
+Without `--features cuda`, any operator declaring `"executable": "cuda_ptx"` returns an explicit error receipt — no process-spawn attempt is made.
 
 ## Tensor engine API
 
@@ -104,6 +164,20 @@ world.update_lattice_edge(src, dst, ExecutionOutcome::Timeout)?;
 world.update_lattice_edge(src, dst, ExecutionOutcome::SafetyViolation)?;
 world.decay(0.99)?;
 ```
+
+## Node registry API
+
+```rust
+use quantale_semiring_v2::GraphTopology;
+
+let registry = GraphTopology::bundled_registry()?;
+let id   = registry.id_of("State::Execute").unwrap();   // usize
+let name = registry.name_of(9).unwrap();                 // &str
+let act  = registry.action_of(17);                       // Option<&str>
+let n    = registry.len();                               // total node count
+```
+
+Node IDs are stable integers. Human names and action labels come from the registry, not from Rust constants.
 
 ## Exploration policy
 
@@ -177,6 +251,8 @@ Supported CKA expression forms:
 { "par": [...] }
 ```
 
+Node names in patterns are validated against the bundled `NodeRegistry` at compile time.
+
 ## Operator effects
 
 `par` requires effect metadata in:
@@ -212,12 +288,6 @@ locks(a) ∩ locks(b) = ∅
 
 ## Tensor plan operators
 
-Operators are configured in:
-
-```text
-assets/operators.json
-```
-
 A tensor-plan-producing operator must declare:
 
 ```json
@@ -234,7 +304,7 @@ When `output_mode` is `tensor_plan`, stdout must be a JSON array of tensor edges
 Runtime records are written as JSONL to:
 
 ```text
-quantale.tlog
+state/quantale.tlog
 ```
 
 Important labels:

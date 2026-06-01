@@ -42,7 +42,7 @@ Layer 2: security/safety         max-min    join=max  compose=min
 - Tensor topology fields in `assets/topology.json`.
 - Tensor-native `TensorEdge` compilation.
 - Tensor LLM plan compiler.
-- Tensor policy/receipt rule deltas.
+- Tensor feedback updates through GPU edge kernels.
 - Tensor CUDA closure/projection/frontier/tick kernels.
 - Tensor feedback update and decay kernels.
 - Tensor witness path reconstruction API.
@@ -225,7 +225,7 @@ Do not add:
 - CPU routing planner.
 - Hidden imperative graph traversal.
 - Scalar sidecar metadata model.
-- New policy/receipt side-channel files.
+- New policy side-channel files.
 - Scalar CUDA world.
 - Scalar LLM plan format.
 

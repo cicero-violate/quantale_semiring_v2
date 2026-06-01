@@ -1,17 +1,27 @@
 use quantale_semiring_v2::{
-    COST_INFINITY, ControlNode, ExecutionOutcome, LAYER_CONFIDENCE, LAYER_COST, LAYER_SAFETY,
-    NODE_COUNT, Node, ProjectionBias, StateNode, TensorEdge, TensorQuantaleWorld, tensor_idx,
+    COST_INFINITY, ExecutionOutcome, GraphTopology, LAYER_CONFIDENCE, LAYER_COST, LAYER_SAFETY,
+    Node, NodeRegistry, ProjectionBias, TENSOR_LEN, TENSOR_NODE_COUNT, TensorEdge,
+    TensorQuantaleWorld, tensor_idx,
 };
 
+fn reg() -> NodeRegistry {
+    GraphTopology::default_asset().unwrap().compile().unwrap().registry
+}
+
+fn nid(registry: &NodeRegistry, name: &str) -> i32 {
+    registry.id_of(name).expect(name) as i32
+}
+
 fn host_tensor_closure(edges: &[TensorEdge]) -> Vec<f32> {
-    let mut tensor = vec![0.0; 3 * NODE_COUNT * NODE_COUNT];
-    for i in 0..NODE_COUNT as i32 {
+    let n = TENSOR_NODE_COUNT as i32;
+    let mut tensor = vec![0.0f32; TENSOR_LEN];
+    for i in 0..n {
         tensor[tensor_idx(LAYER_CONFIDENCE, i, i)] = 1.0;
         tensor[tensor_idx(LAYER_COST, i, i)] = 0.0;
         tensor[tensor_idx(LAYER_SAFETY, i, i)] = 1.0;
     }
-    for i in 0..NODE_COUNT as i32 {
-        for j in 0..NODE_COUNT as i32 {
+    for i in 0..n {
+        for j in 0..n {
             if i != j {
                 tensor[tensor_idx(LAYER_COST, i, j)] = COST_INFINITY;
             }
@@ -25,9 +35,9 @@ fn host_tensor_closure(edges: &[TensorEdge]) -> Vec<f32> {
         tensor[e] = tensor[e].min(edge.cost);
         tensor[s] = tensor[s].max(edge.safety);
     }
-    for k in 0..NODE_COUNT as i32 {
-        for i in 0..NODE_COUNT as i32 {
-            for j in 0..NODE_COUNT as i32 {
+    for k in 0..n {
+        for i in 0..n {
+            for j in 0..n {
                 let c = tensor[tensor_idx(LAYER_CONFIDENCE, i, k)]
                     * tensor[tensor_idx(LAYER_CONFIDENCE, k, j)];
                 let cidx = tensor_idx(LAYER_CONFIDENCE, i, j);
@@ -35,13 +45,13 @@ fn host_tensor_closure(edges: &[TensorEdge]) -> Vec<f32> {
 
                 let a = tensor[tensor_idx(LAYER_COST, i, k)];
                 let b = tensor[tensor_idx(LAYER_COST, k, j)];
-                let e = if a >= COST_INFINITY || b >= COST_INFINITY {
+                let cost = if a >= COST_INFINITY || b >= COST_INFINITY {
                     COST_INFINITY
                 } else {
                     a + b
                 };
                 let eidx = tensor_idx(LAYER_COST, i, j);
-                tensor[eidx] = tensor[eidx].min(e);
+                tensor[eidx] = tensor[eidx].min(cost);
 
                 let s = tensor[tensor_idx(LAYER_SAFETY, i, k)]
                     .min(tensor[tensor_idx(LAYER_SAFETY, k, j)]);
@@ -55,9 +65,10 @@ fn host_tensor_closure(edges: &[TensorEdge]) -> Vec<f32> {
 
 #[test]
 fn host_tensor_layers_close_with_distinct_semirings() {
-    let goal = Node::state(StateNode::Goal).encode();
-    let plan = Node::state(StateNode::Plan).encode();
-    let execute = Node::state(StateNode::Execute).encode();
+    let r = reg();
+    let goal = nid(&r, "State::Goal");
+    let plan = nid(&r, "State::Plan");
+    let execute = nid(&r, "State::Execute");
     let direct = TensorEdge::new(goal, execute, 0.6, 10.0, 0.9);
     let indirect_a = TensorEdge::new(goal, plan, 0.9, 2.0, 0.7);
     let indirect_b = TensorEdge::new(plan, execute, 0.8, 3.0, 0.8);
@@ -70,9 +81,10 @@ fn host_tensor_layers_close_with_distinct_semirings() {
 
 #[test]
 fn gpu_tensor_closure_matches_layer_semantics() {
-    let goal = Node::state(StateNode::Goal).encode();
-    let plan = Node::state(StateNode::Plan).encode();
-    let execute = Node::state(StateNode::Execute).encode();
+    let r = reg();
+    let goal = nid(&r, "State::Goal");
+    let plan = nid(&r, "State::Plan");
+    let execute = nid(&r, "State::Execute");
     let edges = [
         TensorEdge::new(goal, execute, 0.6, 10.0, 0.9),
         TensorEdge::new(goal, plan, 0.9, 2.0, 0.7),
@@ -90,10 +102,11 @@ fn gpu_tensor_closure_matches_layer_semantics() {
 
 #[test]
 fn gpu_tensor_projection_uses_blended_score() {
-    let goal = Node::state(StateNode::Goal).encode();
-    let plan = Node::state(StateNode::Plan).encode();
-    let execute = Node::state(StateNode::Execute).encode();
-    let repair = Node::control(ControlNode::Repair).encode();
+    let r = reg();
+    let goal = nid(&r, "State::Goal");
+    let plan = nid(&r, "State::Plan");
+    let execute = nid(&r, "State::Execute");
+    let repair = nid(&r, "Control::Repair");
     let edges = [
         TensorEdge::new(goal, plan, 0.95, 10.0, 0.95),
         TensorEdge::new(goal, repair, 0.70, 1.0, 0.70),
@@ -115,8 +128,9 @@ fn gpu_tensor_projection_uses_blended_score() {
 
 #[test]
 fn gpu_tensor_update_and_decay_mutate_layers() {
-    let goal = Node::state(StateNode::Goal).encode();
-    let plan = Node::state(StateNode::Plan).encode();
+    let r = reg();
+    let goal = nid(&r, "State::Goal");
+    let plan = nid(&r, "State::Plan");
     let mut world =
         TensorQuantaleWorld::from_tensor_edges(&[TensorEdge::new(goal, plan, 0.8, 2.0, 0.9)])
             .unwrap();
@@ -134,9 +148,10 @@ fn gpu_tensor_update_and_decay_mutate_layers() {
 
 #[test]
 fn gpu_tensor_frontier_step_advances_active_state() {
-    let goal = Node::state(StateNode::Goal).encode();
-    let plan = Node::state(StateNode::Plan).encode();
-    let execute = Node::state(StateNode::Execute).encode();
+    let r = reg();
+    let goal = nid(&r, "State::Goal");
+    let plan = nid(&r, "State::Plan");
+    let execute = nid(&r, "State::Execute");
     let edges = [
         TensorEdge::new(goal, plan, 0.95, 1.0, 0.95),
         TensorEdge::new(plan, execute, 0.90, 1.0, 0.90),
@@ -155,9 +170,10 @@ fn gpu_tensor_frontier_step_advances_active_state() {
 
 #[test]
 fn gpu_tensor_tick_closes_and_advances_frontier() {
-    let goal = Node::state(StateNode::Goal).encode();
-    let plan = Node::state(StateNode::Plan).encode();
-    let execute = Node::state(StateNode::Execute).encode();
+    let r = reg();
+    let goal = nid(&r, "State::Goal");
+    let plan = nid(&r, "State::Plan");
+    let execute = nid(&r, "State::Execute");
     let edges = [
         TensorEdge::new(goal, plan, 0.95, 1.0, 0.95),
         TensorEdge::new(plan, execute, 0.90, 1.0, 0.90),
@@ -173,20 +189,18 @@ fn gpu_tensor_tick_closes_and_advances_frontier() {
 
 #[test]
 fn gpu_tensor_witness_reconstructs_distinct_layer_paths() {
-    let goal = Node::state(StateNode::Goal);
-    let plan = Node::state(StateNode::Plan);
-    let repair = Node::control(ControlNode::Repair);
-    let validate = Node::state(StateNode::Validate);
-    let execute = Node::state(StateNode::Execute);
+    let r = reg();
+    let goal = Node(nid(&r, "State::Goal"));
+    let plan = Node(nid(&r, "State::Plan"));
+    let repair = Node(nid(&r, "Control::Repair"));
+    let validate = Node(nid(&r, "State::Validate"));
+    let execute = Node(nid(&r, "State::Execute"));
 
     let edges = [
-        // Best confidence path: Goal -> Plan -> Execute = 0.95 * 0.95 = 0.9025
         TensorEdge::new(goal.encode(), plan.encode(), 0.95, 10.0, 0.40),
         TensorEdge::new(plan.encode(), execute.encode(), 0.95, 10.0, 0.40),
-        // Cheapest path: Goal -> Repair -> Execute = 1.0 + 1.0 = 2.0
         TensorEdge::new(goal.encode(), repair.encode(), 0.70, 1.0, 0.50),
         TensorEdge::new(repair.encode(), execute.encode(), 0.70, 1.0, 0.50),
-        // Safest path: Goal -> Validate -> Execute = min(0.99, 0.99) = 0.99
         TensorEdge::new(goal.encode(), validate.encode(), 0.60, 5.0, 0.99),
         TensorEdge::new(validate.encode(), execute.encode(), 0.60, 5.0, 0.99),
     ];
@@ -216,11 +230,12 @@ fn gpu_tensor_witness_reconstructs_distinct_layer_paths() {
 
 #[test]
 fn gpu_tensor_projects_and_commits_parallel_group() {
-    let goal = Node::state(StateNode::Goal).encode();
-    let map = Node::state(StateNode::Map).encode();
-    let search = Node::state(StateNode::Search).encode();
-    let parse = Node::state(StateNode::Parse).encode();
-    let score = Node::state(StateNode::Score).encode();
+    let r = reg();
+    let goal = nid(&r, "State::Goal");
+    let map = nid(&r, "State::Map");
+    let search = nid(&r, "State::Search");
+    let parse = nid(&r, "State::Parse");
+    let score = nid(&r, "State::Score");
     let edges = [
         TensorEdge::new(goal, map, 0.95, 1.0, 0.95),
         TensorEdge::new(goal, parse, 0.94, 1.0, 0.94),
@@ -234,7 +249,7 @@ fn gpu_tensor_projects_and_commits_parallel_group() {
         .project_parallel_group(&[map, parse], ProjectionBias::default())
         .unwrap();
     assert_eq!(decisions.len(), 2);
-    assert!(decisions.iter().all(|decision| decision.blocked == 0));
+    assert!(decisions.iter().all(|d| d.blocked == 0));
     assert_eq!(decisions[0].first_hop, map);
     assert_eq!(decisions[1].first_hop, parse);
 

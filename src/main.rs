@@ -1,11 +1,13 @@
+use std::collections::BTreeSet;
+
 use serde_json::json;
 
 use quantale_semiring_v2::{
-    ExecutionOutcome, ExplorationConfig, ExplorationEngine, GraphTopology, LAYER_CONFIDENCE, Node,
-    ProjectionBias, SystemConfig, TensorQuantaleWorld, TlogWriter, UniversalExecutor,
-    build_tensor_receipt_edges, compile_pattern, compile_tensor_plan,
-    dispatch_decision_batch_blocking, format_quantale_value, full_tensor_transition_edges,
-    load_default_patterns, node_name, project_ready_batch_plan,
+    action_label, compile_pattern, compile_tensor_plan, dispatch_decision_batch_blocking,
+    format_quantale_value, full_tensor_transition_edges, load_default_patterns,
+    load_learned_tensor_edges, project_ready_batch_plan, ExecutionOutcome, ExplorationConfig,
+    ExplorationEngine, GraphTopology, Node, ProjectionBias, SystemConfig, TensorQuantaleWorld,
+    TlogWriter, UniversalExecutor, LAYER_CONFIDENCE,
 };
 
 fn main() {
@@ -41,6 +43,24 @@ fn main() {
             std::process::exit(1);
         }
     };
+    let learned_edges = match load_learned_tensor_edges(
+        &config.learned_edges_path,
+        &topology.registry,
+        &topology.tensor_edges,
+    ) {
+        Ok(edges) => edges,
+        Err(error) => {
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
+    };
+    if !learned_edges.is_empty() {
+        if let Err(error) = tlog.append_tensor_edges("state:learned", &learned_edges) {
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
+        tensor_edges.extend(learned_edges);
+    }
     let patterns = match load_default_patterns() {
         Ok(patterns) => patterns,
         Err(error) => {
@@ -143,23 +163,29 @@ fn main() {
             exploration_engine.mark_candidate_committed(&candidate);
             println!(
                 "exploration projection=({}->{}) first_hop={} score={} path={:?}",
-                node_name(decision.selected_src),
-                node_name(decision.selected_dst),
-                node_name(decision.first_hop),
+                node_name(decision.selected_src, &topology.registry),
+                node_name(decision.selected_dst, &topology.registry),
+                node_name(decision.first_hop, &topology.registry),
                 format_quantale_value(decision.selected_value),
                 commit_record.path,
             );
             if decision.blocked != 0 {
                 continue;
             }
-            let Some(active_node) = Node::decode(decision.first_hop) else {
+            let Some(active_node) = Node::decode(decision.first_hop, &topology.registry) else {
                 eprintln!(
                     "Invalid exploration first_hop index: {}",
                     decision.first_hop
                 );
                 break;
             };
-            let active_node_name = active_node.name();
+            let Some(active_node_name) = active_node.name(&topology.registry) else {
+                eprintln!(
+                    "Invalid exploration first_hop index: {}",
+                    decision.first_hop
+                );
+                break;
+            };
             let process_receipt =
                 executor.execute_abstract_node_blocking(active_node_name, &current_payload);
             let outcome = ExecutionOutcome::from(&process_receipt);
@@ -179,36 +205,25 @@ fn main() {
                 std::process::exit(1);
             }
 
-            let execution_receipt = process_receipt.to_execution_receipt();
-            let receipt_edges = build_tensor_receipt_edges(execution_receipt.clone());
-            if let Err(error) = world.embed_tensor_edges(&receipt_edges) {
-                eprintln!("{error}");
-                std::process::exit(1);
-            }
-            if let Err(error) = tlog.append_receipt(&execution_receipt) {
-                eprintln!("{error}");
-                std::process::exit(1);
-            }
-            if let Err(error) = tlog.append_tensor_edges("exploration:receipt", &receipt_edges) {
-                eprintln!("{error}");
-                std::process::exit(1);
-            }
             if process_receipt.exit_code == 0 && !process_receipt.stdout_payload.is_empty() {
                 if executor.output_mode(active_node_name) == Some("tensor_plan") {
                     match compile_tensor_plan(&process_receipt.stdout_payload) {
-                        Ok(plan_edges) if !plan_edges.is_empty() => {
-                            if let Err(error) = world.embed_tensor_edges(&plan_edges) {
-                                eprintln!("{error}");
-                                std::process::exit(1);
-                            }
-                            if let Err(error) =
-                                tlog.append_tensor_edges("exploration:plan_tensor", &plan_edges)
-                            {
-                                eprintln!("{error}");
-                                std::process::exit(1);
+                        Ok(plan_edges) => {
+                            let plan_edges =
+                                filter_static_topology_edges(plan_edges, &topology.tensor_edges);
+                            if !plan_edges.is_empty() {
+                                if let Err(error) = world.embed_tensor_edges(&plan_edges) {
+                                    eprintln!("{error}");
+                                    std::process::exit(1);
+                                }
+                                if let Err(error) =
+                                    tlog.append_tensor_edges("exploration:plan_tensor", &plan_edges)
+                                {
+                                    eprintln!("{error}");
+                                    std::process::exit(1);
+                                }
                             }
                         }
-                        Ok(_) => {}
                         Err(reason) => {
                             println!(
                                 "[WARN] Exploration tensor plan invalid ({reason}); dampening selected edge"
@@ -263,11 +278,11 @@ fn main() {
                         println!(
                             "batch_step={} projection=({}->{}) first_hop={} score={} action={:?}",
                             decision.step,
-                            node_name(decision.selected_src),
-                            node_name(decision.selected_dst),
-                            node_name(decision.first_hop),
+                            node_name(decision.selected_src, &topology.registry),
+                            node_name(decision.selected_dst, &topology.registry),
+                            node_name(decision.first_hop, &topology.registry),
                             format_quantale_value(decision.selected_value),
-                            decision.selected_action(),
+                            action_label(decision.first_hop, &topology.registry),
                         );
                     }
 
@@ -312,45 +327,36 @@ fn main() {
                             std::process::exit(1);
                         }
 
-                        let execution_receipt = scheduled.receipt.to_execution_receipt();
-                        let receipt_edges = build_tensor_receipt_edges(execution_receipt.clone());
-                        if let Err(error) = world.embed_tensor_edges(&receipt_edges) {
-                            eprintln!("{error}");
-                            std::process::exit(1);
-                        }
-                        if let Err(error) = tlog.append_receipt(&execution_receipt) {
-                            eprintln!("{error}");
-                            std::process::exit(1);
-                        }
-                        if let Err(error) =
-                            tlog.append_tensor_edges("egress:receipt", &receipt_edges)
-                        {
-                            eprintln!("{error}");
-                            std::process::exit(1);
-                        }
-
                         if scheduled.receipt.exit_code == 0
                             && !scheduled.receipt.stdout_payload.is_empty()
                         {
                             if executor.output_mode(&active_node_name) == Some("tensor_plan") {
                                 match compile_tensor_plan(&scheduled.receipt.stdout_payload) {
-                                    Ok(plan_edges) if !plan_edges.is_empty() => {
-                                        println!(
-                                            "[ALGEBRA] Tensor batch plan: {} edge(s) → VRAM",
-                                            plan_edges.len()
+                                    Ok(plan_edges) => {
+                                        let plan_edges = filter_static_topology_edges(
+                                            plan_edges,
+                                            &topology.tensor_edges,
                                         );
-                                        if let Err(error) = world.embed_tensor_edges(&plan_edges) {
-                                            eprintln!("{error}");
-                                            std::process::exit(1);
-                                        }
-                                        if let Err(error) = tlog
-                                            .append_tensor_edges("plan:tensor_batch", &plan_edges)
-                                        {
-                                            eprintln!("{error}");
-                                            std::process::exit(1);
+                                        if !plan_edges.is_empty() {
+                                            println!(
+                                                "[ALGEBRA] Tensor batch plan: {} edge(s) → VRAM",
+                                                plan_edges.len()
+                                            );
+                                            if let Err(error) =
+                                                world.embed_tensor_edges(&plan_edges)
+                                            {
+                                                eprintln!("{error}");
+                                                std::process::exit(1);
+                                            }
+                                            if let Err(error) = tlog.append_tensor_edges(
+                                                "plan:tensor_batch",
+                                                &plan_edges,
+                                            ) {
+                                                eprintln!("{error}");
+                                                std::process::exit(1);
+                                            }
                                         }
                                     }
-                                    Ok(_) => {}
                                     Err(reason) => {
                                         println!(
                                             "[WARN] Tensor batch plan invalid ({reason}); dampening selected edge"
@@ -413,11 +419,11 @@ fn main() {
         println!(
             "step={} projection=({}->{}) first_hop={} score={} action={:?} halted={} blocked={}",
             decision.step,
-            node_name(decision.selected_src),
-            node_name(decision.selected_dst),
-            node_name(decision.first_hop),
+            node_name(decision.selected_src, &topology.registry),
+            node_name(decision.selected_dst, &topology.registry),
+            node_name(decision.first_hop, &topology.registry),
             format_quantale_value(decision.selected_value),
-            decision.selected_action(),
+            action_label(decision.first_hop, &topology.registry),
             decision.halted,
             decision.blocked,
         );
@@ -431,11 +437,14 @@ fn main() {
             continue;
         }
 
-        let Some(active_node) = Node::decode(decision.first_hop) else {
+        let Some(active_node) = Node::decode(decision.first_hop, &topology.registry) else {
             eprintln!("Invalid first_hop index: {}", decision.first_hop);
             break;
         };
-        let active_node_name = active_node.name();
+        let Some(active_node_name) = active_node.name(&topology.registry) else {
+            eprintln!("Invalid first_hop index: {}", decision.first_hop);
+            break;
+        };
 
         println!("[STEP] Tensor frontier advanced to node: {active_node_name}");
 
@@ -471,40 +480,29 @@ fn main() {
             std::process::exit(1);
         }
 
-        let execution_receipt = process_receipt.to_execution_receipt();
-        let receipt_edges = build_tensor_receipt_edges(execution_receipt.clone());
-        if let Err(error) = world.embed_tensor_edges(&receipt_edges) {
-            eprintln!("{error}");
-            std::process::exit(1);
-        }
-        if let Err(error) = tlog.append_receipt(&execution_receipt) {
-            eprintln!("{error}");
-            std::process::exit(1);
-        }
-        if let Err(error) = tlog.append_tensor_edges("egress:receipt", &receipt_edges) {
-            eprintln!("{error}");
-            std::process::exit(1);
-        }
-
         if process_receipt.exit_code == 0 && !process_receipt.stdout_payload.is_empty() {
             if executor.output_mode(active_node_name) == Some("tensor_plan") {
                 match compile_tensor_plan(&process_receipt.stdout_payload) {
-                    Ok(plan_edges) if !plan_edges.is_empty() => {
-                        println!(
-                            "[ALGEBRA] Tensor LLM plan: {} edge(s) → VRAM",
-                            plan_edges.len()
-                        );
-                        if let Err(error) = world.embed_tensor_edges(&plan_edges) {
-                            eprintln!("{error}");
-                            std::process::exit(1);
-                        }
-                        if let Err(error) = tlog.append_tensor_edges("plan:tensor_llm", &plan_edges)
-                        {
-                            eprintln!("{error}");
-                            std::process::exit(1);
+                    Ok(plan_edges) => {
+                        let plan_edges =
+                            filter_static_topology_edges(plan_edges, &topology.tensor_edges);
+                        if !plan_edges.is_empty() {
+                            println!(
+                                "[ALGEBRA] Tensor LLM plan: {} edge(s) → VRAM",
+                                plan_edges.len()
+                            );
+                            if let Err(error) = world.embed_tensor_edges(&plan_edges) {
+                                eprintln!("{error}");
+                                std::process::exit(1);
+                            }
+                            if let Err(error) =
+                                tlog.append_tensor_edges("plan:tensor_llm", &plan_edges)
+                            {
+                                eprintln!("{error}");
+                                std::process::exit(1);
+                            }
                         }
                     }
-                    Ok(_) => {}
                     Err(reason) => {
                         println!(
                             "[WARN] Tensor LLM plan invalid ({reason}); dampening selected edge"
@@ -540,4 +538,25 @@ fn main() {
         eprintln!("{error}");
         std::process::exit(1);
     }
+}
+
+fn node_name(node_id: i32, registry: &quantale_semiring_v2::NodeRegistry) -> String {
+    Node::decode(node_id, registry)
+        .and_then(|node| node.name(registry))
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("Unknown({node_id})"))
+}
+
+fn filter_static_topology_edges(
+    edges: Vec<quantale_semiring_v2::TensorEdge>,
+    topology_edges: &[quantale_semiring_v2::TensorEdge],
+) -> Vec<quantale_semiring_v2::TensorEdge> {
+    let allowed: BTreeSet<(i32, i32)> = topology_edges
+        .iter()
+        .map(|edge| (edge.src, edge.dst))
+        .collect();
+    edges
+        .into_iter()
+        .filter(|edge| allowed.contains(&(edge.src, edge.dst)))
+        .collect()
 }

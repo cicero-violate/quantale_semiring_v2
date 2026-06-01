@@ -4,7 +4,8 @@ use cudarc::driver::DeviceRepr;
 use serde::Serialize;
 
 use crate::algebra::{BOTTOM, Q_UNIT};
-use crate::node::{ControlNode, EventNode, Node, StateNode};
+use crate::node::Node;
+use crate::topology::NodeRegistry;
 
 /// Compact report for π(A*): the gated executable projection of least fixed point.
 #[repr(C)]
@@ -21,52 +22,21 @@ pub struct DecisionReport {
 
 unsafe impl DeviceRepr for DecisionReport {}
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum QuantaleAction {
-    RunExecutor,
-    Commit,
-    Retry,
-    Repair,
-    Rollback,
-    Stop,
-    ContinueTo(Node),
-    Blocked,
-    Unknown,
+impl DecisionReport {
+    pub fn selected_node(&self, registry: &NodeRegistry) -> Option<Node> {
+        Node::decode(self.selected_dst, registry)
+    }
+
+    pub fn first_hop_node(&self, registry: &NodeRegistry) -> Option<Node> {
+        Node::decode(self.first_hop, registry)
+    }
 }
 
-impl DecisionReport {
-    pub fn selected_node(&self) -> Option<Node> {
-        Node::decode(self.selected_dst)
+pub fn action_label(node_id: i32, registry: &NodeRegistry) -> &str {
+    if node_id < 0 {
+        return "blocked";
     }
-
-    pub fn first_hop_node(&self) -> Option<Node> {
-        Node::decode(self.first_hop)
-    }
-
-    pub fn selected_action(&self) -> QuantaleAction {
-        if self.blocked != 0 {
-            return QuantaleAction::Blocked;
-        }
-        let Some(node) = self.selected_node() else {
-            return QuantaleAction::Unknown;
-        };
-        if node == Node::state(StateNode::Execute) || node == Node::event(EventNode::ExecuteStarted)
-        {
-            QuantaleAction::RunExecutor
-        } else if node == Node::control(ControlNode::Commit) {
-            QuantaleAction::Commit
-        } else if node == Node::control(ControlNode::Retry) {
-            QuantaleAction::Retry
-        } else if node == Node::control(ControlNode::Repair) {
-            QuantaleAction::Repair
-        } else if node == Node::control(ControlNode::Rollback) {
-            QuantaleAction::Rollback
-        } else if node == Node::control(ControlNode::Halt) {
-            QuantaleAction::Stop
-        } else {
-            QuantaleAction::ContinueTo(node)
-        }
-    }
+    registry.action_of(node_id as usize).unwrap_or("unknown")
 }
 
 pub fn format_quantale_value(value: f32) -> String {

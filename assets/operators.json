@@ -87,23 +87,17 @@
     },
     {
       "node_name": "Control::Repair",
-      "executable": "python3",
-      "static_args": [
-        "assets/call_llm.py",
-        "--template",
-        "repair"
-      ],
+      "executable": "true",
+      "static_args": [],
       "input_mapping": {
-        "stdin_mode": "json"
+        "stdin_source": null
       },
-      "output_mode": "tensor_plan",
       "effects": {
         "reads": [
-          "receipt.report",
-          "task.context"
+          "receipt.report"
         ],
         "writes": [
-          "repair.tensor"
+          "repair.intent"
         ],
         "locks": []
       }
@@ -163,18 +157,22 @@
     },
     {
       "node_name": "State::Learn",
-      "executable": "true",
-      "static_args": [],
+      "executable": "python3",
+      "static_args": [
+        "assets/learn.py"
+      ],
       "input_mapping": {
-        "stdin_source": null
+        "stdin_mode": "json"
       },
+      "output_mode": "tensor_plan",
       "effects": {
         "reads": [
           "memory.store",
-          "validation.report"
+          "state/quantale.tlog"
         ],
         "writes": [
-          "learning.model"
+          "learning.tensor",
+          "state/learned_edges.jsonl"
         ],
         "locks": [
           "learning"
@@ -268,17 +266,19 @@
     },
     {
       "node_name": "State::Input",
-      "executable": "true",
-      "static_args": [],
+      "executable": "python3",
+      "static_args": [
+        "assets/input.py"
+      ],
       "input_mapping": {
-        "stdin_source": null
+        "stdin_mode": "json"
       },
       "effects": {
         "reads": [
-          "state.symbolic"
+          "env.task"
         ],
         "writes": [
-          "state.input.observed"
+          "task.context"
         ],
         "locks": []
       }
@@ -336,19 +336,25 @@
     },
     {
       "node_name": "Control::Commit",
-      "executable": "true",
-      "static_args": [],
+      "executable": "python3",
+      "static_args": [
+        "assets/commit.py"
+      ],
       "input_mapping": {
-        "stdin_source": null
+        "stdin_mode": "json"
       },
       "effects": {
         "reads": [
-          "control.symbolic"
+          "task.context",
+          "execution.report",
+          "validation.report"
         ],
         "writes": [
-          "control.commit.observed"
+          "commit.record"
         ],
-        "locks": []
+        "locks": [
+          "commit"
+        ]
       }
     },
     {
@@ -472,10 +478,14 @@
     },
     {
       "node_name": "Event::FactArrived",
-      "executable": "true",
-      "static_args": [],
+      "executable": "python3",
+      "static_args": [
+        "assets/event.py",
+        "--event",
+        "FactArrived"
+      ],
       "input_mapping": {
-        "stdin_source": null
+        "stdin_mode": "json"
       },
       "effects": {
         "reads": [
@@ -489,10 +499,14 @@
     },
     {
       "node_name": "Event::InputAccepted",
-      "executable": "true",
-      "static_args": [],
+      "executable": "python3",
+      "static_args": [
+        "assets/event.py",
+        "--event",
+        "InputAccepted"
+      ],
       "input_mapping": {
-        "stdin_source": null
+        "stdin_mode": "json"
       },
       "effects": {
         "reads": [
@@ -506,10 +520,14 @@
     },
     {
       "node_name": "Event::ParseOk",
-      "executable": "true",
-      "static_args": [],
+      "executable": "python3",
+      "static_args": [
+        "assets/event.py",
+        "--event",
+        "ParseOk"
+      ],
       "input_mapping": {
-        "stdin_source": null
+        "stdin_mode": "json"
       },
       "effects": {
         "reads": [
@@ -523,10 +541,14 @@
     },
     {
       "node_name": "Event::ParseErr",
-      "executable": "true",
-      "static_args": [],
+      "executable": "python3",
+      "static_args": [
+        "assets/event.py",
+        "--event",
+        "ParseErr"
+      ],
       "input_mapping": {
-        "stdin_source": null
+        "stdin_mode": "json"
       },
       "effects": {
         "reads": [
@@ -693,10 +715,14 @@
     },
     {
       "node_name": "Event::ReceiptAccepted",
-      "executable": "true",
-      "static_args": [],
+      "executable": "python3",
+      "static_args": [
+        "assets/event.py",
+        "--event",
+        "ReceiptAccepted"
+      ],
       "input_mapping": {
-        "stdin_source": null
+        "stdin_mode": "json"
       },
       "effects": {
         "reads": [
@@ -710,10 +736,14 @@
     },
     {
       "node_name": "Event::ReceiptRejected",
-      "executable": "true",
-      "static_args": [],
+      "executable": "python3",
+      "static_args": [
+        "assets/event.py",
+        "--event",
+        "ReceiptRejected"
+      ],
       "input_mapping": {
-        "stdin_source": null
+        "stdin_mode": "json"
       },
       "effects": {
         "reads": [
@@ -744,10 +774,14 @@
     },
     {
       "node_name": "Event::MemoryWritten",
-      "executable": "true",
-      "static_args": [],
+      "executable": "python3",
+      "static_args": [
+        "assets/event.py",
+        "--event",
+        "MemoryWritten"
+      ],
       "input_mapping": {
-        "stdin_source": null
+        "stdin_mode": "json"
       },
       "effects": {
         "reads": [
@@ -761,10 +795,14 @@
     },
     {
       "node_name": "Event::LearnUpdated",
-      "executable": "true",
-      "static_args": [],
+      "executable": "python3",
+      "static_args": [
+        "assets/event.py",
+        "--event",
+        "LearnUpdated"
+      ],
       "input_mapping": {
-        "stdin_source": null
+        "stdin_mode": "json"
       },
       "effects": {
         "reads": [
@@ -781,8 +819,8 @@
       "executable": "cuda_ptx",
       "static_args": [],
       "input_mapping": {
-        "module": "addons/cuda/trading_execution_kernels.ptx",
-        "module_name": "quantale_trading_execution_addons",
+        "module": "cuda/trading_execution_kernels.ptx",
+        "module_name": "quantale_trading_execution_kernels",
         "kernel": "dyn_alpha_signal_evaluator_kernel",
         "plane": "execution",
         "category": "quant_trading.dynamic_alpha_signal_evaluator",
@@ -805,8 +843,8 @@
       "executable": "cuda_ptx",
       "static_args": [],
       "input_mapping": {
-        "module": "addons/cuda/trading_execution_kernels.ptx",
-        "module_name": "quantale_trading_execution_addons",
+        "module": "cuda/trading_execution_kernels.ptx",
+        "module_name": "quantale_trading_execution_kernels",
         "kernel": "order_book_imbalance_weaver_kernel",
         "plane": "execution",
         "category": "quant_trading.order_book_imbalance_weaver",
@@ -829,8 +867,8 @@
       "executable": "cuda_ptx",
       "static_args": [],
       "input_mapping": {
-        "module": "addons/cuda/trading_execution_kernels.ptx",
-        "module_name": "quantale_trading_execution_addons",
+        "module": "cuda/trading_execution_kernels.ptx",
+        "module_name": "quantale_trading_execution_kernels",
         "kernel": "portfolio_risk_constraint_filter_kernel",
         "plane": "execution",
         "category": "quant_trading.portfolio_risk_constraint_filter",
@@ -853,8 +891,8 @@
       "executable": "cuda_ptx",
       "static_args": [],
       "input_mapping": {
-        "module": "addons/cuda/trading_execution_kernels.ptx",
-        "module_name": "quantale_trading_execution_addons",
+        "module": "cuda/trading_execution_kernels.ptx",
+        "module_name": "quantale_trading_execution_kernels",
         "kernel": "adaptive_options_pricing_array_kernel",
         "plane": "execution",
         "category": "quant_trading.adaptive_options_pricing_array",
@@ -877,8 +915,8 @@
       "executable": "cuda_ptx",
       "static_args": [],
       "input_mapping": {
-        "module": "addons/cuda/trading_execution_kernels.ptx",
-        "module_name": "quantale_trading_execution_addons",
+        "module": "cuda/trading_execution_kernels.ptx",
+        "module_name": "quantale_trading_execution_kernels",
         "kernel": "hardware_tailored_feed_handler_kernel",
         "plane": "execution",
         "category": "quant_trading.hardware_tailored_feed_handler",

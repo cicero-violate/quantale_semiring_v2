@@ -7,7 +7,6 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use crate::error::CudaError;
-use crate::node::{NODE_COUNT, Node};
 use crate::tensor::TensorEdge;
 use crate::types::QuantaleWeight;
 
@@ -19,6 +18,8 @@ pub struct TopologyNode {
     pub name: String,
     #[serde(rename = "type")]
     pub node_type: String,
+    #[serde(default)]
+    pub action: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -66,6 +67,7 @@ pub struct CompiledTopology {
 pub struct NodeRegistry {
     by_name: BTreeMap<String, usize>,
     by_id: BTreeMap<usize, String>,
+    actions: BTreeMap<usize, String>,
 }
 
 impl NodeRegistry {
@@ -84,6 +86,18 @@ impl NodeRegistry {
     pub fn is_empty(&self) -> bool {
         self.by_name.is_empty()
     }
+
+    pub fn matrix_len(&self) -> usize {
+        self.len() * self.len()
+    }
+
+    pub fn contains_name(&self, name: &str) -> bool {
+        self.by_name.contains_key(name)
+    }
+
+    pub fn action_of(&self, id: usize) -> Option<&str> {
+        self.actions.get(&id).map(String::as_str)
+    }
 }
 
 impl GraphTopology {
@@ -99,6 +113,10 @@ impl GraphTopology {
 
     pub fn default_asset() -> Result<Self, CudaError> {
         Self::from_json_str(DEFAULT_TOPOLOGY_JSON)
+    }
+
+    pub fn bundled_registry() -> Result<NodeRegistry, CudaError> {
+        Self::default_asset()?.compile().map(|ct| ct.registry)
     }
 
     pub fn compile(&self) -> Result<CompiledTopology, CudaError> {
@@ -130,7 +148,7 @@ impl GraphTopology {
         Ok(CompiledTopology {
             matrix_name: self.matrix_name.clone(),
             node_count: registry.len(),
-            matrix_len: registry.len() * registry.len(),
+            matrix_len: registry.matrix_len(),
             registry,
             tensor_edges,
             pages: self.pages.clone(),
@@ -141,23 +159,48 @@ impl GraphTopology {
         if self.nodes.is_empty() {
             return Err(CudaError::invalid_input("no nodes"));
         }
-        if self.nodes.len() > NODE_COUNT {
-            return Err(CudaError::invalid_input("node count overflow"));
-        }
 
         let mut by_name = BTreeMap::new();
         let mut by_id = BTreeMap::new();
+        let mut actions = BTreeMap::new();
         for node in &self.nodes {
-            if node.id >= NODE_COUNT || Node::decode_index(node.id).is_none() {
-                return Err(CudaError::invalid_input("node ID invalid"));
-            }
             if by_name.insert(node.name.clone(), node.id).is_some()
                 || by_id.insert(node.id, node.name.clone()).is_some()
             {
                 return Err(CudaError::invalid_input("duplicate node item"));
             }
+            if let Some(action) = &node.action {
+                actions.insert(node.id, action.clone());
+            }
         }
-        Ok(NodeRegistry { by_name, by_id })
+
+        for expected_id in 0..self.nodes.len() {
+            if !by_id.contains_key(&expected_id) {
+                return Err(CudaError::invalid_input(format!(
+                    "topology node ids must be dense; missing id {expected_id}"
+                )));
+            }
+        }
+
+        for transition in &self.transitions {
+            if !by_name.contains_key(&transition.from) {
+                return Err(CudaError::invalid_input(format!(
+                    "transition source '{}' missing",
+                    transition.from
+                )));
+            }
+            if !by_name.contains_key(&transition.to) {
+                return Err(CudaError::invalid_input(format!(
+                    "transition destination '{}' missing",
+                    transition.to
+                )));
+            }
+        }
+        Ok(NodeRegistry {
+            by_name,
+            by_id,
+            actions,
+        })
     }
 }
 
@@ -237,5 +280,52 @@ mod tests {
         assert_eq!(compiled.tensor_edges[0].confidence, 0.75);
         assert!((compiled.tensor_edges[0].cost - 0.25).abs() < f32::EPSILON);
         assert_eq!(compiled.tensor_edges[0].safety, 0.75);
+    }
+
+    #[test]
+    fn bundled_registry_round_trips_node_names_and_matrix_len() {
+        let topology = GraphTopology::default_asset().unwrap();
+        let compiled = topology.compile().unwrap();
+        for node in &topology.nodes {
+            let id = compiled.registry.id_of(&node.name).unwrap();
+            assert_eq!(compiled.registry.name_of(id), Some(node.name.as_str()));
+        }
+        assert_eq!(
+            compiled.registry.matrix_len(),
+            compiled.registry.len() * compiled.registry.len()
+        );
+    }
+
+    #[test]
+    fn registry_reads_declared_actions() {
+        let raw = r#"{
+            "matrix_name": "test",
+            "nodes": [
+                {"id": 0, "name": "Control::Commit", "type": "Control", "action": "commit"}
+            ],
+            "transitions": []
+        }"#;
+        let compiled = GraphTopology::from_json_str(raw)
+            .unwrap()
+            .compile()
+            .unwrap();
+        assert_eq!(compiled.registry.action_of(0), Some("commit"));
+    }
+
+    #[test]
+    fn registry_rejects_sparse_node_ids() {
+        let raw = r#"{
+            "matrix_name": "test",
+            "nodes": [
+                {"id": 0, "name": "State::Goal", "type": "State"},
+                {"id": 2, "name": "State::Input", "type": "State"}
+            ],
+            "transitions": []
+        }"#;
+        let err = GraphTopology::from_json_str(raw)
+            .unwrap()
+            .compile()
+            .unwrap_err();
+        assert!(err.message.contains("dense"));
     }
 }

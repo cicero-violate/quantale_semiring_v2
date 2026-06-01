@@ -3,8 +3,13 @@ name = "quantale_semiring_v2"
 version = "0.1.0"
 edition = "2024"
 
+[workspace]
+members = ["."]
+resolver = "3"
+
 [features]
 default = []
+cuda = []
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }

@@ -1,0 +1,3 @@
+{
+  "plan": "You are a neuro-symbolic planning engine...\n\nContext:\n{context}\n\nPropose transitions:"
+}

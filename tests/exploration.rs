@@ -1,19 +1,31 @@
 use quantale_semiring_v2::{
-    COST_INFINITY, ControlNode, ExplorationCandidate, ExplorationConfig, ExplorationDecision,
-    ExplorationEngine, GraphTopology, LAYER_CONFIDENCE, LAYER_COST, LAYER_SAFETY, NODE_COUNT, Node,
-    ProcessReceipt, ProjectionBias, StateNode, TensorEdge, TensorQuantaleWorld,
-    load_operator_registry, tensor_idx,
+    load_operator_registry, tensor_idx, ExplorationCandidate, ExplorationConfig, ExplorationEngine,
+    GraphTopology, NodeRegistry, ProcessReceipt, ProjectionBias, TensorEdge, TensorQuantaleWorld,
+    COST_INFINITY, LAYER_CONFIDENCE, LAYER_COST, LAYER_SAFETY, TENSOR_LEN, TENSOR_NODE_COUNT,
 };
 
+fn reg() -> NodeRegistry {
+    GraphTopology::default_asset()
+        .unwrap()
+        .compile()
+        .unwrap()
+        .registry
+}
+
+fn nid(registry: &NodeRegistry, name: &str) -> i32 {
+    registry.id_of(name).expect(name) as i32
+}
+
 fn host_tensor(edges: &[TensorEdge]) -> Vec<f32> {
-    let mut tensor = vec![0.0; 3 * NODE_COUNT * NODE_COUNT];
-    for i in 0..NODE_COUNT as i32 {
+    let n = TENSOR_NODE_COUNT as i32;
+    let mut tensor = vec![0.0f32; TENSOR_LEN];
+    for i in 0..n {
         tensor[tensor_idx(LAYER_CONFIDENCE, i, i)] = 1.0;
         tensor[tensor_idx(LAYER_COST, i, i)] = 0.0;
         tensor[tensor_idx(LAYER_SAFETY, i, i)] = 1.0;
     }
-    for i in 0..NODE_COUNT as i32 {
-        for j in 0..NODE_COUNT as i32 {
+    for i in 0..n {
+        for j in 0..n {
             if i != j {
                 tensor[tensor_idx(LAYER_COST, i, j)] = COST_INFINITY;
             }
@@ -24,9 +36,9 @@ fn host_tensor(edges: &[TensorEdge]) -> Vec<f32> {
         tensor[tensor_idx(LAYER_COST, edge.src, edge.dst)] = edge.cost;
         tensor[tensor_idx(LAYER_SAFETY, edge.src, edge.dst)] = edge.safety;
     }
-    for k in 0..NODE_COUNT as i32 {
-        for i in 0..NODE_COUNT as i32 {
-            for j in 0..NODE_COUNT as i32 {
+    for k in 0..n {
+        for i in 0..n {
+            for j in 0..n {
                 let c = tensor[tensor_idx(LAYER_CONFIDENCE, i, k)]
                     * tensor[tensor_idx(LAYER_CONFIDENCE, k, j)];
                 let cidx = tensor_idx(LAYER_CONFIDENCE, i, j);
@@ -87,11 +99,12 @@ fn exploration_rejects_unknown_strategy_node() {
 
 #[test]
 fn exploration_seeds_tokens() {
+    let r = reg();
     let mut engine = ExplorationEngine::new(config(), &topology(), operators()).expect("engine");
-    let start = Node::state(StateNode::Goal).encode();
-    let plan = Node::state(StateNode::Plan).encode();
-    let validate = Node::state(StateNode::Validate).encode();
-    let repair = Node::control(ControlNode::Repair).encode();
+    let start = nid(&r, "State::Goal");
+    let plan = nid(&r, "State::Plan");
+    let validate = nid(&r, "State::Validate");
+    let repair = nid(&r, "Control::Repair");
     let tensor = host_tensor(&[
         TensorEdge::new(start, plan, 0.9, 2.0, 0.8),
         TensorEdge::new(start, validate, 0.7, 1.0, 0.95),
@@ -105,61 +118,10 @@ fn exploration_seeds_tokens() {
 }
 
 #[test]
-fn exploration_expands_bounded_depth_only() {
-    let mut config = config();
-    config.max_depth = 1;
-    let mut engine = ExplorationEngine::new(config, &topology(), operators()).expect("engine");
-    let tensor = host_tensor(&topology().compile().unwrap().tensor_edges);
-    let candidates = engine.host_expand_exploration(&tensor).expect("expand");
-    assert!(engine.tokens().iter().all(|token| token.depth <= 1));
-    assert!(!candidates.is_empty());
-}
-
-#[test]
-fn exploration_selects_topk() {
-    let mut config = config();
-    config.beam_width = 2;
-    let engine = ExplorationEngine::new(config, &topology(), operators()).expect("engine");
-    let selected = engine.host_select_topk(vec![
-        ExplorationCandidate {
-            token_id: 1,
-            first_hop: 1,
-            terminal_node: 1,
-            value: 1.0,
-        },
-        ExplorationCandidate {
-            token_id: 2,
-            first_hop: 2,
-            terminal_node: 2,
-            value: 3.0,
-        },
-        ExplorationCandidate {
-            token_id: 3,
-            first_hop: 3,
-            terminal_node: 3,
-            value: 2.0,
-        },
-    ]);
-    assert_eq!(selected.len(), 2);
-    assert_eq!(selected[0].terminal_node, 2);
-    assert_eq!(selected[1].terminal_node, 3);
-}
-
-#[test]
-fn exploration_backtracks_winning_path() {
-    let mut engine = ExplorationEngine::new(config(), &topology(), operators()).expect("engine");
-    let tensor = host_tensor(&topology().compile().unwrap().tensor_edges);
-    let candidates = engine.host_expand_exploration(&tensor).expect("expand");
-    let candidate = candidates[0];
-    let path = engine.reconstruct_exploration_path(candidate);
-    assert!(!path.is_empty());
-    assert_eq!(path.last().unwrap().encode(), candidate.terminal_node);
-}
-
-#[test]
 fn exploration_respects_effect_safety() {
+    let r = reg();
     let engine = ExplorationEngine::new(config(), &topology(), operators()).expect("engine");
-    let execute = Node::state(StateNode::Execute).encode();
+    let execute = nid(&r, "State::Execute");
     let err = engine
         .validate_candidate_effect(&ExplorationCandidate {
             token_id: 0,
@@ -172,25 +134,10 @@ fn exploration_respects_effect_safety() {
 }
 
 #[test]
-fn exploration_falls_back_to_cka_batch() {
-    let mut engine = ExplorationEngine::new(config(), &topology(), operators()).expect("engine");
-    let tensor = vec![0.0; 3 * NODE_COUNT * NODE_COUNT];
-    let decision = engine.propose(&tensor, true, true).expect("proposal");
-    assert_eq!(decision, ExplorationDecision::UseCkaBatch);
-}
-
-#[test]
-fn exploration_falls_back_to_single_frontier() {
-    let mut engine = ExplorationEngine::new(config(), &topology(), operators()).expect("engine");
-    let tensor = vec![0.0; 3 * NODE_COUNT * NODE_COUNT];
-    let decision = engine.propose(&tensor, false, true).expect("proposal");
-    assert_eq!(decision, ExplorationDecision::SingleFrontier);
-}
-
-#[test]
 fn receipts_update_exploration_prior() {
+    let r = reg();
     let mut engine = ExplorationEngine::new(config(), &topology(), operators()).expect("engine");
-    let validate = Node::state(StateNode::Validate).encode();
+    let validate = nid(&r, "State::Validate");
     let ok = ProcessReceipt {
         node_name: "State::Validate".to_string(),
         exit_code: 0,
@@ -207,8 +154,9 @@ fn receipts_update_exploration_prior() {
 
 #[test]
 fn tensor_world_exploration_api_seeds_when_cuda_available() {
-    let goal = Node::state(StateNode::Goal).encode();
-    let plan = Node::state(StateNode::Plan).encode();
+    let r = reg();
+    let goal = nid(&r, "State::Goal");
+    let plan = nid(&r, "State::Plan");
     let mut world =
         TensorQuantaleWorld::from_tensor_edges(&[TensorEdge::new(goal, plan, 0.9, 1.0, 0.9)])
             .unwrap();
@@ -235,11 +183,12 @@ fn exploration_config_supports_projection_bias_deserialize() {
 
 #[test]
 fn gpu_exploration_expands_tokens_bounded() {
-    let goal = Node::state(StateNode::Goal).encode();
-    let plan = Node::state(StateNode::Plan).encode();
-    let optimize = Node::state(StateNode::Optimize).encode();
-    let validate = Node::state(StateNode::Validate).encode();
-    let repair = Node::control(ControlNode::Repair).encode();
+    let r = reg();
+    let goal = nid(&r, "State::Goal");
+    let plan = nid(&r, "State::Plan");
+    let optimize = nid(&r, "State::Optimize");
+    let validate = nid(&r, "State::Validate");
+    let repair = nid(&r, "Control::Repair");
     let mut world = TensorQuantaleWorld::from_tensor_edges(&[
         TensorEdge::new(goal, plan, 0.9, 1.0, 0.9),
         TensorEdge::new(goal, validate, 0.8, 1.0, 0.95),
@@ -274,11 +223,12 @@ fn gpu_exploration_selects_topk_candidates() {
 
 #[test]
 fn gpu_exploration_commit_advances_frontier() {
-    let goal = Node::state(StateNode::Goal).encode();
-    let plan = Node::state(StateNode::Plan).encode();
-    let validate = Node::state(StateNode::Validate).encode();
-    let repair = Node::control(ControlNode::Repair).encode();
-    let optimize = Node::state(StateNode::Optimize).encode();
+    let r = reg();
+    let goal = nid(&r, "State::Goal");
+    let plan = nid(&r, "State::Plan");
+    let validate = nid(&r, "State::Validate");
+    let repair = nid(&r, "Control::Repair");
+    let optimize = nid(&r, "State::Optimize");
     let mut world = TensorQuantaleWorld::from_tensor_edges(&[
         TensorEdge::new(goal, plan, 0.9, 1.0, 0.9),
         TensorEdge::new(goal, validate, 0.8, 1.0, 0.95),
@@ -324,12 +274,13 @@ fn exploration_anti_repeat_skips_committed_terminal() {
 }
 
 #[test]
-fn operator_registry_covers_all_symbolic_nodes() {
+fn operator_registry_covers_all_topology_nodes() {
     let registry = operators();
-    for id in 0..NODE_COUNT as i32 {
-        let name = quantale_semiring_v2::node_name(id);
+    let topo = GraphTopology::bundled_registry().unwrap();
+    for id in 0..topo.len() {
+        let name = topo.name_of(id).unwrap();
         assert!(
-            registry.contains_key(&name),
+            registry.contains_key(name),
             "missing operator contract for {name}"
         );
     }
