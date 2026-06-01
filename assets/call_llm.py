@@ -13,7 +13,7 @@ import sys
 import json
 import argparse
 
-BROWSER_ROUTER_URL = "http://127.0.0.1:8082/v1/chat/completions"
+BROWSER_ROUTER_URL = "http://127.0.0.1:8090/v1/chat/completions"
 MODEL = "chatgpt-cdp"
 
 # Valid node names the LLM may reference in edge proposals.
