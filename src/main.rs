@@ -261,6 +261,10 @@ fn main() {
                                     std::process::exit(1);
                                 }
                             }
+                            // Tensor plan edges are now in the GPU world — do not
+                            // recycle them as context for the next operator call.
+                            // Passing a JSON edge array as context creates nested
+                            // JSON on each iteration that call_llm.py must unwrap.
                         }
                         Err(reason) => {
                             println!(
@@ -276,8 +280,9 @@ fn main() {
                             }
                         }
                     }
+                } else {
+                    current_payload = json!({ "context": process_receipt.stdout_payload });
                 }
-                current_payload = json!({ "context": process_receipt.stdout_payload });
             }
             if let Err(error) = world.decay(0.995) {
                 eprintln!("{error}");
@@ -410,10 +415,15 @@ fn main() {
                                     }
                                 }
                             }
-                            batch_stdout.push(json!({
-                                "node": active_node_name,
-                                "stdout": scheduled.receipt.stdout_payload,
-                            }));
+                            // Only pass non-tensor-plan stdout forward as
+                            // context — tensor plan edges are already in the
+                            // GPU world and would create nested JSON if recycled.
+                            if executor.output_mode(&active_node_name) != Some("tensor_plan") {
+                                batch_stdout.push(json!({
+                                    "node": active_node_name,
+                                    "stdout": scheduled.receipt.stdout_payload,
+                                }));
+                            }
                         }
 
                         if let Err(error) = tlog.log_step(&scheduled.receipt, &scheduled.decision) {
@@ -616,6 +626,10 @@ fn main() {
                                 std::process::exit(1);
                             }
                         }
+                        // Tensor plan edges are now in the GPU world — do not
+                        // recycle them as context for the next operator call.
+                        // Passing a JSON edge array as context creates nested
+                        // JSON on each iteration that call_llm.py must unwrap.
                     }
                     Err(reason) => {
                         println!(
@@ -631,8 +645,9 @@ fn main() {
                         }
                     }
                 }
+            } else {
+                current_payload = json!({ "context": process_receipt.stdout_payload });
             }
-            current_payload = json!({ "context": process_receipt.stdout_payload });
         }
 
         if let Err(error) = world.decay(0.995) {
