@@ -476,7 +476,16 @@ impl TensorQuantaleWorld {
             )
         }
         .map_err(|error| CudaError::new("tensor_quantale_frontier_step", error))?;
-        self.decision_report()
+        let report = self.decision_report()?;
+        // Invariant 16: frontier one-hot validity — first_hop must be a valid
+        // node index.  In test builds this panics at the source instead of
+        // propagating Unknown(-1) through subsequent calls.
+        debug_assert!(
+            report.blocked != 0 || (0..TENSOR_NODE_COUNT as i32).contains(&report.first_hop),
+            "frontier_step returned invalid node id: {}",
+            report.first_hop
+        );
+        Ok(report)
     }
 
     /// Fused tensor closure plus frontier projection/update.

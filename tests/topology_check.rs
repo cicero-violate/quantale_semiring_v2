@@ -236,3 +236,371 @@ fn current_topology_passes_all_checks() {
         violations.len()
     );
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Phase 1 — identity and weight tests
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ── duplicate node name ───────────────────────────────────────────────────────
+
+#[test]
+fn check_rejects_duplicate_node_names() {
+    let topo = parse(r#"{
+        "matrix_name":"t","nodes":[
+            {"id":0,"name":"State::A","type":"State"},
+            {"id":1,"name":"State::A","type":"State"},
+            {"id":2,"name":"Control::Halt","type":"Control","action":"halt"}
+        ],
+        "transitions":[
+            {"from":"State::A","to":"Control::Halt","default_weight":0.9}
+        ],"pages":[]}"#);
+    assert!(has_violation(&topo, ViolationKind::DuplicateNodeName, "State::A"));
+}
+
+#[test]
+fn check_passes_with_unique_node_names() {
+    let topo = parse(minimal_valid());
+    let dups = violations_of_kind(&topo, ViolationKind::DuplicateNodeName);
+    assert!(dups.is_empty(), "no duplicate names expected: {dups:?}");
+}
+
+// ── duplicate node id ─────────────────────────────────────────────────────────
+
+#[test]
+fn check_rejects_duplicate_node_ids() {
+    // Both nodes use id=1; serde happily parses this, check() must catch it.
+    let topo = parse(r#"{
+        "matrix_name":"t","nodes":[
+            {"id":0,"name":"State::Start","type":"State"},
+            {"id":1,"name":"State::A","type":"State"},
+            {"id":1,"name":"State::B","type":"State"},
+            {"id":2,"name":"Control::Halt","type":"Control","action":"halt"}
+        ],
+        "transitions":[
+            {"from":"State::Start","to":"State::A","default_weight":0.9},
+            {"from":"State::A","to":"Control::Halt","default_weight":0.8}
+        ],"pages":[]}"#);
+    let dup_ids = violations_of_kind(&topo, ViolationKind::DuplicateNodeId);
+    assert!(!dup_ids.is_empty(), "duplicate id=1 must be reported");
+}
+
+// ── start node validity ───────────────────────────────────────────────────────
+
+#[test]
+fn check_rejects_start_node_with_wrong_id() {
+    // nodes[0] has id=1 instead of id=0
+    let topo = parse(r#"{
+        "matrix_name":"t","nodes":[
+            {"id":1,"name":"State::Start","type":"State"},
+            {"id":0,"name":"Control::Halt","type":"Control","action":"halt"}
+        ],
+        "transitions":[
+            {"from":"State::Start","to":"Control::Halt","default_weight":0.9}
+        ],"pages":[]}"#);
+    assert!(has_violation(&topo, ViolationKind::InvalidStartNode, "State::Start"));
+}
+
+#[test]
+fn check_passes_when_start_node_has_id_zero() {
+    let topo = parse(minimal_valid());
+    let vs = violations_of_kind(&topo, ViolationKind::InvalidStartNode);
+    assert!(vs.is_empty());
+}
+
+// ── halt node validity ────────────────────────────────────────────────────────
+
+#[test]
+fn check_rejects_topology_with_no_halt_node() {
+    let topo = parse(r#"{
+        "matrix_name":"t","nodes":[
+            {"id":0,"name":"State::Start","type":"State"},
+            {"id":1,"name":"State::End","type":"State"}
+        ],
+        "transitions":[
+            {"from":"State::Start","to":"State::End","default_weight":0.9},
+            {"from":"State::End","to":"State::Start","default_weight":0.8}
+        ],"pages":[]}"#);
+    assert!(has_violation(&topo, ViolationKind::NoHaltNode, "(topology)"));
+}
+
+#[test]
+fn check_rejects_halt_node_with_outgoing_edge() {
+    let topo = parse(r#"{
+        "matrix_name":"t","nodes":[
+            {"id":0,"name":"State::Start","type":"State"},
+            {"id":1,"name":"Control::Halt","type":"Control","action":"halt"}
+        ],
+        "transitions":[
+            {"from":"State::Start","to":"Control::Halt","default_weight":0.9},
+            {"from":"Control::Halt","to":"State::Start","default_weight":0.5}
+        ],"pages":[]}"#);
+    assert!(has_violation(&topo, ViolationKind::HaltNodeHasSuccessors, "Control::Halt"));
+}
+
+#[test]
+fn check_passes_when_halt_has_no_successors() {
+    let topo = parse(minimal_valid());
+    let vs = violations_of_kind(&topo, ViolationKind::HaltNodeHasSuccessors);
+    assert!(vs.is_empty());
+}
+
+// ── edge uniqueness ───────────────────────────────────────────────────────────
+
+#[test]
+fn check_rejects_duplicate_edge() {
+    let topo = parse(r#"{
+        "matrix_name":"t","nodes":[
+            {"id":0,"name":"State::Start","type":"State"},
+            {"id":1,"name":"Control::Halt","type":"Control","action":"halt"}
+        ],
+        "transitions":[
+            {"from":"State::Start","to":"Control::Halt","default_weight":0.9},
+            {"from":"State::Start","to":"Control::Halt","default_weight":0.8}
+        ],"pages":[]}"#);
+    assert!(has_violation(&topo, ViolationKind::DuplicateEdge, "State::Start"));
+}
+
+#[test]
+fn check_passes_with_unique_edges() {
+    let topo = parse(minimal_valid());
+    let vs = violations_of_kind(&topo, ViolationKind::DuplicateEdge);
+    assert!(vs.is_empty());
+}
+
+// ── weight domain validity ────────────────────────────────────────────────────
+
+#[test]
+fn check_rejects_confidence_above_one() {
+    let topo = parse(r#"{
+        "matrix_name":"t","nodes":[
+            {"id":0,"name":"State::Start","type":"State"},
+            {"id":1,"name":"Control::Halt","type":"Control","action":"halt"}
+        ],
+        "transitions":[
+            {"from":"State::Start","to":"Control::Halt","default_weight":0.9,
+             "confidence":1.5}
+        ],"pages":[]}"#);
+    assert!(has_violation(&topo, ViolationKind::WeightOutOfDomain, "State::Start"),
+        "confidence=1.5 must be rejected");
+}
+
+#[test]
+fn check_rejects_negative_cost() {
+    let topo = parse(r#"{
+        "matrix_name":"t","nodes":[
+            {"id":0,"name":"State::Start","type":"State"},
+            {"id":1,"name":"Control::Halt","type":"Control","action":"halt"}
+        ],
+        "transitions":[
+            {"from":"State::Start","to":"Control::Halt","default_weight":0.9,
+             "cost":-0.1}
+        ],"pages":[]}"#);
+    assert!(has_violation(&topo, ViolationKind::WeightOutOfDomain, "State::Start"),
+        "cost=-0.1 must be rejected");
+}
+
+#[test]
+fn check_passes_with_valid_weights() {
+    let topo = parse(minimal_valid());
+    let vs = violations_of_kind(&topo, ViolationKind::WeightOutOfDomain);
+    assert!(vs.is_empty());
+}
+
+// ── zero-confidence edge warning ──────────────────────────────────────────────
+
+#[test]
+fn check_warns_on_zero_confidence_edge() {
+    let topo = parse(r#"{
+        "matrix_name":"t","nodes":[
+            {"id":0,"name":"State::Start","type":"State"},
+            {"id":1,"name":"Control::Halt","type":"Control","action":"halt"}
+        ],
+        "transitions":[
+            {"from":"State::Start","to":"Control::Halt","default_weight":0.9},
+            {"from":"State::Start","to":"Control::Halt","default_weight":0.0,
+             "confidence":0.0}
+        ],"pages":[]}"#);
+    // DuplicateEdge is also expected here; just confirm ZeroConfidenceEdge fires
+    assert!(has_violation(&topo, ViolationKind::ZeroConfidenceEdge, "State::Start"));
+}
+
+// ── deterministic ordering ────────────────────────────────────────────────────
+
+#[test]
+fn check_rejects_indeterminate_ordering() {
+    // Two edges from State::Start to the same destination with identical
+    // (default_weight, safety, cost, to) tuple — the full sort key is
+    // identical so tie-break is impossible.
+    let topo = parse(r#"{
+        "matrix_name":"t","nodes":[
+            {"id":0,"name":"State::Start","type":"State"},
+            {"id":1,"name":"State::A",    "type":"State"},
+            {"id":2,"name":"Control::Halt","type":"Control","action":"halt"}
+        ],
+        "transitions":[
+            {"from":"State::Start","to":"State::A","default_weight":0.8,
+             "safety":0.8,"cost":0.2},
+            {"from":"State::Start","to":"State::A","default_weight":0.8,
+             "safety":0.8,"cost":0.2},
+            {"from":"State::A","to":"Control::Halt","default_weight":0.9}
+        ],"pages":[]}"#);
+    assert!(has_violation(&topo, ViolationKind::IndeterminateOrdering, "State::Start"));
+}
+
+#[test]
+fn check_passes_with_distinct_edge_tuples() {
+    let topo = parse(r#"{
+        "matrix_name":"t","nodes":[
+            {"id":0,"name":"State::Start","type":"State"},
+            {"id":1,"name":"State::A",    "type":"State"},
+            {"id":2,"name":"State::B",    "type":"State"},
+            {"id":3,"name":"Control::Halt","type":"Control","action":"halt"}
+        ],
+        "transitions":[
+            {"from":"State::Start","to":"State::A","default_weight":0.9},
+            {"from":"State::Start","to":"State::B","default_weight":0.7},
+            {"from":"State::A","to":"Control::Halt","default_weight":0.9},
+            {"from":"State::B","to":"Control::Halt","default_weight":0.9}
+        ],"pages":[]}"#);
+    let vs = violations_of_kind(&topo, ViolationKind::IndeterminateOrdering);
+    assert!(vs.is_empty(), "distinct weights must not trigger IndeterminateOrdering");
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Phase 3 — dominator and cycle tests
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ── dominator: bypass edge ────────────────────────────────────────────────────
+
+/// Topology where State::Validate → Control::Commit exists, but also a bypass
+/// edge State::Start → Control::Commit that skips the gate.
+fn bypass_topology() -> &'static str {
+    r#"{
+        "matrix_name":"t","nodes":[
+            {"id":0,"name":"State::Start",   "type":"State"},
+            {"id":1,"name":"State::Validate","type":"State"},
+            {"id":2,"name":"Control::Commit","type":"Control"},
+            {"id":3,"name":"State::Memory",  "type":"State"},
+            {"id":4,"name":"Control::Halt",  "type":"Control","action":"halt"}
+        ],
+        "transitions":[
+            {"from":"State::Start",   "to":"State::Validate","default_weight":0.9},
+            {"from":"State::Start",   "to":"Control::Commit","default_weight":0.5},
+            {"from":"State::Validate","to":"Control::Commit","default_weight":0.8},
+            {"from":"Control::Commit","to":"State::Memory",  "default_weight":0.8},
+            {"from":"State::Memory",  "to":"Control::Halt",  "default_weight":0.9}
+        ],"pages":[]}"#
+}
+
+#[test]
+fn check_rejects_bypass_of_required_gate() {
+    let topo = parse(bypass_topology());
+    assert!(
+        has_violation(&topo, ViolationKind::DominanceViolation, "Control::Commit"),
+        "bypass edge State::Start → Control::Commit must trigger DominanceViolation"
+    );
+}
+
+#[test]
+fn check_passes_when_gate_properly_dominates() {
+    // Remove the bypass edge — now every path to Commit goes through Validate
+    let topo = parse(r#"{
+        "matrix_name":"t","nodes":[
+            {"id":0,"name":"State::Start",   "type":"State"},
+            {"id":1,"name":"State::Validate","type":"State"},
+            {"id":2,"name":"Control::Commit","type":"Control"},
+            {"id":3,"name":"State::Memory",  "type":"State"},
+            {"id":4,"name":"Control::Halt",  "type":"Control","action":"halt"}
+        ],
+        "transitions":[
+            {"from":"State::Start",   "to":"State::Validate","default_weight":0.9},
+            {"from":"State::Validate","to":"Control::Commit","default_weight":0.8},
+            {"from":"Control::Commit","to":"State::Memory",  "default_weight":0.8},
+            {"from":"State::Memory",  "to":"Control::Halt",  "default_weight":0.9}
+        ],"pages":[]}"#);
+    let vs = violations_of_kind(&topo, ViolationKind::DominanceViolation);
+    assert!(vs.is_empty(), "clean chain must not trigger DominanceViolation: {vs:?}");
+}
+
+// ── SCC progress ──────────────────────────────────────────────────────────────
+
+#[test]
+fn check_rejects_scc_with_no_exit_edge() {
+    // State::A ↔ State::B form a cycle with no exit
+    let topo = parse(r#"{
+        "matrix_name":"t","nodes":[
+            {"id":0,"name":"State::Start","type":"State"},
+            {"id":1,"name":"State::A",    "type":"State"},
+            {"id":2,"name":"State::B",    "type":"State"},
+            {"id":3,"name":"Control::Halt","type":"Control","action":"halt"}
+        ],
+        "transitions":[
+            {"from":"State::Start","to":"State::A",    "default_weight":0.9},
+            {"from":"State::Start","to":"Control::Halt","default_weight":0.5},
+            {"from":"State::A",    "to":"State::B",    "default_weight":0.8},
+            {"from":"State::B",    "to":"State::A",    "default_weight":0.8}
+        ],"pages":[]}"#);
+    let vs = violations_of_kind(&topo, ViolationKind::UnsafeSCC);
+    assert!(!vs.is_empty(), "trapped cycle must be reported as UnsafeSCC");
+}
+
+#[test]
+fn check_passes_scc_with_exit_edge() {
+    // State::A ↔ State::B cycle but with an exit to Control::Halt
+    let topo = parse(r#"{
+        "matrix_name":"t","nodes":[
+            {"id":0,"name":"State::Start","type":"State"},
+            {"id":1,"name":"State::A",    "type":"State"},
+            {"id":2,"name":"State::B",    "type":"State"},
+            {"id":3,"name":"Control::Halt","type":"Control","action":"halt"}
+        ],
+        "transitions":[
+            {"from":"State::Start","to":"State::A",    "default_weight":0.9},
+            {"from":"State::A",    "to":"State::B",    "default_weight":0.8},
+            {"from":"State::B",    "to":"State::A",    "default_weight":0.8},
+            {"from":"State::A",    "to":"Control::Halt","default_weight":0.5}
+        ],"pages":[]}"#);
+    let vs = violations_of_kind(&topo, ViolationKind::UnsafeSCC);
+    assert!(vs.is_empty(), "SCC with exit must not be flagged: {vs:?}");
+}
+
+// ── zero-cost cycle ───────────────────────────────────────────────────────────
+
+#[test]
+fn check_rejects_zero_cost_infinite_cycle() {
+    // A ↔ B with cost=0 on both edges — planner prefers this forever
+    let topo = parse(r#"{
+        "matrix_name":"t","nodes":[
+            {"id":0,"name":"State::Start","type":"State"},
+            {"id":1,"name":"State::A",    "type":"State"},
+            {"id":2,"name":"State::B",    "type":"State"},
+            {"id":3,"name":"Control::Halt","type":"Control","action":"halt"}
+        ],
+        "transitions":[
+            {"from":"State::Start","to":"State::A",    "default_weight":0.9},
+            {"from":"State::A",    "to":"State::B",    "default_weight":0.8,"cost":0.0},
+            {"from":"State::B",    "to":"State::A",    "default_weight":0.8,"cost":0.0},
+            {"from":"State::A",    "to":"Control::Halt","default_weight":0.5}
+        ],"pages":[]}"#);
+    let vs = violations_of_kind(&topo, ViolationKind::ZeroCostCycle);
+    assert!(!vs.is_empty(), "zero-cost cycle must be reported as ZeroCostCycle");
+}
+
+#[test]
+fn check_passes_cycle_with_nonzero_cost() {
+    let topo = parse(r#"{
+        "matrix_name":"t","nodes":[
+            {"id":0,"name":"State::Start","type":"State"},
+            {"id":1,"name":"State::A",    "type":"State"},
+            {"id":2,"name":"State::B",    "type":"State"},
+            {"id":3,"name":"Control::Halt","type":"Control","action":"halt"}
+        ],
+        "transitions":[
+            {"from":"State::Start","to":"State::A",    "default_weight":0.9},
+            {"from":"State::A",    "to":"State::B",    "default_weight":0.8,"cost":1.0},
+            {"from":"State::B",    "to":"State::A",    "default_weight":0.8,"cost":1.0},
+            {"from":"State::A",    "to":"Control::Halt","default_weight":0.5}
+        ],"pages":[]}"#);
+    let vs = violations_of_kind(&topo, ViolationKind::ZeroCostCycle);
+    assert!(vs.is_empty(), "non-zero-cost cycle must not be flagged: {vs:?}");
+}

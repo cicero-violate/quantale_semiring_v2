@@ -499,6 +499,26 @@ fn main() {
                 consecutive_blocks = 0;
                 let reset_dur = sleep_dur.unwrap_or(std::time::Duration::from_millis(200));
                 std::thread::sleep(reset_dur);
+                // Invariant 17: verify reset restored a valid frontier before
+                // continuing.  Uses project (read-only) so the active set is
+                // not advanced.  A still-blocked result means embed_tensor_edges
+                // did not lift the world above ⊥ and the next frontier_step
+                // will return Unknown(-1) again.
+                if let Ok(post_reset) = world.project(projection_bias) {
+                    debug_assert!(
+                        post_reset.blocked == 0,
+                        "hard reset did not restore a valid frontier \
+                         (first_hop={}); decay + embed did not lift world above ⊥",
+                        post_reset.first_hop
+                    );
+                    if post_reset.blocked != 0 {
+                        eprintln!(
+                            "[WARN] hard reset did not restore a valid frontier \
+                             (first_hop={}); re-embedding may have failed",
+                            post_reset.first_hop
+                        );
+                    }
+                }
             }
             continue;
         }
