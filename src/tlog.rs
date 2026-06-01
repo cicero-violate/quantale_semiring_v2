@@ -1,7 +1,7 @@
 //! Append-only JSONL trace log for host-side quantale events.
 
 use std::fs::{File, OpenOptions};
-use std::io::{self, BufRead, BufReader, BufWriter, Write};
+use std::io::{self, BufRead, BufReader, Write};
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
@@ -33,16 +33,20 @@ struct JsonRecord<T> {
 }
 
 pub struct TlogWriter {
-    writer: BufWriter<File>,
+    file: File,
     next_sequence: u64,
 }
 
 impl TlogWriter {
     pub fn open(path: impl AsRef<Path>) -> io::Result<Self> {
         let next_sequence = count_jsonl_records(path.as_ref())?;
+        // O_APPEND: every write() extends the file atomically at the OS level.
+        // Combined with formatting the entire record + newline in memory before
+        // calling write_all(), this prevents interleaved records when multiple
+        // agent instances write to the same tlog file concurrently.
         let file = OpenOptions::new().create(true).append(true).open(path)?;
         Ok(Self {
-            writer: BufWriter::new(file),
+            file,
             next_sequence,
         })
     }
@@ -65,7 +69,8 @@ impl TlogWriter {
                 "selected_dst": decision.selected_dst,
                 "selected_value": decision.selected_value,
                 "halted": decision.halted,
-                "blocked": decision.blocked,
+                "blocked": if receipt.exit_code == 0 { decision.blocked } else { 1 },
+                "decision_blocked": decision.blocked,
                 "node": receipt.node_name,
                 "exit_code": receipt.exit_code,
                 "stdout_len": receipt.stdout_payload.len(),
@@ -122,14 +127,20 @@ impl TlogWriter {
             kind,
             payload,
         };
-        serde_json::to_writer(&mut self.writer, &record)?;
-        self.writer.write_all(b"\n")?;
+        // Serialize the entire record into memory first, then append the
+        // newline, so the file receives exactly one write_all() call per
+        // record.  With O_APPEND this write is atomic at the OS level,
+        // preventing partial or interleaved records in the tlog file.
+        let mut line = serde_json::to_vec(&record)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        line.push(b'\n');
+        self.file.write_all(&line)?;
         self.next_sequence += 1;
         Ok(sequence)
     }
 
     pub fn flush(&mut self) -> io::Result<()> {
-        self.writer.flush()
+        self.file.flush()
     }
 }
 
@@ -141,4 +152,49 @@ fn count_jsonl_records(path: &Path) -> io::Result<u64> {
         .lines()
         .filter(|line| line.as_ref().map_or(true, |value| !value.trim().is_empty()))
         .count() as u64)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::projection::DecisionReport;
+    use crate::receipt::ProcessReceipt;
+
+    #[test]
+    fn log_step_marks_failed_receipts_as_blocked() {
+        let path = std::env::temp_dir().join(format!(
+            "quantale_tlog_test_{}_{}.jsonl",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let mut tlog = TlogWriter::open(&path).unwrap();
+        let receipt = ProcessReceipt {
+            node_name: "Analysis::Return1".to_string(),
+            exit_code: 1,
+            stdout_payload: String::new(),
+            stderr_payload: "requires the cuda feature".to_string(),
+        };
+        let decision = DecisionReport {
+            step: 7,
+            selected_src: 1,
+            selected_dst: 2,
+            first_hop: 2,
+            selected_value: 0.9,
+            halted: 0,
+            blocked: 0,
+        };
+
+        tlog.log_step(&receipt, &decision).unwrap();
+        tlog.flush().unwrap();
+        let line = std::fs::read_to_string(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        let value: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
+
+        assert_eq!(value["payload"]["exit_code"], 1);
+        assert_eq!(value["payload"]["blocked"], 1);
+        assert_eq!(value["payload"]["decision_blocked"], 0);
+    }
 }

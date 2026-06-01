@@ -1,13 +1,13 @@
 use std::collections::BTreeSet;
 
-use serde_json::json;
+use serde_json::{json, Value};
 
 use quantale_semiring_v2::{
-    ExecutionOutcome, ExplorationConfig, ExplorationEngine, GraphTopology, LAYER_CONFIDENCE, Node,
-    ProjectionBias, SystemConfig, TensorQuantaleWorld, TlogWriter, UniversalExecutor, action_label,
-    compile_pattern, compile_tensor_plan, dispatch_decision_batch_blocking, format_quantale_value,
-    full_tensor_transition_edges, load_default_patterns, load_learned_tensor_edges,
-    project_ready_batch_plan, runtime_check, topology_check,
+    action_label, compile_pattern, compile_tensor_plan, dispatch_decision_batch_blocking,
+    format_quantale_value, full_tensor_transition_edges, load_default_patterns,
+    load_learned_tensor_edges, project_ready_batch_plan, runtime_check, topology_check,
+    ExecutionOutcome, ExplorationConfig, ExplorationEngine, GraphTopology, Node, ProjectionBias,
+    SystemConfig, TensorQuantaleWorld, TlogWriter, UniversalExecutor, LAYER_CONFIDENCE,
 };
 
 fn main() {
@@ -22,8 +22,11 @@ fn main() {
         };
         let violations = topology_check::check(&topology);
         if violations.is_empty() {
-            println!("topology OK ({} nodes, {} transitions)",
-                topology.nodes.len(), topology.transitions.len());
+            println!(
+                "topology OK ({} nodes, {} transitions)",
+                topology.nodes.len(),
+                topology.transitions.len()
+            );
             std::process::exit(0);
         }
         eprintln!("{}", topology_check::format_violations(&violations));
@@ -59,7 +62,10 @@ fn main() {
     let violations = topology_check::check(&topology_asset);
     if !violations.is_empty() {
         eprintln!("{}", topology_check::format_violations(&violations));
-        eprintln!("topology has {} violation(s); refusing to start", violations.len());
+        eprintln!(
+            "topology has {} violation(s); refusing to start",
+            violations.len()
+        );
         std::process::exit(1);
     }
     let topology = match topology_asset.compile() {
@@ -143,13 +149,13 @@ fn main() {
         println!("Continuous mode: running until halt or signal.");
     }
 
-    let sleep_dur = (config.tick_sleep_ms > 0)
-        .then(|| std::time::Duration::from_millis(config.tick_sleep_ms));
+    let sleep_dur =
+        (config.tick_sleep_ms > 0).then(|| std::time::Duration::from_millis(config.tick_sleep_ms));
     let mut current_payload = json!({ "context": "market_analysis_loop" });
     let mut tick: usize = 0;
     let mut consecutive_blocks: usize = 0;
 
-    loop {
+    'ticks: loop {
         if config.max_ticks > 0 && tick >= config.max_ticks {
             break;
         }
@@ -284,11 +290,27 @@ fn main() {
                     current_payload = json!({ "context": process_receipt.stdout_payload });
                 }
             }
-            if let Err(error) = world.decay(0.995) {
+            if let Err(error) = tlog.log_step(&process_receipt, &decision) {
                 eprintln!("{error}");
                 std::process::exit(1);
             }
-            if let Err(error) = tlog.log_step(&process_receipt, &decision) {
+            // Failed operators (e.g. jit_cuda without --features cuda) must not
+            // count as normal progress — treat them as blocked steps so repeated
+            // failures eventually trigger a hard reset.
+            if process_receipt.exit_code != 0 {
+                consecutive_blocks += 1;
+                maybe_hard_reset_after_blocks(
+                    &mut consecutive_blocks,
+                    &mut world,
+                    &tensor_edges,
+                    &mut current_payload,
+                    sleep_dur,
+                    projection_bias,
+                );
+                continue;
+            }
+            consecutive_blocks = 0;
+            if let Err(error) = world.decay(0.995) {
                 eprintln!("{error}");
                 std::process::exit(1);
             }
@@ -307,6 +329,8 @@ fn main() {
                     std::process::exit(1);
                 }
 
+                let mut batch_failure_count = 0usize;
+                let mut plan_stdout = Vec::new();
                 for batch in &batch_plan.batches {
                     if let Err(error) = world.commit_decision_batch(&batch.decisions) {
                         eprintln!("{error}");
@@ -430,11 +454,31 @@ fn main() {
                             eprintln!("{error}");
                             std::process::exit(1);
                         }
+                        if scheduled.receipt.exit_code != 0 {
+                            batch_failure_count += 1;
+                        }
                     }
 
                     if !batch_stdout.is_empty() {
-                        current_payload = json!({ "context": batch_stdout });
+                        plan_stdout.extend(batch_stdout);
                     }
+                }
+
+                if batch_failure_count != 0 {
+                    consecutive_blocks += batch_failure_count;
+                    maybe_hard_reset_after_blocks(
+                        &mut consecutive_blocks,
+                        &mut world,
+                        &tensor_edges,
+                        &mut current_payload,
+                        sleep_dur,
+                        projection_bias,
+                    );
+                    continue 'ticks;
+                }
+                consecutive_blocks = 0;
+                if !plan_stdout.is_empty() {
+                    current_payload = json!({ "context": plan_stdout });
                 }
 
                 if let Err(error) = world.decay(0.995) {
@@ -498,38 +542,14 @@ fn main() {
         if decision.blocked != 0 {
             consecutive_blocks += 1;
             if consecutive_blocks >= 3 {
-                // Hard reset: decay alone does not restore a valid frontier
-                // because active[] tracks the current position and is not
-                // affected by decay or embed.  world.reset() clears active[],
-                // consumed[], and the tensor to a known-good initial state.
-                // Re-embedding the topology edges then lifts the world above ⊥.
-                // close() runs here so the invariant-17 project check below is
-                // a real validation, not a pre-closure false alarm.
-                eprintln!("[WARN] {consecutive_blocks} consecutive blocked steps; hard reset.");
-                if let Err(error) = world.reset() {
-                    eprintln!("[WARN] hard reset world.reset() failed: {error}");
-                }
-                if let Err(error) = world.embed_tensor_edges(&tensor_edges) {
-                    eprintln!("[WARN] hard reset embed failed: {error}");
-                }
-                if let Err(error) = world.close() {
-                    eprintln!("[WARN] hard reset close failed: {error}");
-                }
-                current_payload = json!({ "context": "market_analysis_loop" });
-                consecutive_blocks = 0;
-                let reset_dur = sleep_dur.unwrap_or(std::time::Duration::from_millis(200));
-                std::thread::sleep(reset_dur);
-                // Invariant 17: verify reset restored a valid frontier.
-                // Uses project (read-only) so active[] is not advanced.
-                if let Ok(post_reset) = world.project(projection_bias) {
-                    if post_reset.blocked != 0 {
-                        eprintln!(
-                            "[WARN] hard reset did not restore a valid frontier \
-                             (first_hop={}); reset+embed may have failed",
-                            post_reset.first_hop
-                        );
-                    }
-                }
+                maybe_hard_reset_after_blocks(
+                    &mut consecutive_blocks,
+                    &mut world,
+                    &tensor_edges,
+                    &mut current_payload,
+                    sleep_dur,
+                    projection_bias,
+                );
             }
             continue;
         }
@@ -660,6 +680,20 @@ fn main() {
             std::process::exit(1);
         }
 
+        if process_receipt.exit_code != 0 {
+            consecutive_blocks += 1;
+            maybe_hard_reset_after_blocks(
+                &mut consecutive_blocks,
+                &mut world,
+                &tensor_edges,
+                &mut current_payload,
+                sleep_dur,
+                projection_bias,
+            );
+            continue;
+        }
+        consecutive_blocks = 0;
+
         let _ = world.reconstruct_projected_tensor_path(LAYER_CONFIDENCE);
         if let Some(dur) = sleep_dur {
             std::thread::sleep(dur);
@@ -691,4 +725,52 @@ fn filter_static_topology_edges(
         .into_iter()
         .filter(|edge| allowed.contains(&(edge.src, edge.dst)))
         .collect()
+}
+
+fn maybe_hard_reset_after_blocks(
+    consecutive_blocks: &mut usize,
+    world: &mut TensorQuantaleWorld,
+    tensor_edges: &[quantale_semiring_v2::TensorEdge],
+    current_payload: &mut Value,
+    sleep_dur: Option<std::time::Duration>,
+    projection_bias: ProjectionBias,
+) {
+    if *consecutive_blocks < 3 {
+        return;
+    }
+
+    // Hard reset: decay alone does not restore a valid frontier because
+    // active[] tracks the current position and is not affected by decay or
+    // embed. world.reset() clears active[], consumed[], and the tensor to a
+    // known-good initial state. Re-embedding the topology edges then lifts the
+    // world above bottom.
+    eprintln!(
+        "[WARN] {} consecutive blocked/failed steps; hard reset.",
+        *consecutive_blocks
+    );
+    if let Err(error) = world.reset() {
+        eprintln!("[WARN] hard reset world.reset() failed: {error}");
+    }
+    if let Err(error) = world.embed_tensor_edges(tensor_edges) {
+        eprintln!("[WARN] hard reset embed failed: {error}");
+    }
+    if let Err(error) = world.close() {
+        eprintln!("[WARN] hard reset close failed: {error}");
+    }
+    *current_payload = json!({ "context": "market_analysis_loop" });
+    *consecutive_blocks = 0;
+    let reset_dur = sleep_dur.unwrap_or(std::time::Duration::from_millis(200));
+    std::thread::sleep(reset_dur);
+
+    // Invariant 17: verify reset restored a valid frontier. Uses project
+    // (read-only) so active[] is not advanced.
+    if let Ok(post_reset) = world.project(projection_bias) {
+        if post_reset.blocked != 0 {
+            eprintln!(
+                "[WARN] hard reset did not restore a valid frontier \
+                 (first_hop={}); reset+embed may have failed",
+                post_reset.first_hop
+            );
+        }
+    }
 }
