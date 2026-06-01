@@ -15,7 +15,7 @@ Receipts validate actual thought.
 ## Tensor substrate
 
 ```text
-T ∈ R^(3 × 44 × 44)
+T ∈ R^(3 × 60 × 60)
 ```
 
 Layers:
@@ -29,11 +29,11 @@ Layer 2: security/safety         max-min    join=max  compose=min
 Node universe:
 
 ```text
-Current topology: 44 nodes (State × 13, Control × 13, Event × 18)
+Current topology: 60 nodes (47 original + 13 market-trading nodes)
 Source of truth:  assets/topology.json
-Rust constant:    TENSOR_NODE_COUNT = 44 (must match N in quantale_world.cu)
-MATRIX_LEN        = 1936
-TENSOR_LEN        = 5808
+Rust constant:    TENSOR_NODE_COUNT = 60 (must match N in quantale_world.cu)
+MATRIX_LEN        = 3600
+TENSOR_LEN        = 10800
 ```
 
 No Rust code encodes the node list. `topology.rs::NodeRegistry` loads it from JSON at startup. Adding a node requires only a JSON edit (and updating `N` in the CUDA kernel and `TENSOR_NODE_COUNT` in `tensor.rs` if the count changes).
@@ -57,18 +57,18 @@ registry.matrix_len()               // → len * len
 CUDA owns:
 
 ```text
-tensor[3 × 44 × 44]
-scratch[3 × 44 × 44]
-witness[3 × 44 × 44]
-scratch_witness[3 × 44 × 44]
-consumed[44 × 44]
-active[44]
-next_active[44]
+tensor[3 × 60 × 60]
+scratch[3 × 60 × 60]
+witness[3 × 60 × 60]
+scratch_witness[3 × 60 × 60]
+consumed[60 × 60]
+active[60]
+next_active[60]
 decision[1]
-exploration_tokens[44 × 44]
-exploration_scores[44 × 44]
-exploration_parents[44 × 44]
-exploration_selected[44]
+exploration_tokens[60 × 60]
+exploration_scores[60 × 60]
+exploration_parents[60 × 60]
+exploration_selected[60]
 ```
 
 Rust owns:
@@ -76,6 +76,9 @@ Rust owns:
 ```text
 JSON asset loading and NodeRegistry
 CKA pattern compilation
+static topology invariant checking (topology_check.rs)
+runtime decision invariant checking (runtime_check.rs)
+base_tensor CPU snapshot for hard reset (invariant 23)
 operator effect validation
 batch scheduling policy
 host-side operator execution (process and cuda_ptx backends)
@@ -84,7 +87,9 @@ compact report decoding
 append-only transaction logging
 ```
 
-Rust does not own a CPU planner or a CPU mirror of the tensor.
+Rust does not own a CPU planner or a live CPU mirror of the tensor.
+`base_tensor` is a one-time CPU snapshot taken after initial embed; it is
+read-only and used only by `restore_base_tensor()` during hard reset.
 
 ## CUDA kernel split
 
@@ -360,6 +365,74 @@ Runtime batch plans are logged with:
 label = "scheduler:cka_parallel"
 ```
 
+## Static topology invariant checker
+
+`src/topology_check.rs` validates `GraphTopology` before any tensor operations run.
+All passes execute so every violation is visible at once.
+
+```text
+Phase 1 — identity and weight (check)
+  1.  unique node names               DuplicateNodeName
+  1b. unique node IDs                 DuplicateNodeId
+  2.  stable index round-trip         IndexMappingBroken
+  3.  start node has id=0             InvalidStartNode
+  4.  halt node exists, outdeg=0      NoHaltNode / HaltNodeHasSuccessors
+  5.  no duplicate edges              DuplicateEdge
+  6.  weight domain validity          WeightOutOfDomain
+  7.  zero-confidence edge warning    ZeroConfidenceEdge
+  13. deterministic tie-break         IndeterminateOrdering
+
+Structural checks (original five):
+  endpoint validity, dead-end, reachability, path-to-halt
+
+Phase 2 — operator binding (check_with_operators)
+  8.  operator entry exists           MissingOperator
+  25. action/output_mode field set    UnknownActionSemantics
+
+Phase 3 — dominator and cycle checks (check)
+  9.  gate dominance                  DominanceViolation
+  10. receipt cutset                  ReceiptCutsetViolation
+  11. SCC progress / exit             UnsafeSCC
+  12. no zero-cost cycle              ZeroCostCycle
+```
+
+Required dominator pairs (4 pairs enforced):
+
+```text
+State::Validate        → dominates → Control::Commit
+Control::GateReceipt   → dominates → Event::ReceiptAccepted
+Event::ReceiptAccepted → dominates → Event::HashNonzero
+Event::HashNonzero     → dominates → State::Validate
+```
+
+Entry points:
+
+```rust
+topology_check::check(topology)                          // phases 1 + 3
+topology_check::check_with_operators(topology, registry) // phases 1 + 2 + 3
+```
+
+## Runtime decision invariant checker
+
+`src/runtime_check.rs` validates each `DecisionReport` before the executor runs.
+
+```text
+decision_is_safe(report) → bool
+  Invariant 20: returns false when score=⊥ with blocked=0, or first_hop
+  outside [0, TENSOR_NODE_COUNT).  Call before every execute_abstract_node;
+  skip execution and increment consecutive_blocks when it returns false.
+
+check_decision(report, node_name) → Vec<RuntimeViolation>
+  Invariant 18: score=⊥  ⟹  blocked=1  ∧  first_hop < 0
+  Invariant 19: score≠⊥, blocked=0  ⟹  first_hop = selected_dst
+  Invariant 24: Control::Block  ⟹  blocked=1  ∨  halted=1
+```
+
+Hard reset path uses `restore_base_tensor()` (invariant 23) rather than
+`reset() + embed_tensor_edges()`.  `restore_base_tensor` copies the CPU
+`base_tensor` snapshot back to the device, restoring a clean baseline
+without requiring the original edge list in scope.
+
 ## Legacy removals
 
 Removed or forbidden from runtime reintroduction:
@@ -383,6 +456,8 @@ batch_contains_cuda_ptx / CUDA-specific batch branching
 ```
 
 ## Benchmark baseline
+
+Recorded on 44-node topology; recapture after upgrading to 60 nodes.
 
 ```text
 profile=release

@@ -21,7 +21,15 @@ With a CUDA build host (compiles `cuda/trading_execution_kernels.cu` via nvcc):
 cargo test --features cuda
 ```
 
-Current no-default-features test count: **47 passed** across 6 suites.
+Current no-default-features test count: **99 passed** across 8 suites.
+
+## Validate topology
+
+```bash
+cargo run --bin quantale_semiring_v2 -- --check-topology
+```
+
+Runs all static invariant checks (phases 1–3: identity, weight domain, gate dominance, receipt cutset, SCC progress, zero-cost cycles) on `assets/topology.json` and exits. Prints `topology OK (N nodes, M transitions)` on success; prints each violation and exits 1 on failure. Use this before committing topology changes.
 
 ## Run orchestrator
 
@@ -30,6 +38,8 @@ cargo run --bin quantale_semiring_v2
 ```
 
 The default executable uses `TensorQuantaleWorld`, loads topology, learned edge checkpoints, exploration, and CKA pattern assets, tries GPU exploration first, falls back to effect-safe CKA batch scheduling, then falls back to single frontier projection when no higher-level route is ready. Operators execute on the host; receipts update tensor deltas and exploration priors; all records are logged to `state/quantale.tlog`.
+
+Before each executor call, `runtime_check::decision_is_safe()` guards against score=⊥ with blocked=0 (invariant 20). After 3 consecutive blocked or unsafe steps, a hard reset restores the world via `reset() + embed_tensor_edges() + close()`.
 
 Expected runtime batch smoke lines:
 
@@ -73,7 +83,7 @@ The node universe lives entirely in `assets/topology.json`. No Rust code changes
 1. Add an entry to `assets/topology.json`:
 
 ```json
-{ "id": 44, "name": "Execution::FusedAlphaAndRisk", "type": "Execution" }
+{ "id": 60, "name": "Execution::FusedAlphaAndRisk", "type": "Execution" }
 ```
 
 2. Add an operator contract to `assets/operators.json`:
@@ -98,13 +108,11 @@ The node universe lives entirely in `assets/topology.json`. No Rust code changes
 
 3. Optionally add graph edges in `assets/topology.json` and a CKA pattern in `assets/patterns.json`.
 
-When adding nodes beyond id 43 (current N=44), the CUDA kernel `quantale_world.cu` must also be updated:
+When adding nodes beyond id 59 (current N=60), the CUDA kernel `quantale_world.cu` must also be updated:
 
 ```c
-#define STATE_NODE_COUNT   13
-#define CONTROL_NODE_COUNT 13
-#define EVENT_NODE_COUNT   18
-// add new category counts here and update N
+// update N and any per-category count constants
+#define N 61
 ```
 
 And `TENSOR_NODE_COUNT` in `src/tensor.rs` must be updated to match.
@@ -136,9 +144,26 @@ Create tensor edges directly:
 use quantale_semiring_v2::{ProjectionBias, TensorEdge, TensorQuantaleWorld};
 
 let edges = [TensorEdge::new(src, dst, 0.90, 2.0, 0.95)];
+// from_tensor_edges embeds edges and snapshots base_tensor for hard reset
 let mut world = TensorQuantaleWorld::from_tensor_edges(&edges)?;
 world.close()?;
 let decision = world.project(ProjectionBias::default())?;
+```
+
+Runtime decision guard (call before every executor invocation):
+
+```rust
+use quantale_semiring_v2::runtime_check;
+
+// Invariant 20: skip execution when score=⊥ with blocked=0
+if !runtime_check::decision_is_safe(&decision) {
+    // increment consecutive_blocks and continue
+}
+
+// Invariants 18/19/24: log any structural decision violations
+for v in runtime_check::check_decision(&decision, node_name) {
+    eprintln!("[runtime_check] {v}");
+}
 ```
 
 Layer semantics:

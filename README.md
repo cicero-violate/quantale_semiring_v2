@@ -52,7 +52,7 @@ assets/patterns.json
 Canonical tensor:
 
 ```text
-T ∈ R^(3 × 44 × 44)
+T ∈ R^(3 × 60 × 60)
 ```
 
 Layers:
@@ -255,21 +255,24 @@ tensor_quantale_decay
 ## Main Rust surfaces
 
 ```text
-src/main.rs          runtime loop and scheduler integration
-src/tensor.rs        CUDA tensor world, TensorEdge API, batch projection/commit API
-src/topology.rs      topology.json parser, NodeRegistry (primary node/action lookup)
-src/pattern.rs       CKA pattern compiler
-src/batch.rs         DecisionBatch, BatchPlan, scheduler dispatch (backend-agnostic)
-src/egress.rs        data-driven executor: process operators and cuda_ptx operators
-src/config.rs        operator registry and runtime config (dimensions from registry)
-src/projection.rs    DecisionReport and action_label (data-driven via registry)
-src/transitions.rs   bundled tensor topology entrypoint
-src/learning.rs      learned_edges.jsonl checkpoint loader
-src/plan.rs          tensor LLM plan compiler
-src/tlog.rs          append-only JSONL trace log
-src/path.rs          tensor witness path reconstruction
-src/node.rs          thin Node(i32) ID wrapper (names/actions owned by NodeRegistry)
-src/exploration.rs   ExplorationEngine, token management, anti-repeat policy
+src/main.rs             runtime loop and scheduler integration
+src/tensor.rs           CUDA tensor world, TensorEdge API, batch projection/commit API,
+                        base_tensor snapshot and restore_base_tensor() for hard reset
+src/topology.rs         topology.json parser, NodeRegistry (primary node/action lookup)
+src/topology_check.rs   static invariant checker — phases 1–3 and operator binding
+src/runtime_check.rs    runtime invariant checker — decision_is_safe(), check_decision()
+src/pattern.rs          CKA pattern compiler
+src/batch.rs            DecisionBatch, BatchPlan, scheduler dispatch (backend-agnostic)
+src/egress.rs           data-driven executor: process operators and cuda_ptx operators
+src/config.rs           operator registry and runtime config (dimensions from registry)
+src/projection.rs       DecisionReport and action_label (data-driven via registry)
+src/transitions.rs      bundled tensor topology entrypoint
+src/learning.rs         learned_edges.jsonl checkpoint loader
+src/plan.rs             tensor LLM plan compiler
+src/tlog.rs             append-only JSONL trace log
+src/path.rs             tensor witness path reconstruction
+src/node.rs             thin Node(i32) ID wrapper (names/actions owned by NodeRegistry)
+src/exploration.rs      ExplorationEngine, token management, anti-repeat policy
 ```
 
 ## Execution loop
@@ -283,18 +286,21 @@ At each loop iteration:
 5. If exploration cannot commit, the scheduler attempts a CKA batch projection for compiled `par` groups.
 6. If a full batch is runnable and effect-safe, CUDA commits the batch and host workers execute operators concurrently. All backends (`cuda_ptx`, process) go through the same dispatch path; routing by backend is `egress.rs`'s responsibility.
 7. If no batch is ready, CUDA runs the normal single frontier step.
-8. Process results become `ProcessReceipt` evidence.
-9. Receipts update the selected tensor edge through the GPU feedback kernel and update exploration receipt priors; committed terminals and first hops are tracked to prevent repeated exploration dominance.
-10. Tensor-plan stdout is parsed and embedded when an operator declares `output_mode = "tensor_plan"`.
-11. Decisions, exploration records, batch plans, receipts, and edge deltas are logged to `state/quantale.tlog`.
+8. Before execution, `runtime_check::decision_is_safe()` guards against score=⊥ with blocked=0 (invariant 20). `runtime_check::check_decision()` logs invariant 18/19 violations.
+9. Process results become `ProcessReceipt` evidence.
+10. Receipts update the selected tensor edge through the GPU feedback kernel and update exploration receipt priors; committed terminals and first hops are tracked to prevent repeated exploration dominance.
+11. Tensor-plan stdout is parsed and embedded when an operator declares `output_mode = "tensor_plan"`.
+12. After 3 consecutive blocked or unsafe steps, a hard reset restores the world via `reset() + embed_tensor_edges() + close()`.
+13. Decisions, exploration records, batch plans, receipts, and edge deltas are logged to `state/quantale.tlog`.
 
 ## Validation
 
 ```bash
 cargo fmt --check
-cargo check
+cargo check --no-default-features
 cargo test --no-default-features
 cargo run --bin bench_tensor_quantale -- 3
+cargo run --bin quantale_semiring_v2 -- --check-topology
 cargo run --bin quantale_semiring_v2
 ```
 
@@ -307,10 +313,10 @@ cargo test --features cuda
 Current validated test counts:
 
 ```text
-cargo test --no-default-features   47 passed (6 suites)
+cargo test --no-default-features   99 passed (8 suites)
 ```
 
-Current debug benchmark sample:
+Current debug benchmark sample (recorded on 44-node topology; recapture for 60):
 
 ```text
 iterations=3

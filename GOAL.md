@@ -55,7 +55,7 @@ Receipts validate actual thought.
 Implemented:
 
 ```text
-Tensor engine
+Tensor engine (60-node topology)
 Tensor topology compilation
 Tensor rule deltas
 Tensor frontier step
@@ -71,7 +71,18 @@ CUDA exploration seed/expand/score/top-k/commit kernels
 Exploration-first scheduler integration
 Receipt-prior feedback into exploration
 Runtime smoke-tested batch execution
+Static topology invariant checker — phases 1–3 (topology_check.rs)
+  identity, weight domain, operator binding, gate dominance,
+  receipt cutset, SCC progress, zero-cost cycle detection
+Semiring law unit tests — phase 4 (tests/semiring_laws.rs)
+Runtime frontier assertions — phase 5 (tensor.rs, main.rs)
+Runtime decision invariant checker — phase 6 (runtime_check.rs)
+  decision_is_safe() guard (inv 20), check_decision() diagnostics (inv 18/19/24)
+  base_tensor CPU snapshot for hard-reset groundwork (inv 23)
+  action/output_mode operator field check (inv 25)
 ```
+
+Validated test count: **99 passed** (8 suites, `--no-default-features`).
 
 Validated runtime smoke includes concurrent dispatch for:
 
