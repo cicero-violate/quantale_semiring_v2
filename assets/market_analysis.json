@@ -1,0 +1,15 @@
+{
+  "default_chain": [
+    "Analysis::Return1",
+    "Analysis::Volatility",
+    "Analysis::SignalScore"
+  ],
+  "features": {
+    "price": "market.price",
+    "volume": "market.volume"
+  },
+  "analysis_outputs": {
+    "score": "analysis.signal_score",
+    "risk": "analysis.volatility"
+  }
+}

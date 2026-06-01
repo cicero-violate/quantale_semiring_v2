@@ -10,7 +10,7 @@ use crate::config::OperatorRegistry;
 use crate::egress::UniversalExecutor;
 use crate::error::CudaError;
 use crate::node::Node;
-use crate::pattern::{operator_effects_for_node, safe_parallel, CompiledCkaPattern};
+use crate::pattern::{CompiledCkaPattern, operator_effects_for_node, safe_parallel};
 use crate::projection::DecisionReport;
 use crate::receipt::ProcessReceipt;
 use crate::tensor::{ProjectionBias, TensorQuantaleWorld};
@@ -338,13 +338,15 @@ mod tests {
         assert_eq!(receipts.len(), 2);
         assert!(receipts.iter().all(|s| s.receipt.exit_code == 0));
         assert!(receipts.iter().any(|s| s.receipt.node_name == "State::Map"));
-        assert!(receipts
-            .iter()
-            .any(|s| s.receipt.node_name == "State::Parse"));
+        assert!(
+            receipts
+                .iter()
+                .any(|s| s.receipt.node_name == "State::Parse")
+        );
     }
 
     #[test]
-    fn dispatcher_routes_cuda_ptx_to_egress_not_process() {
+    fn dispatcher_routes_jit_cuda_to_egress_not_process() {
         let node_reg = test_registry();
         let map = node_id(&node_reg, "State::Map");
         let parse = node_id(&node_reg, "State::Parse");
@@ -354,15 +356,9 @@ mod tests {
             "State::Map".to_string(),
             json!({
                 "node_name": "State::Map",
-                "executable": "cuda_ptx",
+                "executable": "jit_cuda",
                 "static_args": [],
-                "input_mapping": {
-                    "module": "cuda/trading_execution_kernels.ptx",
-                    "module_name": "quantale_trading_execution_kernels",
-                    "kernel": "fused_alpha_and_risk_kernel",
-                    "plane": "execution",
-                    "scheduler_contract": "atomic_operator_fixed_budget"
-                },
+                "jit_body": "out[i] = in0[i];",
                 "effects": {"reads": ["market.feed"], "writes": ["execution.gpu.results"], "locks": []}
             }),
         );
@@ -370,15 +366,9 @@ mod tests {
             "State::Parse".to_string(),
             json!({
                 "node_name": "State::Parse",
-                "executable": "cuda_ptx",
+                "executable": "jit_cuda",
                 "static_args": [],
-                "input_mapping": {
-                    "module": "cuda/trading_execution_kernels.ptx",
-                    "module_name": "quantale_trading_execution_kernels",
-                    "kernel": "fused_orderbook_and_alpha_kernel",
-                    "plane": "execution",
-                    "scheduler_contract": "atomic_operator_fixed_budget"
-                },
+                "jit_body": "out[i] = in0[i];",
                 "effects": {"reads": ["market.feed"], "writes": ["execution.gpu.results"], "locks": []}
             }),
         );
@@ -392,7 +382,7 @@ mod tests {
             dispatch_decision_batch_blocking(&executor, &batch, &json!({"context": "x"}));
         assert_eq!(receipts.len(), 2);
 
-        // In all cases the dispatch must not attempt to spawn a "cuda_ptx" binary process.
+        // In all cases the dispatch must not attempt to spawn a "jit_cuda" binary process.
         for r in &receipts {
             assert!(!r.receipt.stderr_payload.contains("Failed to spawn process"));
         }
@@ -401,10 +391,11 @@ mod tests {
         #[cfg(not(feature = "cuda"))]
         for r in &receipts {
             assert_eq!(r.receipt.exit_code, 1);
-            assert!(r
-                .receipt
-                .stderr_payload
-                .contains("requires the cuda feature"));
+            assert!(
+                r.receipt
+                    .stderr_payload
+                    .contains("requires the cuda feature")
+            );
         }
     }
 }

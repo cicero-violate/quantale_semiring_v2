@@ -5,7 +5,11 @@ use quantale_semiring_v2::{
 };
 
 fn reg() -> NodeRegistry {
-    GraphTopology::default_asset().unwrap().compile().unwrap().registry
+    GraphTopology::default_asset()
+        .unwrap()
+        .compile()
+        .unwrap()
+        .registry
 }
 
 fn nid(registry: &NodeRegistry, name: &str) -> i32 {

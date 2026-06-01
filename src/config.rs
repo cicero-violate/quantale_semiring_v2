@@ -29,7 +29,10 @@ pub struct SystemConfig {
     pub operators_path: PathBuf,
     pub operator_registry: OperatorRegistry,
     pub ingress_capacity_hint: usize,
+    /// Maximum ticks before the loop exits. 0 means run forever.
     pub max_ticks: usize,
+    /// Milliseconds to sleep after each tick. 0 means no sleep.
+    pub tick_sleep_ms: u64,
 }
 
 impl Default for SystemConfig {
@@ -51,7 +54,8 @@ impl Default for SystemConfig {
             operators_path,
             operator_registry,
             ingress_capacity_hint: 1024,
-            max_ticks: 64,
+            max_ticks: max_ticks_from_env(),
+            tick_sleep_ms: tick_sleep_ms_from_env(),
         }
     }
 }
@@ -103,6 +107,23 @@ impl SystemConfig {
         }
         Ok(())
     }
+}
+
+fn max_ticks_from_env() -> usize {
+    if std::env::var("QUANTALE_LOOP_FOREVER").as_deref() == Ok("1") {
+        return 0;
+    }
+    std::env::var("QUANTALE_MAX_TICKS")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(64)
+}
+
+fn tick_sleep_ms_from_env() -> u64 {
+    std::env::var("QUANTALE_TICK_SLEEP_MS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(0)
 }
 
 pub fn load_operator_registry(path: impl AsRef<Path>) -> Result<OperatorRegistry, String> {

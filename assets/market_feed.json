@@ -1,0 +1,23 @@
+{
+  "active_provider": "coingecko_usd",
+  "symbols": ["BTC", "ETH", "SOL"],
+  "providers": {
+    "stooq_daily_csv": {
+      "kind": "http_csv",
+      "url_template": "https://stooq.com/q/l/?s={symbol}&f=sd2t2ohlcv&h&e=csv",
+      "timeout_seconds": 10,
+      "cache_seconds": 30
+    },
+    "coingecko_usd": {
+      "kind": "coingecko_markets",
+      "url_template": "https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&ids={coingecko_ids}&order=market_cap_desc&per_page=10&page=1",
+      "symbol_map": {
+        "BTC": "bitcoin",
+        "ETH": "ethereum",
+        "SOL": "solana"
+      },
+      "timeout_seconds": 15,
+      "cache_seconds": 30
+    }
+  }
+}

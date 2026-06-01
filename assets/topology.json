@@ -226,6 +226,86 @@
       "id": 43,
       "name": "Event::LearnUpdated",
       "type": "Event"
+    },
+    {
+      "id": 44,
+      "name": "Execution::VectorAdd",
+      "type": "Execution"
+    },
+    {
+      "id": 45,
+      "name": "Execution::VectorScale",
+      "type": "Execution"
+    },
+    {
+      "id": 46,
+      "name": "Execution::FusedVectorAddScale",
+      "type": "Execution"
+    },
+    {
+      "id": 47,
+      "name": "State::MarketFeed",
+      "type": "State"
+    },
+    {
+      "id": 48,
+      "name": "State::AnalysisPlan",
+      "type": "State"
+    },
+    {
+      "id": 49,
+      "name": "State::TradePlan",
+      "type": "State"
+    },
+    {
+      "id": 50,
+      "name": "State::PaperTrade",
+      "type": "State"
+    },
+    {
+      "id": 51,
+      "name": "Event::MarketFeedUpdated",
+      "type": "Event"
+    },
+    {
+      "id": 52,
+      "name": "Event::AnalysisPlanReady",
+      "type": "Event"
+    },
+    {
+      "id": 53,
+      "name": "Event::AnalysisFinished",
+      "type": "Event"
+    },
+    {
+      "id": 54,
+      "name": "Event::TradeDecisionReady",
+      "type": "Event"
+    },
+    {
+      "id": 55,
+      "name": "Event::PaperTradeFilled",
+      "type": "Event"
+    },
+    {
+      "id": 56,
+      "name": "Event::PaperTradeRejected",
+      "type": "Event"
+    },
+    {
+      "id": 57,
+      "name": "Analysis::Return1",
+      "type": "Execution"
+    },
+    {
+      "id": 58,
+      "name": "Analysis::Volatility",
+      "type": "Execution"
+    },
+    {
+      "id": 59,
+      "name": "Analysis::SignalScore",
+      "type": "Execution"
     }
   ],
   "transitions": [
@@ -255,15 +335,6 @@
       "confidence": 0.97,
       "cost": 0.03,
       "safety": 0.97
-    },
-    {
-      "from": "State::Input",
-      "to": "Event::InputAccepted",
-      "default_weight": 0.96,
-      "policy_effect": "EmitInputAccepted",
-      "confidence": 0.96,
-      "cost": 0.04,
-      "safety": 0.96
     },
     {
       "from": "Event::InputAccepted",
@@ -591,6 +662,15 @@
     },
     {
       "from": "State::Memory",
+      "to": "State::Learn",
+      "default_weight": 0.88,
+      "policy_effect": "LearnFromMemory",
+      "confidence": 0.88,
+      "cost": 0.12,
+      "safety": 0.88
+    },
+    {
+      "from": "State::Memory",
       "to": "Event::MemoryWritten",
       "default_weight": 0.92,
       "policy_effect": "MemoryWritten",
@@ -626,13 +706,238 @@
       "safety": 0.91
     },
     {
+      "from": "Control::Block",
+      "to": "State::Input",
+      "default_weight": 0.30,
+      "policy_effect": "RecoverFromBlock",
+      "confidence": 0.30,
+      "cost": 0.70,
+      "safety": 0.30
+    },
+    {
       "from": "Event::LearnUpdated",
       "to": "Control::Halt",
-      "default_weight": 0.99,
+      "default_weight": 0.70,
       "policy_effect": "Halt",
-      "confidence": 0.99,
-      "cost": 0.01,
-      "safety": 0.99
+      "confidence": 0.70,
+      "cost": 0.30,
+      "safety": 0.70
+    },
+    {
+      "from": "Event::LearnUpdated",
+      "to": "State::Input",
+      "default_weight": 0.95,
+      "policy_effect": "RestartTradingCycle",
+      "confidence": 0.95,
+      "cost": 0.05,
+      "safety": 0.95
+    },
+    {
+      "from": "State::Execute",
+      "to": "Execution::VectorAdd",
+      "default_weight": 0.80,
+      "policy_effect": "DispatchVectorAdd",
+      "confidence": 0.80,
+      "cost": 1.5,
+      "safety": 0.80
+    },
+    {
+      "from": "State::Execute",
+      "to": "Execution::VectorScale",
+      "default_weight": 0.80,
+      "policy_effect": "DispatchVectorScale",
+      "confidence": 0.80,
+      "cost": 1.5,
+      "safety": 0.80
+    },
+    {
+      "from": "State::Execute",
+      "to": "Execution::FusedVectorAddScale",
+      "default_weight": 0.75,
+      "policy_effect": "DispatchFusedVectorAddScale",
+      "confidence": 0.75,
+      "cost": 2.0,
+      "safety": 0.78
+    },
+    {
+      "from": "Execution::VectorAdd",
+      "to": "Control::GateExecution",
+      "default_weight": 0.88,
+      "policy_effect": "GateAfterVectorAdd",
+      "confidence": 0.88,
+      "cost": 0.8,
+      "safety": 0.88
+    },
+    {
+      "from": "Execution::VectorScale",
+      "to": "Control::GateExecution",
+      "default_weight": 0.88,
+      "policy_effect": "GateAfterVectorScale",
+      "confidence": 0.88,
+      "cost": 0.8,
+      "safety": 0.88
+    },
+    {
+      "from": "Execution::FusedVectorAddScale",
+      "to": "Control::GateExecution",
+      "default_weight": 0.92,
+      "policy_effect": "GateAfterFusedVectorAddScale",
+      "confidence": 0.92,
+      "cost": 0.6,
+      "safety": 0.90
+    },
+    {
+      "from": "State::Input",
+      "to": "State::MarketFeed",
+      "default_weight": 0.97,
+      "policy_effect": "FetchMarketFeed",
+      "confidence": 0.97,
+      "cost": 0.03,
+      "safety": 0.97
+    },
+    {
+      "from": "State::MarketFeed",
+      "to": "Event::MarketFeedUpdated",
+      "default_weight": 0.92,
+      "policy_effect": "MarketFeedUpdated",
+      "confidence": 0.92,
+      "cost": 0.08,
+      "safety": 0.92
+    },
+    {
+      "from": "Event::MarketFeedUpdated",
+      "to": "State::AnalysisPlan",
+      "default_weight": 0.91,
+      "policy_effect": "PlanAnalysis",
+      "confidence": 0.91,
+      "cost": 0.09,
+      "safety": 0.91
+    },
+    {
+      "from": "State::AnalysisPlan",
+      "to": "Event::AnalysisPlanReady",
+      "default_weight": 0.89,
+      "policy_effect": "AnalysisPlanReady",
+      "confidence": 0.89,
+      "cost": 0.11,
+      "safety": 0.89
+    },
+    {
+      "from": "Event::AnalysisPlanReady",
+      "to": "Analysis::Return1",
+      "default_weight": 0.88,
+      "policy_effect": "DispatchReturn1",
+      "confidence": 0.88,
+      "cost": 1.2,
+      "safety": 0.88
+    },
+    {
+      "from": "Analysis::Return1",
+      "to": "Analysis::Volatility",
+      "default_weight": 0.90,
+      "policy_effect": "ChainReturn1ToVolatility",
+      "confidence": 0.90,
+      "cost": 1.0,
+      "safety": 0.90
+    },
+    {
+      "from": "Analysis::Volatility",
+      "to": "Analysis::SignalScore",
+      "default_weight": 0.90,
+      "policy_effect": "ChainVolatilityToSignalScore",
+      "confidence": 0.90,
+      "cost": 1.0,
+      "safety": 0.90
+    },
+    {
+      "from": "Analysis::SignalScore",
+      "to": "Event::AnalysisFinished",
+      "default_weight": 0.89,
+      "policy_effect": "AnalysisFinished",
+      "confidence": 0.89,
+      "cost": 0.11,
+      "safety": 0.89
+    },
+    {
+      "from": "State::AnalysisPlan",
+      "to": "Event::AnalysisFinished",
+      "default_weight": 0.60,
+      "policy_effect": "SkipAnalysisChain",
+      "confidence": 0.60,
+      "cost": 0.40,
+      "safety": 0.60
+    },
+    {
+      "from": "Event::AnalysisFinished",
+      "to": "State::Plan",
+      "default_weight": 0.95,
+      "policy_effect": "PlanAfterAnalysis",
+      "confidence": 0.95,
+      "cost": 0.05,
+      "safety": 0.95
+    },
+    {
+      "from": "State::Plan",
+      "to": "State::TradePlan",
+      "default_weight": 0.94,
+      "policy_effect": "TradePlan",
+      "confidence": 0.94,
+      "cost": 0.06,
+      "safety": 0.94
+    },
+    {
+      "from": "State::TradePlan",
+      "to": "Event::TradeDecisionReady",
+      "default_weight": 0.87,
+      "policy_effect": "TradeDecisionReady",
+      "confidence": 0.87,
+      "cost": 0.13,
+      "safety": 0.87
+    },
+    {
+      "from": "Event::TradeDecisionReady",
+      "to": "State::PaperTrade",
+      "default_weight": 0.86,
+      "policy_effect": "ExecutePaperTrade",
+      "confidence": 0.86,
+      "cost": 0.14,
+      "safety": 0.86
+    },
+    {
+      "from": "State::PaperTrade",
+      "to": "Event::PaperTradeFilled",
+      "default_weight": 0.85,
+      "policy_effect": "PaperTradeFilled",
+      "confidence": 0.85,
+      "cost": 0.15,
+      "safety": 0.85
+    },
+    {
+      "from": "State::PaperTrade",
+      "to": "Event::PaperTradeRejected",
+      "default_weight": 0.10,
+      "policy_effect": "PaperTradeRejected",
+      "confidence": 0.10,
+      "cost": 0.90,
+      "safety": 0.10
+    },
+    {
+      "from": "Event::PaperTradeFilled",
+      "to": "State::Memory",
+      "default_weight": 0.93,
+      "policy_effect": "MemoryAfterFill",
+      "confidence": 0.93,
+      "cost": 0.07,
+      "safety": 0.93
+    },
+    {
+      "from": "Event::PaperTradeRejected",
+      "to": "State::Memory",
+      "default_weight": 0.80,
+      "policy_effect": "MemoryAfterRejection",
+      "confidence": 0.80,
+      "cost": 0.20,
+      "safety": 0.80
     }
   ],
   "pages": [
@@ -652,9 +957,7 @@
         "State::Validate",
         "State::Memory",
         "State::Learn",
-        "Control::Allow",
         "Control::Block",
-        "Control::Retry",
         "Control::Repair",
         "Control::Commit",
         "Control::Rollback",
@@ -666,7 +969,6 @@
         "Control::GateLearn",
         "Control::ChooseBest",
         "Event::FactArrived",
-        "Event::InputAccepted",
         "Event::ParseOk",
         "Event::ParseErr",
         "Event::MapReady",
@@ -682,7 +984,23 @@
         "Event::ReceiptRejected",
         "Event::HashNonzero",
         "Event::MemoryWritten",
-        "Event::LearnUpdated"
+        "Event::LearnUpdated",
+        "Execution::VectorAdd",
+        "Execution::VectorScale",
+        "Execution::FusedVectorAddScale",
+        "State::MarketFeed",
+        "State::AnalysisPlan",
+        "State::TradePlan",
+        "State::PaperTrade",
+        "Event::MarketFeedUpdated",
+        "Event::AnalysisPlanReady",
+        "Event::AnalysisFinished",
+        "Event::TradeDecisionReady",
+        "Event::PaperTradeFilled",
+        "Event::PaperTradeRejected",
+        "Analysis::Return1",
+        "Analysis::Volatility",
+        "Analysis::SignalScore"
       ]
     }
   ]

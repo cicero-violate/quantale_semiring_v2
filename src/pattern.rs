@@ -10,7 +10,7 @@ use std::path::Path;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
-use crate::config::{load_operator_registry, OperatorRegistry};
+use crate::config::{OperatorRegistry, load_operator_registry};
 use crate::error::CudaError;
 use crate::tensor::TensorEdge;
 use crate::topology::{CompiledTopology, GraphTopology};

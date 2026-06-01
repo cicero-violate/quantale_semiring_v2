@@ -3,10 +3,14 @@
 use std::collections::HashMap;
 use std::io::Write;
 use std::process::{Command, Stdio};
+#[cfg(feature = "cuda")]
+use std::sync::Mutex;
 
 use serde_json::Value;
 
 use crate::config::SystemConfig;
+#[cfg(feature = "cuda")]
+use crate::jit_kernel_fusion::{JitCache, SlotBuffers};
 use crate::receipt::ProcessReceipt;
 use crate::topology::{GraphTopology, NodeRegistry};
 
@@ -14,6 +18,10 @@ pub struct UniversalExecutor {
     /// Mapping of Node Names to their generic CLI schemas loaded from operators.json.
     pub operator_registry: HashMap<String, Value>,
     node_registry: NodeRegistry,
+    #[cfg(feature = "cuda")]
+    jit_cache: Mutex<JitCache>,
+    #[cfg(feature = "cuda")]
+    slot_buffers: Mutex<SlotBuffers>,
 }
 
 impl UniversalExecutor {
@@ -22,6 +30,10 @@ impl UniversalExecutor {
             operator_registry: config.operator_registry.clone(),
             node_registry: GraphTopology::bundled_registry()
                 .expect("bundled assets/topology.json must compile"),
+            #[cfg(feature = "cuda")]
+            jit_cache: Mutex::new(JitCache::new()),
+            #[cfg(feature = "cuda")]
+            slot_buffers: Mutex::new(SlotBuffers::default()),
         }
     }
 
@@ -30,6 +42,10 @@ impl UniversalExecutor {
             operator_registry,
             node_registry: GraphTopology::bundled_registry()
                 .expect("bundled assets/topology.json must compile"),
+            #[cfg(feature = "cuda")]
+            jit_cache: Mutex::new(JitCache::new()),
+            #[cfg(feature = "cuda")]
+            slot_buffers: Mutex::new(SlotBuffers::default()),
         }
     }
 
@@ -76,10 +92,9 @@ impl UniversalExecutor {
         };
 
         let binary = op_config["executable"].as_str().unwrap_or("false");
-        if binary == "cuda_ptx" {
-            return execute_cuda_ptx_blocking(node_name, op_config, dynamic_payload);
+        if binary == "jit_cuda" {
+            return self.execute_jit_cuda_blocking(node_name, dynamic_payload);
         }
-
         let empty_args = Vec::new();
         let static_args: Vec<&str> = op_config["static_args"]
             .as_array()
@@ -151,78 +166,112 @@ impl UniversalExecutor {
             },
         }
     }
+
+    #[cfg(feature = "cuda")]
+    fn execute_jit_cuda_blocking(
+        &self,
+        node_name: &str,
+        dynamic_payload: &Value,
+    ) -> ProcessReceipt {
+        execute_jit_chain_blocking(
+            node_name,
+            dynamic_payload,
+            &self.operator_registry,
+            &self.jit_cache,
+            &self.slot_buffers,
+        )
+    }
+
+    #[cfg(not(feature = "cuda"))]
+    fn execute_jit_cuda_blocking(
+        &self,
+        node_name: &str,
+        _dynamic_payload: &Value,
+    ) -> ProcessReceipt {
+        cuda_err_receipt(
+            node_name,
+            format!("jit_cuda operator '{node_name}' requires the cuda feature"),
+        )
+    }
 }
 
 #[cfg(feature = "cuda")]
-fn execute_cuda_ptx_blocking(
+fn execute_jit_chain_blocking(
     node_name: &str,
-    op_config: &Value,
     dynamic_payload: &Value,
+    registry: &HashMap<String, Value>,
+    cache: &Mutex<JitCache>,
+    slot_buffers: &Mutex<SlotBuffers>,
 ) -> ProcessReceipt {
-    use cudarc::driver::{CudaDevice, LaunchConfig};
+    use crate::jit_kernel_fusion::chain_for_single_operator;
+    use cudarc::driver::{CudaDevice, LaunchAsync, LaunchConfig};
     use std::sync::{Arc, OnceLock};
 
-    // PTX compiled from cuda/trading_execution_kernels.cu by build.rs at build time.
-    const PTX_BYTES: &[u8] =
-        include_bytes!(concat!(env!("OUT_DIR"), "/trading_execution_kernels.ptx"));
-    const MODULE_NAME: &str = "quantale_trading_execution_kernels";
-    const KERNEL_NAMES: &[&str] = &[
-        "fused_alpha_and_risk_kernel",
-        "fused_orderbook_and_alpha_kernel",
-        "fused_feed_alpha_and_risk_kernel",
-    ];
-
-    // Device and module are initialised once per process.
     static DEVICE: OnceLock<Result<Arc<CudaDevice>, String>> = OnceLock::new();
-    static MODULE: OnceLock<Result<(), String>> = OnceLock::new();
 
-    let kernel_name = match op_config["input_mapping"]["kernel"].as_str() {
-        Some(k) if !k.is_empty() => k,
-        _ => return cuda_err_receipt(node_name, "missing kernel name in input_mapping"),
+    let device = match DEVICE.get_or_init(|| CudaDevice::new(0).map_err(|e| e.to_string())) {
+        Ok(d) => Arc::clone(d),
+        Err(e) => return cuda_err_receipt(node_name, e),
     };
 
-    let device =
-        match DEVICE.get_or_init(|| CudaDevice::new(0).map(Arc::new).map_err(|e| e.to_string())) {
-            Ok(d) => Arc::clone(d),
-            Err(e) => return cuda_err_receipt(node_name, e),
-        };
-
-    if let Err(e) = MODULE.get_or_init(|| {
-        let ptx_src = std::str::from_utf8(PTX_BYTES)
-            .map_err(|e| format!("PTX bytes are not valid UTF-8: {e}"))?;
-        let ptx = cudarc::driver::Ptx::from(ptx_src);
-        device
-            .load_ptx(ptx, MODULE_NAME, KERNEL_NAMES)
-            .map_err(|e| e.to_string())
-    }) {
-        return cuda_err_receipt(node_name, e);
+    let chain = match chain_for_single_operator(node_name, registry) {
+        Ok(chain) => chain,
+        Err(error) => return cuda_err_receipt(node_name, error),
+    };
+    if chain.outputs.len() != 1 {
+        return cuda_err_receipt(
+            node_name,
+            format!(
+                "jit_cuda executor requires exactly one output slot, got {}",
+                chain.outputs.len()
+            ),
+        );
     }
 
-    let func = match device.get_func(MODULE_NAME, kernel_name) {
-        Some(f) => f,
-        None => {
-            return cuda_err_receipt(
-                node_name,
-                format!("kernel '{kernel_name}' not found in module '{MODULE_NAME}'"),
-            )
+    let n = payload_array_len_for_slots(dynamic_payload, &chain.inputs);
+    let mut inputs = Vec::with_capacity(chain.inputs.len());
+    {
+        let mut buffers = slot_buffers
+            .lock()
+            .map_err(|_| cuda_err_receipt(node_name, "slot buffer lock poisoned"));
+        let Ok(ref mut buffers) = buffers else {
+            return buffers.err().unwrap();
+        };
+        for (idx, slot) in chain.inputs.iter().enumerate() {
+            if let Some(buffer) = buffers.get(slot) {
+                inputs.push(buffer.clone());
+            } else {
+                let host = payload_slot_floats(dynamic_payload, slot, idx, n);
+                let dev = match device.htod_copy(host) {
+                    Ok(dev) => dev,
+                    Err(error) => {
+                        return cuda_err_receipt(node_name, format!("htod_copy failed: {error}"));
+                    }
+                };
+                buffers.insert(slot.clone(), dev.clone());
+                inputs.push(dev);
+            }
+        }
+    }
+
+    let func = {
+        let mut cache = cache
+            .lock()
+            .map_err(|_| cuda_err_receipt(node_name, "JIT cache lock poisoned"));
+        let Ok(ref mut cache) = cache else {
+            return cache.err().unwrap();
+        };
+        match cache.get_or_compile(&device, &chain, registry) {
+            Ok(func) => func,
+            Err(error) => return cuda_err_receipt(node_name, error),
         }
     };
 
-    // Marshal JSON payload arrays → device buffers.
-    // Fields "a", "b", "c" are float arrays; missing fields default to zeros.
-    let n = payload_array_len(dynamic_payload);
-    let a = payload_floats(dynamic_payload, "a", n);
-    let b = payload_floats(dynamic_payload, "b", n);
-    let c = payload_floats(dynamic_payload, "c", n);
-
-    let (dev_a, dev_b, dev_c, mut dev_out) = match (
-        device.htod_copy(a),
-        device.htod_copy(b),
-        device.htod_copy(c),
-        device.htod_copy(vec![0.0f32; n]),
-    ) {
-        (Ok(a), Ok(b), Ok(c), Ok(o)) => (a, b, c, o),
-        _ => return cuda_err_receipt(node_name, "htod_copy failed"),
+    let mut dev_out = match device.htod_copy(vec![0.0f32; n]) {
+        Ok(out) => out,
+        Err(error) => {
+            return cuda_err_receipt(node_name, format!("htod_copy output failed: {error}"));
+        }
     };
 
     let threads: u32 = 256;
@@ -233,8 +282,24 @@ fn execute_cuda_ptx_blocking(
         shared_mem_bytes: 0,
     };
 
-    if let Err(e) = unsafe { func.launch(cfg, (&dev_a, &dev_b, &dev_c, &mut dev_out, n as i32)) } {
-        return cuda_err_receipt(node_name, format!("kernel launch failed: {e}"));
+    let launch_result = unsafe {
+        match inputs.as_slice() {
+            [a] => func.launch(cfg, (a, &mut dev_out, n as i32)),
+            [a, b] => func.launch(cfg, (a, b, &mut dev_out, n as i32)),
+            [a, b, c] => func.launch(cfg, (a, b, c, &mut dev_out, n as i32)),
+            _ => {
+                return cuda_err_receipt(
+                    node_name,
+                    format!(
+                        "jit_cuda executor supports 1..=3 input slots, got {}",
+                        inputs.len()
+                    ),
+                );
+            }
+        }
+    };
+    if let Err(error) = launch_result {
+        return cuda_err_receipt(node_name, format!("kernel launch failed: {error}"));
     }
 
     let results = match device.dtoh_sync_copy(&dev_out) {
@@ -244,11 +309,17 @@ fn execute_cuda_ptx_blocking(
 
     let stdout = serde_json::json!({
         "node": node_name,
-        "kernel": kernel_name,
+        "kernel": "jit_fused",
         "n": n,
+        "chain": chain.operators,
+        "outputs": chain.outputs,
         "results": &results[..results.len().min(8)],
     })
     .to_string();
+
+    if let Ok(mut buffers) = slot_buffers.lock() {
+        buffers.insert(chain.outputs[0].clone(), dev_out);
+    }
 
     ProcessReceipt {
         node_name: node_name.to_string(),
@@ -256,18 +327,6 @@ fn execute_cuda_ptx_blocking(
         stdout_payload: stdout,
         stderr_payload: String::new(),
     }
-}
-
-#[cfg(not(feature = "cuda"))]
-fn execute_cuda_ptx_blocking(
-    node_name: &str,
-    _op_config: &Value,
-    _dynamic_payload: &Value,
-) -> ProcessReceipt {
-    cuda_err_receipt(
-        node_name,
-        format!("cuda_ptx operator '{node_name}' requires the cuda feature"),
-    )
 }
 
 fn cuda_err_receipt(node_name: &str, msg: impl std::fmt::Display) -> ProcessReceipt {
@@ -280,10 +339,11 @@ fn cuda_err_receipt(node_name: &str, msg: impl std::fmt::Display) -> ProcessRece
 }
 
 #[cfg(feature = "cuda")]
-fn payload_array_len(value: &Value) -> usize {
-    ["a", "b", "c"]
+fn payload_array_len_for_slots(value: &Value, slots: &[String]) -> usize {
+    slots
         .iter()
-        .filter_map(|k| value[k].as_array())
+        .enumerate()
+        .filter_map(|(idx, slot)| payload_array_for_slot(value, slot, idx))
         .map(|a| a.len())
         .max()
         .unwrap_or(64)
@@ -291,12 +351,32 @@ fn payload_array_len(value: &Value) -> usize {
 }
 
 #[cfg(feature = "cuda")]
-fn payload_floats(value: &Value, key: &str, n: usize) -> Vec<f32> {
+fn payload_slot_floats(value: &Value, slot: &str, idx: usize, n: usize) -> Vec<f32> {
     let mut out = vec![0.0f32; n];
-    if let Some(arr) = value[key].as_array() {
+    if let Some(arr) = payload_array_for_slot(value, slot, idx) {
         for (i, v) in arr.iter().enumerate().take(n) {
             out[i] = v.as_f64().unwrap_or(0.0) as f32;
         }
     }
     out
+}
+
+#[cfg(feature = "cuda")]
+fn payload_array_for_slot<'a>(value: &'a Value, slot: &str, idx: usize) -> Option<&'a Vec<Value>> {
+    let fallback_keys = ["a", "b", "c"];
+    value
+        .get(slot)
+        .and_then(Value::as_array)
+        .or_else(|| {
+            slot.rsplit('.')
+                .next()
+                .and_then(|key| value.get(key))
+                .and_then(Value::as_array)
+        })
+        .or_else(|| {
+            fallback_keys
+                .get(idx)
+                .and_then(|key| value.get(*key))
+                .and_then(Value::as_array)
+        })
 }

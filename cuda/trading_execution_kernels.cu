@@ -1,7 +1,7 @@
-// Trading execution kernels — precompiled by nvcc, loaded at runtime via cudarc.
+// Legacy trading execution kernels.
 //
-// Signatures are fixed ABI: (const float* input_a, const float* input_b,
-// const float* input_c, float* results, int n).
+// Math operators moved to runtime JIT synthesis from assets/operators.json.
+// This file is no longer compiled by build.rs.
 
 extern "C" {
 

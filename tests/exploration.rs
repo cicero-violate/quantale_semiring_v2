@@ -1,7 +1,8 @@
 use quantale_semiring_v2::{
-    load_operator_registry, tensor_idx, ExplorationCandidate, ExplorationConfig, ExplorationEngine,
-    GraphTopology, NodeRegistry, ProcessReceipt, ProjectionBias, TensorEdge, TensorQuantaleWorld,
-    COST_INFINITY, LAYER_CONFIDENCE, LAYER_COST, LAYER_SAFETY, TENSOR_LEN, TENSOR_NODE_COUNT,
+    COST_INFINITY, ExplorationCandidate, ExplorationConfig, ExplorationEngine, GraphTopology,
+    LAYER_CONFIDENCE, LAYER_COST, LAYER_SAFETY, NodeRegistry, ProcessReceipt, ProjectionBias,
+    TENSOR_LEN, TENSOR_NODE_COUNT, TensorEdge, TensorQuantaleWorld, load_operator_registry,
+    tensor_idx,
 };
 
 fn reg() -> NodeRegistry {

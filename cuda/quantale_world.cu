@@ -18,8 +18,8 @@ struct DecisionReport {
     int blocked;
 };
 
-// Node universe size — update when topology.json grows beyond 44 nodes.
-#define N 44
+// Node universe size — must match TENSOR_NODE_COUNT in src/tensor.rs. Currently 60.
+#define N 60
 #define MATRIX_LEN (N * N)
 
 #define BOTTOM   0.0f
@@ -756,6 +756,59 @@ extern "C" __global__ void tensor_quantale_commit_exploration(
     }
     __syncthreads();
     for (int i = tid; i < N; i += blockDim.x) active[i] = next_active[i];
+}
+
+// ── JIT chain scoring ──────────────────────────────────────────────────────
+//
+// Scores dynamically detected chain descriptors. No operator names or slot names
+// appear here; all policy is numeric chain metadata supplied by Rust.
+
+struct JitChainMetadata {
+    int chain_len;
+    int input_count;
+    int output_count;
+    float estimated_savings;
+    int target_node_id;
+};
+
+extern "C" __global__ void jit_chain_score_embed(
+    float* tensor,
+    const JitChainMetadata* chains,
+    int   chain_count,
+    int   src_node
+) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= chain_count) return;
+    if (src_node < 0 || src_node >= N) return;
+
+    JitChainMetadata chain = chains[idx];
+    int target = chain.target_node_id;
+    if (target < 0 || target >= N || chain.chain_len <= 0) return;
+
+    float base_conf = tensor[tensor_idx(LAYER_CONFIDENCE, src_node, target)];
+    float base_cost = tensor[tensor_idx(LAYER_COST,       src_node, target)];
+    float base_safe = tensor[tensor_idx(LAYER_SAFETY,     src_node, target)];
+    if (base_conf <= BOTTOM) base_conf = 0.55f;
+    if (base_safe <= BOTTOM) base_safe = 0.75f;
+    if (base_cost >= COST_INFINITY) base_cost = 10.0f;
+
+    float savings = fmaxf(0.0f, chain.estimated_savings);
+    float fused_conf   = q_clamp(base_conf + 0.02f * savings);
+    float fused_safety = q_clamp(base_safe + 0.01f * savings);
+    float fused_cost   = fmaxf(0.001f, base_cost / (1.0f + savings));
+
+    int cidx = tensor_idx(LAYER_CONFIDENCE, src_node, target);
+    int eidx = tensor_idx(LAYER_COST,       src_node, target);
+    int sidx = tensor_idx(LAYER_SAFETY,     src_node, target);
+
+    if (fused_conf > tensor[cidx]) {
+        tensor[cidx] = fused_conf;
+        tensor[sidx] = fused_safety;
+    }
+    // Cost uses min-plus: only write if genuinely cheaper.
+    if (fused_cost < tensor[eidx]) {
+        tensor[eidx] = fused_cost;
+    }
 }
 
 extern "C" __global__ void tensor_quantale_tick(

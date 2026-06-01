@@ -3,14 +3,34 @@ use std::collections::BTreeSet;
 use serde_json::json;
 
 use quantale_semiring_v2::{
-    action_label, compile_pattern, compile_tensor_plan, dispatch_decision_batch_blocking,
-    format_quantale_value, full_tensor_transition_edges, load_default_patterns,
-    load_learned_tensor_edges, project_ready_batch_plan, ExecutionOutcome, ExplorationConfig,
-    ExplorationEngine, GraphTopology, Node, ProjectionBias, SystemConfig, TensorQuantaleWorld,
-    TlogWriter, UniversalExecutor, LAYER_CONFIDENCE,
+    ExecutionOutcome, ExplorationConfig, ExplorationEngine, GraphTopology, LAYER_CONFIDENCE, Node,
+    ProjectionBias, SystemConfig, TensorQuantaleWorld, TlogWriter, UniversalExecutor, action_label,
+    compile_pattern, compile_tensor_plan, dispatch_decision_batch_blocking, format_quantale_value,
+    full_tensor_transition_edges, load_default_patterns, load_learned_tensor_edges,
+    project_ready_batch_plan, topology_check,
 };
 
 fn main() {
+    // --check-topology: validate topology.json and exit without running the loop.
+    if std::env::args().any(|a| a == "--check-topology") {
+        let topology = match GraphTopology::default_asset() {
+            Ok(t) => t,
+            Err(error) => {
+                eprintln!("[topology] parse failed: {error}");
+                std::process::exit(1);
+            }
+        };
+        let violations = topology_check::check(&topology);
+        if violations.is_empty() {
+            println!("topology OK ({} nodes, {} transitions)",
+                topology.nodes.len(), topology.transitions.len());
+            std::process::exit(0);
+        }
+        eprintln!("{}", topology_check::format_violations(&violations));
+        eprintln!("{} violation(s) found", violations.len());
+        std::process::exit(1);
+    }
+
     let config = SystemConfig::default();
     let projection_bias = ProjectionBias::default();
 
@@ -36,6 +56,12 @@ fn main() {
             std::process::exit(1);
         }
     };
+    let violations = topology_check::check(&topology_asset);
+    if !violations.is_empty() {
+        eprintln!("{}", topology_check::format_violations(&violations));
+        eprintln!("topology has {} violation(s); refusing to start", violations.len());
+        std::process::exit(1);
+    }
     let topology = match topology_asset.compile() {
         Ok(topology) => topology,
         Err(error) => {
@@ -92,6 +118,7 @@ fn main() {
             std::process::exit(1);
         }
     };
+
     let exploration_config = match ExplorationConfig::default_asset() {
         Ok(config) => config,
         Err(error) => {
@@ -112,10 +139,21 @@ fn main() {
     };
 
     println!("Starting Tensor Quantale Neuro-Symbolic Agent Loop...");
+    if config.max_ticks == 0 {
+        println!("Continuous mode: running until halt or signal.");
+    }
 
-    let mut current_payload = json!({ "context": "Optimize memory allocations across threads" });
+    let sleep_dur = (config.tick_sleep_ms > 0)
+        .then(|| std::time::Duration::from_millis(config.tick_sleep_ms));
+    let mut current_payload = json!({ "context": "market_analysis_loop" });
+    let mut tick: usize = 0;
+    let mut consecutive_blocks: usize = 0;
 
-    for _ in 0..config.max_ticks {
+    loop {
+        if config.max_ticks > 0 && tick >= config.max_ticks {
+            break;
+        }
+        tick += 1;
         if let Err(error) = world.close() {
             eprintln!("{error}");
             std::process::exit(1);
@@ -429,13 +467,42 @@ fn main() {
         );
 
         if decision.halted != 0 {
+            if config.max_ticks == 0 {
+                // Continuous mode: dampen the halt edge and restart the trading cycle.
+                let _ = world.update_lattice_edge(
+                    decision.selected_src,
+                    decision.first_hop,
+                    ExecutionOutcome::Failure,
+                );
+                let _ = world.decay(0.97);
+                current_payload = json!({ "context": "market_analysis_loop" });
+                if let Some(dur) = sleep_dur {
+                    std::thread::sleep(dur);
+                }
+                continue;
+            }
             println!("Tensor execution chain reached terminal halt safely.");
             break;
         }
 
         if decision.blocked != 0 {
+            consecutive_blocks += 1;
+            if consecutive_blocks >= 3 {
+                // Hard reset: world is at bottom (⊥); re-embed topology to lift it back to a
+                // valid state, then restart the trading cycle.
+                eprintln!("[WARN] {consecutive_blocks} consecutive blocked steps; hard reset.");
+                let _ = world.decay(0.30);
+                if let Err(error) = world.embed_tensor_edges(&tensor_edges) {
+                    eprintln!("[WARN] hard reset embed failed: {error}");
+                }
+                current_payload = json!({ "context": "market_analysis_loop" });
+                consecutive_blocks = 0;
+                let reset_dur = sleep_dur.unwrap_or(std::time::Duration::from_millis(200));
+                std::thread::sleep(reset_dur);
+            }
             continue;
         }
+        consecutive_blocks = 0;
 
         let Some(active_node) = Node::decode(decision.first_hop, &topology.registry) else {
             eprintln!("Invalid first_hop index: {}", decision.first_hop);
@@ -532,6 +599,9 @@ fn main() {
         }
 
         let _ = world.reconstruct_projected_tensor_path(LAYER_CONFIDENCE);
+        if let Some(dur) = sleep_dur {
+            std::thread::sleep(dur);
+        }
     }
 
     if let Err(error) = tlog.flush() {

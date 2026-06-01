@@ -1,0 +1,20 @@
+{
+  "type": "object",
+  "required": ["orders", "reason"],
+  "properties": {
+    "orders": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["symbol", "side", "quantity", "order_type"],
+        "properties": {
+          "symbol": {"type": "string"},
+          "side": {"type": "string"},
+          "quantity": {"type": "number"},
+          "order_type": {"type": "string"}
+        }
+      }
+    },
+    "reason": {"type": "string"}
+  }
+}

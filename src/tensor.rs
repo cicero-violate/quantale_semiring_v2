@@ -21,8 +21,9 @@ use crate::receipt::ProcessReceipt;
 use crate::topology::{GraphTopology, NodeRegistry};
 
 pub const TENSOR_LAYER_COUNT: usize = 3;
-// Must match N in cuda/quantale_world.cu (STATE+CONTROL+EVENT = 13+13+18 = 44).
-pub const TENSOR_NODE_COUNT: usize = 44;
+// Must match N in cuda/quantale_world.cu.
+// 47 original + 13 market-trading nodes (State::MarketFeed .. Analysis::SignalScore) = 60.
+pub const TENSOR_NODE_COUNT: usize = 60;
 pub const MATRIX_LEN: usize = TENSOR_NODE_COUNT * TENSOR_NODE_COUNT;
 pub const TENSOR_LEN: usize = TENSOR_LAYER_COUNT * MATRIX_LEN;
 pub const COST_INFINITY: f32 = 1.0e20;
@@ -47,6 +48,7 @@ const EXPLORATION_EXPAND_KERNEL: &str = "tensor_quantale_expand_tokens";
 const EXPLORATION_SCORE_KERNEL: &str = "tensor_quantale_score_tokens";
 const EXPLORATION_TOPK_KERNEL: &str = "tensor_quantale_select_topk_tokens";
 const EXPLORATION_COMMIT_KERNEL: &str = "tensor_quantale_commit_exploration";
+const JIT_CHAIN_SCORE_KERNEL: &str = "jit_chain_score_embed";
 
 pub const EXPLORATION_MAX_TOKENS: usize = TENSOR_NODE_COUNT * TENSOR_NODE_COUNT;
 pub const EXPLORATION_MAX_SELECTED: usize = TENSOR_NODE_COUNT;
@@ -167,6 +169,7 @@ impl TensorQuantaleWorld {
                 EXPLORATION_SCORE_KERNEL,
                 EXPLORATION_TOPK_KERNEL,
                 EXPLORATION_COMMIT_KERNEL,
+                JIT_CHAIN_SCORE_KERNEL,
             ],
         )
         .map_err(|error| CudaError::new("load_ptx tensor", error))?;
@@ -689,6 +692,35 @@ impl TensorQuantaleWorld {
         }
         .map_err(|error| CudaError::new("tensor_quantale_commit_exploration", error))?;
         self.decision_report()
+    }
+
+    /// Score dynamically detected JIT chains on the GPU and embed results into the tensor.
+    pub fn embed_jit_chain_scores(
+        &mut self,
+        chains: &[crate::jit_kernel_fusion::JitChainMetadata],
+        src_node: i32,
+    ) -> Result<(), CudaError> {
+        if chains.is_empty() {
+            return Ok(());
+        }
+        let count = i32::try_from(chains.len())
+            .map_err(|_| CudaError::invalid_input("too many JIT chains"))?;
+        let chain_buf = self
+            .dev
+            .htod_copy(chains.to_vec())
+            .map_err(|error| CudaError::new("htod_copy jit chain metadata", error))?;
+        let kernel = self
+            .dev
+            .get_func(MODULE_NAME, JIT_CHAIN_SCORE_KERNEL)
+            .ok_or(CudaError::missing_function(JIT_CHAIN_SCORE_KERNEL))?;
+        unsafe {
+            kernel.launch(
+                kernel_config(),
+                (&mut self.tensor, &chain_buf, count, src_node),
+            )
+        }
+        .map_err(|error| CudaError::new("jit_chain_score_embed", error))?;
+        Ok(())
     }
 
     fn sync_exploration_engine(&self, engine: &mut ExplorationEngine) -> Result<(), CudaError> {

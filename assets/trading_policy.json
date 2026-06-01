@@ -1,0 +1,15 @@
+{
+  "mode": "paper",
+  "base_currency": "USD",
+  "starting_cash": 100000.0,
+  "max_notional_per_order": 1000.0,
+  "max_position_notional": 5000.0,
+  "allowed_sides": ["buy", "sell", "hold"],
+  "allowed_order_types": ["market"],
+  "allow_fractional": true,
+  "state_files": {
+    "orders": "state/paper_orders.jsonl",
+    "fills": "state/paper_fills.jsonl",
+    "positions": "state/paper_positions.json"
+  }
+}

@@ -816,16 +816,9 @@
     },
     {
       "node_name": "Execution::DynamicAlphaSignalEvaluator",
-      "executable": "cuda_ptx",
+      "executable": "jit_cuda",
       "static_args": [],
-      "input_mapping": {
-        "module": "cuda/trading_execution_kernels.ptx",
-        "module_name": "quantale_trading_execution_kernels",
-        "kernel": "dyn_alpha_signal_evaluator_kernel",
-        "plane": "execution",
-        "category": "quant_trading.dynamic_alpha_signal_evaluator",
-        "scheduler_contract": "atomic_operator_fixed_budget"
-      },
+      "jit_body": "out[i] = tanhf(in0[i]) * in2[i] * (1.0f - fabsf(in1[i]));",
       "effects": {
         "reads": [
           "market.feed",
@@ -840,16 +833,9 @@
     },
     {
       "node_name": "Execution::OrderBookImbalanceWeaver",
-      "executable": "cuda_ptx",
+      "executable": "jit_cuda",
       "static_args": [],
-      "input_mapping": {
-        "module": "cuda/trading_execution_kernels.ptx",
-        "module_name": "quantale_trading_execution_kernels",
-        "kernel": "order_book_imbalance_weaver_kernel",
-        "plane": "execution",
-        "category": "quant_trading.order_book_imbalance_weaver",
-        "scheduler_contract": "atomic_operator_fixed_budget"
-      },
+      "jit_body": "out[i] = in2[i] * (1.0f + 0.5f * tanhf(in0[i]));",
       "effects": {
         "reads": [
           "market.feed",
@@ -864,16 +850,9 @@
     },
     {
       "node_name": "Execution::PortfolioRiskConstraintFilter",
-      "executable": "cuda_ptx",
+      "executable": "jit_cuda",
       "static_args": [],
-      "input_mapping": {
-        "module": "cuda/trading_execution_kernels.ptx",
-        "module_name": "quantale_trading_execution_kernels",
-        "kernel": "portfolio_risk_constraint_filter_kernel",
-        "plane": "execution",
-        "category": "quant_trading.portfolio_risk_constraint_filter",
-        "scheduler_contract": "atomic_operator_fixed_budget"
-      },
+      "jit_body": "out[i] = fmaxf(-1.0f, fminf(1.0f, in2[i] * (1.0f - fabsf(in1[i]))));",
       "effects": {
         "reads": [
           "market.feed",
@@ -888,16 +867,9 @@
     },
     {
       "node_name": "Execution::AdaptiveOptionsPricingArray",
-      "executable": "cuda_ptx",
+      "executable": "jit_cuda",
       "static_args": [],
-      "input_mapping": {
-        "module": "cuda/trading_execution_kernels.ptx",
-        "module_name": "quantale_trading_execution_kernels",
-        "kernel": "adaptive_options_pricing_array_kernel",
-        "plane": "execution",
-        "category": "quant_trading.adaptive_options_pricing_array",
-        "scheduler_contract": "atomic_operator_fixed_budget"
-      },
+      "jit_body": "out[i] = expf(-fabsf(in1[i])) * fmaxf(0.0f, in0[i] + in2[i]);",
       "effects": {
         "reads": [
           "market.feed",
@@ -912,16 +884,9 @@
     },
     {
       "node_name": "Execution::HardwareTailoredFeedHandler",
-      "executable": "cuda_ptx",
+      "executable": "jit_cuda",
       "static_args": [],
-      "input_mapping": {
-        "module": "cuda/trading_execution_kernels.ptx",
-        "module_name": "quantale_trading_execution_kernels",
-        "kernel": "hardware_tailored_feed_handler_kernel",
-        "plane": "execution",
-        "category": "quant_trading.hardware_tailored_feed_handler",
-        "scheduler_contract": "atomic_operator_fixed_budget"
-      },
+      "jit_body": "out[i] = tanhf(in0[i]) + 0.01f * in1[i] + 0.01f * in2[i];",
       "effects": {
         "reads": [
           "market.feed",
@@ -931,6 +896,198 @@
         "writes": [
           "execution.gpu.results"
         ],
+        "locks": []
+      }
+    },
+    {
+      "node_name": "Execution::VectorAdd",
+      "executable": "jit_cuda",
+      "static_args": [],
+      "jit_body": "out[i] = in0[i] + in1[i];",
+      "effects": {
+        "reads": [
+          "math.a",
+          "math.b"
+        ],
+        "writes": [
+          "math.add_out"
+        ],
+        "locks": []
+      }
+    },
+    {
+      "node_name": "Execution::VectorScale",
+      "executable": "jit_cuda",
+      "static_args": [],
+      "jit_body": "out[i] = in0[i] * in1[i];",
+      "effects": {
+        "reads": [
+          "math.add_out",
+          "math.scale"
+        ],
+        "writes": [
+          "math.out"
+        ],
+        "locks": []
+      }
+    },
+    {
+      "node_name": "Execution::FusedVectorAddScale",
+      "executable": "jit_cuda",
+      "static_args": [],
+      "jit_body": "out[i] = (in0[i] + in1[i]) * in2[i];",
+      "effects": {
+        "reads": [
+          "math.a",
+          "math.b",
+          "math.scale"
+        ],
+        "writes": [
+          "math.out"
+        ],
+        "locks": []
+      }
+    },
+    {
+      "node_name": "State::MarketFeed",
+      "executable": "python3",
+      "static_args": ["assets/market_feed.py"],
+      "input_mapping": {"stdin_mode": "json"},
+      "effects": {
+        "reads": ["market.config"],
+        "writes": ["market.feed", "state/market_feed.jsonl"],
+        "locks": []
+      }
+    },
+    {
+      "node_name": "State::AnalysisPlan",
+      "executable": "python3",
+      "static_args": ["assets/call_llm.py", "--template", "analysis"],
+      "input_mapping": {"stdin_mode": "json"},
+      "effects": {
+        "reads": ["market.feed", "analysis.config"],
+        "writes": ["analysis.plan"],
+        "locks": []
+      }
+    },
+    {
+      "node_name": "State::TradePlan",
+      "executable": "python3",
+      "static_args": ["assets/call_llm.py", "--template", "trade"],
+      "input_mapping": {"stdin_mode": "json"},
+      "effects": {
+        "reads": ["market.feed", "trading.policy"],
+        "writes": ["trade.decision"],
+        "locks": []
+      }
+    },
+    {
+      "node_name": "State::PaperTrade",
+      "executable": "python3",
+      "static_args": ["assets/paper_trade.py"],
+      "input_mapping": {"stdin_mode": "json"},
+      "effects": {
+        "reads": ["trade.decision", "market.feed", "trading.policy"],
+        "writes": ["trade.receipt", "state/paper_orders.jsonl", "state/paper_positions.json"],
+        "locks": ["paper_broker"]
+      }
+    },
+    {
+      "node_name": "Event::MarketFeedUpdated",
+      "executable": "python3",
+      "static_args": ["assets/event.py", "--event", "MarketFeedUpdated"],
+      "input_mapping": {"stdin_mode": "json"},
+      "effects": {
+        "reads": ["event.symbolic"],
+        "writes": ["event.marketfeedupdated.observed"],
+        "locks": []
+      }
+    },
+    {
+      "node_name": "Event::AnalysisPlanReady",
+      "executable": "python3",
+      "static_args": ["assets/event.py", "--event", "AnalysisPlanReady"],
+      "input_mapping": {"stdin_mode": "json"},
+      "effects": {
+        "reads": ["event.symbolic"],
+        "writes": ["event.analysisplanready.observed"],
+        "locks": []
+      }
+    },
+    {
+      "node_name": "Event::AnalysisFinished",
+      "executable": "python3",
+      "static_args": ["assets/event.py", "--event", "AnalysisFinished"],
+      "input_mapping": {"stdin_mode": "json"},
+      "effects": {
+        "reads": ["event.symbolic"],
+        "writes": ["event.analysisfinished.observed"],
+        "locks": []
+      }
+    },
+    {
+      "node_name": "Event::TradeDecisionReady",
+      "executable": "python3",
+      "static_args": ["assets/event.py", "--event", "TradeDecisionReady"],
+      "input_mapping": {"stdin_mode": "json"},
+      "effects": {
+        "reads": ["event.symbolic"],
+        "writes": ["event.tradedecisionready.observed"],
+        "locks": []
+      }
+    },
+    {
+      "node_name": "Event::PaperTradeFilled",
+      "executable": "python3",
+      "static_args": ["assets/event.py", "--event", "PaperTradeFilled"],
+      "input_mapping": {"stdin_mode": "json"},
+      "effects": {
+        "reads": ["event.symbolic"],
+        "writes": ["event.papertradefilled.observed"],
+        "locks": []
+      }
+    },
+    {
+      "node_name": "Event::PaperTradeRejected",
+      "executable": "python3",
+      "static_args": ["assets/event.py", "--event", "PaperTradeRejected"],
+      "input_mapping": {"stdin_mode": "json"},
+      "effects": {
+        "reads": ["event.symbolic"],
+        "writes": ["event.papertradereject.observed"],
+        "locks": []
+      }
+    },
+    {
+      "node_name": "Analysis::Return1",
+      "executable": "jit_cuda",
+      "static_args": [],
+      "jit_body": "out[i] = (in0[i] - in1[i]) / (in1[i] + 1e-8f);",
+      "effects": {
+        "reads": ["market.price", "market.open"],
+        "writes": ["analysis.return"],
+        "locks": []
+      }
+    },
+    {
+      "node_name": "Analysis::Volatility",
+      "executable": "jit_cuda",
+      "static_args": [],
+      "jit_body": "out[i] = fabsf(in0[i] - in1[i]) / (in1[i] + 1e-8f);",
+      "effects": {
+        "reads": ["market.price", "analysis.return"],
+        "writes": ["analysis.volatility"],
+        "locks": []
+      }
+    },
+    {
+      "node_name": "Analysis::SignalScore",
+      "executable": "jit_cuda",
+      "static_args": [],
+      "jit_body": "out[i] = in0[i] / (1.0f + fabsf(in1[i]));",
+      "effects": {
+        "reads": ["analysis.return", "analysis.volatility"],
+        "writes": ["analysis.signal_score"],
         "locks": []
       }
     }

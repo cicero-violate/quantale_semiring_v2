@@ -1,163 +1,243 @@
-# Plan: Data-Driven Dynamic Kernel Fusion
+# Plan: Static Topology Checker
 
 ## Goal
 
-Begin using dynamic GPU kernel fusion without adding CPU routing policy or Rust-side graph shortcuts.
+Add a static graph validator that rejects invalid topology before execution starts.
+The checker runs on `assets/topology.json` at startup (and optionally as a standalone
+CLI tool) and enforces the five graph invariants below.
 
-The runtime contract stays:
+No runtime invariant machinery, no invariant-discovery pass. Static check only.
+If the topology fails, the process exits with a clear error before any tensor
+operations run.
 
-- CPU launches kernels and external operators.
-- GPU tensor stores path weights and learned edge state.
-- JSON assets define static topology, operators, effects, and fusion patterns.
-- JSONL state stores evidence/checkpoints, not alternate policy.
+---
 
-## Current Baseline
+## Background
 
-- `assets/topology.json` defines the canonical graph.
-- `assets/operators.json` defines external operators and CUDA PTX operator metadata.
-- `assets/patterns.json` defines CKA/static scheduling patterns.
-- External `tensor_plan` output is filtered to static topology edges before GPU embedding.
-- `state/learned_edges.jsonl` is loaded as sparse learned weights only for topology edges.
-- Runtime has demonstrated:
+The class of failures seen at runtime:
 
-```text
-Control::Commit
-  -> Control::GateMemory
-  -> State::Memory
-  -> Event::MemoryWritten
-  -> Control::GateLearn
-  -> State::Learn
-  -> Event::LearnUpdated
-  -> Control::Halt
+```
+State::Memory -> Unknown(-1)   blocked=1   score=⊥
 ```
 
-## Implementation Steps
+is fully predictable from the topology file alone:
 
-1. Add a fusion asset file.
+```
+∀ v ∈ V : v ∉ H ⇒ ∃ u ∈ V : W[v,u] ≠ ⊥
+```
 
-Create `assets/fusion_patterns.json` with declarative records only:
+`State::Memory` had zero outgoing edges in the compiled tensor world because the
+only edge the LLM produced (`State::Memory → State::Learn`) was not declared in
+`topology.json` and was therefore stripped by `filter_static_topology_edges`.
+A static checker would have caught this at startup.
 
-```json
-{
-  "patterns": [
-    {
-      "name": "math.add_then_scale",
-      "inputs": ["math.a", "math.b", "math.scale"],
-      "outputs": ["math.out"],
-      "operators": [
-        "Execution::VectorAdd",
-        "Execution::VectorScale"
-      ],
-      "fused_operator": "Execution::FusedVectorAddScale",
-      "constraints": {
-        "same_shape": true,
-        "dtype": "f32",
-        "max_elements": 1048576
-      }
+---
+
+## Invariants to Check
+
+### 1. Endpoint Validity
+
+```
+∀ (u,v) ∈ E : u ∈ V ∧ v ∈ V
+```
+
+Every `from` and `to` name in `transitions` must exist in `nodes`.
+
+**Detects:** typos, deleted nodes, copy-paste errors.
+
+---
+
+### 2. Non-Terminal Closure (dead-end check)
+
+```
+∀ v ∈ V : v ∉ H ⇒ outdeg(v) > 0
+```
+
+Every node that is not a declared halt node must have at least one outgoing
+transition.
+
+**Detects:** the exact `State::Memory → Unknown(-1)` class of failure.
+
+---
+
+### 3. Reachability from Start
+
+```
+Reach(s) = { v : s ⇝ v }
+∀ v ∈ V_required : v ∈ Reach(s)
+```
+
+Every node declared in `pages[0].node_names` must be reachable from
+`State::Goal` (node id 0, or whichever node carries `"type": "State"` and
+appears first).
+
+**Detects:** disconnected subgraphs, forgotten link-up after adding new nodes.
+
+---
+
+### 4. Path to Halt
+
+```
+∀ v ∈ V : v ⇝ h for some h ∈ H
+```
+
+Every node must lie on some path that eventually reaches a halt node.
+
+**Detects:** cycles or branches that can never terminate.
+
+---
+
+### 5. No Bottom Row Except Halt
+
+```
+W[v,*] = ⊥ ⇒ v ∈ H
+```
+
+In the compiled weight matrix, only halt nodes may have an all-zero / all-⊥ row.
+This is the runtime-equivalent restatement of invariant 2; catching it at
+compile-time costs nothing.
+
+**Detects:** nodes added to topology without any outgoing transition.
+
+---
+
+## What It Does NOT Check
+
+- Weight values (those belong to the tensor learning system)
+- Whether operators exist for every node (that is `egress.rs` responsibility)
+- Cycle detection beyond "can reach halt"
+- Semantic correctness of jit_body strings
+
+---
+
+## Implementation
+
+### New file: `src/topology_check.rs`
+
+```
+pub struct TopologyViolation {
+    pub kind: ViolationKind,
+    pub node: String,
+    pub detail: String,
+}
+
+pub enum ViolationKind {
+    UnknownEndpoint,
+    DeadEnd,
+    Unreachable,
+    CannotReachHalt,
+}
+
+pub fn check(topology: &GraphTopology) -> Vec<TopologyViolation>
+```
+
+`check()` performs all five invariants on a compiled `GraphTopology` and returns
+every violation found. The caller decides whether to abort or warn.
+
+Algorithm:
+
+```
+1. build node_set: HashSet<&str> from nodes
+2. build halt_set: HashSet<usize>  — nodes with action == "halt"
+3. build adjacency: HashMap<usize, Vec<usize>>  — from transitions
+4. check endpoints   — both names in node_set
+5. check dead ends   — outdeg(v) > 0 for v ∉ halt_set
+6. BFS from start    — collect Reach(s)
+7. check reachability — every page node in Reach(s)
+8. reverse BFS from halts — collect CanReachHalt
+9. check path-to-halt — every node in CanReachHalt
+```
+
+All five passes run before returning; the caller receives all violations at once,
+not just the first.
+
+---
+
+### Integration: `src/main.rs`
+
+After `GraphTopology::default_asset()` and `.compile()` succeed, and before
+`TensorQuantaleWorld::from_tensor_edges`:
+
+```rust
+let violations = topology_check::check(&topology_asset);
+if !violations.is_empty() {
+    for v in &violations {
+        eprintln!("[topology] {} in {}: {}", v.kind, v.node, v.detail);
     }
-  ]
+    std::process::exit(1);
 }
 ```
 
-Do not encode routing decisions in this file. It should describe legal fusion opportunities only.
+This means a bad topology.json is caught before any GPU memory is allocated.
 
-2. Add simple test math kernels.
+---
 
-Add or extend CUDA kernels under `cuda/`:
+### Integration: `build.rs`
 
-- `vector_add_kernel`
-- `vector_scale_kernel`
-- `fused_vector_add_scale_kernel`
+Optionally run the check as a build-time step by executing a small Rust binary
+(or calling the check from a proc-macro). This is a stretch goal; the startup
+check is sufficient for now.
 
-These are test math operators, not domain policy. They provide a small measurable target for dynamic fusion.
+---
 
-3. Register math operators in JSON.
+### CLI option
 
-Add operator entries to `assets/operators.json`:
+Add a `--check-topology` flag to the binary:
 
-- `Execution::VectorAdd`
-- `Execution::VectorScale`
-- `Execution::FusedVectorAddScale`
+```bash
+./run.sh --check-topology
+```
 
-Each entry should use existing `cuda_ptx` metadata shape:
+Runs the static check, prints all violations or `OK`, then exits.
+Useful in CI without starting the full agent loop.
 
-- `module`
-- `module_name`
-- `kernel`
-- `plane`
-- `category`
-- `scheduler_contract`
+---
 
-Reads/writes/locks must remain declarative effect metadata.
+## New Tests: `tests/topology_check.rs`
 
-4. Compile fusion candidates from assets.
+Each invariant gets at least one passing and one failing case.
 
-Add a Rust loader/compiler for `assets/fusion_patterns.json`.
+```
+check_passes_on_valid_topology()
+check_rejects_unknown_endpoint()
+check_rejects_dead_end_non_halt_node()
+check_rejects_unreachable_node()
+check_rejects_node_with_no_path_to_halt()
+check_reports_all_violations_not_just_first()
+current_topology_passes_all_checks()   ← regression guard
+```
 
-Allowed responsibilities:
+`current_topology_passes_all_checks` loads the bundled `topology.json` and
+asserts zero violations. This is the primary regression guard: any future
+topology edit that introduces a dead end fails CI before it reaches execution.
 
-- Parse JSON.
-- Validate referenced operators exist in `assets/operators.json`.
-- Validate fused operator exists.
-- Validate declared effects are compatible.
-- Emit a fusion candidate descriptor for the scheduler.
+---
 
-Forbidden responsibilities:
+## Export in `src/lib.rs`
 
-- Choosing paths outside the GPU tensor.
-- Creating new topology edges.
-- Reading JSONL state as policy.
-- Special-casing operator names in Rust.
+```rust
+pub mod topology_check;
+pub use topology_check::*;
+```
 
-5. Add a GPU-native fusion selection signal.
-
-Represent fusion availability as tensor-side weights, not CPU branch policy.
-
-Minimum acceptable first pass:
-
-- CPU detects legal fusion candidates from JSON.
-- CPU launches a small CUDA kernel that scores/marks candidates using operator/effect metadata encoded in buffers.
-- Resulting candidate scores are embedded as tensor weights for existing topology/operator nodes only.
-
-The CPU may launch the kernel and dispatch the selected operator. It must not own graph policy.
-
-6. Prefer fused operator execution when tensor-selected.
-
-When the tensor frontier selects a fused operator node, the existing executor launches the fused CUDA operator declared in `assets/operators.json`.
-
-Do not add a Rust `if VectorAdd + VectorScale then FusedVectorAddScale` path. Fusion must come from the asset compiler plus GPU tensor score.
-
-7. Add verification.
-
-Add tests that prove:
-
-- `assets/fusion_patterns.json` parses.
-- Unknown operator references fail validation.
-- Fused math kernel output matches unfused math kernel output.
-- Runtime can select the fused operator through existing tensor/operator machinery.
-- No fusion pattern creates non-topology policy edges.
-
-8. Add docs.
-
-Update `README.md` and `ARCHITECTURE.md` with:
-
-- Fusion assets are static declarative legality metadata.
-- Dynamic fusion scores live in GPU tensors.
-- JSONL records only evidence/checkpoints.
-- Rust launches kernels and validates assets; it does not route graph policy.
+---
 
 ## Acceptance Criteria
 
-- `cargo check` passes.
-- `cargo test --no-default-features` passes.
-- A GPU-enabled run shows a fused math operator selected/executed.
-- Learned edge checkpoints still contain only `assets/topology.json` edges.
-- Grep finds no reintroduced `rule_delta`, `ExecutionReceipt`, CPU routing planner, or side-channel policy file.
+- `cargo check` passes
+- `cargo test --no-default-features` passes (including all new topology_check tests)
+- `current_topology_passes_all_checks` passes on the current topology.json
+- `./run.sh --check-topology` prints `OK` and exits 0 on a valid topology
+- `./run.sh --check-topology` prints a descriptive violation and exits 1 when a
+  dead-end node is injected into topology.json
+- `State::Memory` dead-end is permanently caught before execution, not at runtime
+
+---
 
 ## Non-Goals
 
-- No Triton/PyTorch/JAX alternate engine.
-- No runtime PTX string generation.
-- No CPU graph traversal planner.
-- No JSONL alternate topology or policy.
-- No hard-coded Rust fusion shortcuts for specific operator names.
+- Runtime invariant enforcement
+- Automatic topology repair
+- Invariant discovery / mining
+- Weight validation
+- Cross-file consistency between operators.json and topology.json

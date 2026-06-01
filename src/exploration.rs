@@ -18,7 +18,7 @@ use crate::error::CudaError;
 use crate::node::Node;
 use crate::receipt::ProcessReceipt;
 use crate::tensor::{
-    tensor_idx, ProjectionBias, COST_INFINITY, LAYER_CONFIDENCE, LAYER_COST, LAYER_SAFETY,
+    COST_INFINITY, LAYER_CONFIDENCE, LAYER_COST, LAYER_SAFETY, ProjectionBias, tensor_idx,
 };
 use crate::topology::{GraphTopology, NodeRegistry};
 
@@ -486,11 +486,7 @@ fn visit_vector(visits: &HashMap<i32, i32>, node_count: usize) -> Vec<i32> {
 
 fn tensor_value(tensor: &[f32], layer: i32, src: i32, dst: i32, fallback: f32) -> f32 {
     let value = tensor[tensor_idx(layer, src, dst)];
-    if value.is_finite() {
-        value
-    } else {
-        fallback
-    }
+    if value.is_finite() { value } else { fallback }
 }
 
 fn tensor_cost(tensor: &[f32], src: i32, dst: i32) -> f32 {
