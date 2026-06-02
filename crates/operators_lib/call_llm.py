@@ -80,6 +80,10 @@ _BUILTIN_TEMPLATES = {
         "A chain is represented only by consecutive edge objects: A -> B, B -> C, C -> D.\n"
         "Prefer edges from the valid topology transitions list; add new edges only when the context justifies them.\n"
         "For JIT-capable work, prefer adjacent jit_cuda execution nodes when their declared effects form a data dependency.\n"
+        "\n\nDEVELOPMENT CYCLE — propose when context shows failures, stagnant learning, or stub nodes:\n"
+        "  State::Learn -> State::Introspect  (confidence 0.3-0.5) — trigger topology self-development\n"
+        "  State::Learn -> State::PatternPlan (confidence 0.2-0.4) — evolve CKA patterns\n"
+        "Include at most one development edge per plan.\n"
         "Do not invent node names, slot names, operators, kernels, Rust symbols, or CUDA code.\n"
         "Do not output a separate chains object; the edge array is the structured chain.\n\n"
         + _EDGE_SCHEMA

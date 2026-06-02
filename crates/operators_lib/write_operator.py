@@ -2,12 +2,15 @@
 """Control::WriteOperator operator: write a new Python operator file to crates/operators_lib/.
 
 Receives a payload (possibly wrapped in context envelopes) containing:
-  filename  — bare filename, must end in .py, no path separators
-  source    — complete Python source code
-  node_name — the topology node this operator implements (optional, for logging)
+  filename              — bare filename, must end in .py, no path separators
+  source                — complete Python source code
+  node_name             — topology node this operator implements (optional, for logging)
+  operator_contract_ops — optional list of contract update ops to apply to operators.json
+                          e.g. [{"op": "update", "node_name": "...", "patch": {"executable": "python3", ...}}]
 
 Output:
-  {"write_operator": {"filename": "...", "node_name": "...", "bytes": N, "path": "..."}}
+  {"write_operator": {"filename": "...", "node_name": "...", "bytes": N,
+                       "path": "...", "contracts_updated": [...]}}
 """
 
 import json
@@ -16,6 +19,46 @@ import sys
 
 _PROJECT_ROOT  = pathlib.Path(__file__).resolve().parent.parent.parent
 _OPERATORS_LIB = _PROJECT_ROOT / "crates" / "operators_lib"
+_OPERATORS_JSON = _PROJECT_ROOT / "assets" / "operators.json"
+
+
+def _apply_contract_ops(ops: list) -> tuple[list, str | None]:
+    """Apply operator_contract_ops (update/replace) to operators.json."""
+    if not ops:
+        return [], None
+    try:
+        data = json.loads(_OPERATORS_JSON.read_text())
+    except Exception as exc:
+        return [], f"cannot load operators.json: {exc}"
+
+    updated = []
+    for op in ops:
+        kind = op.get("op")
+        if kind == "update":
+            name = op.get("node_name", "")
+            patch = op.get("patch", {})
+            idx = next((i for i, o in enumerate(data["operators"]) if o.get("node_name") == name), None)
+            if idx is None:
+                return updated, f"update: operator not found: {name}"
+            data["operators"][idx].update({k: v for k, v in patch.items() if k != "node_name"})
+            updated.append(name)
+        elif kind == "replace":
+            contract = op.get("contract", {})
+            name = contract.get("node_name", "")
+            idx = next((i for i, o in enumerate(data["operators"]) if o.get("node_name") == name), None)
+            if idx is None:
+                return updated, f"replace: operator not found: {name}"
+            data["operators"][idx] = contract
+            updated.append(name)
+        else:
+            return updated, f"unknown op: {kind!r}"
+
+    try:
+        _OPERATORS_JSON.write_text(json.dumps(data, indent=2) + "\n")
+    except OSError as exc:
+        return updated, f"write failed: {exc}"
+
+    return updated, None
 
 
 def _unwrap(payload: dict) -> dict:
@@ -64,9 +107,10 @@ def main() -> None:
 
     payload = _unwrap(payload)
 
-    filename  = payload.get("filename", "")
-    source    = payload.get("source", "")
-    node_name = payload.get("node_name", "")
+    filename      = payload.get("filename", "")
+    source        = payload.get("source", "")
+    node_name     = payload.get("node_name", "")
+    contract_ops  = payload.get("operator_contract_ops", [])
 
     err = _validate_filename(filename)
     if err:
@@ -98,12 +142,18 @@ def main() -> None:
         print(json.dumps({"write_operator": {"error": f"write failed: {exc}"}}))
         sys.exit(1)
 
+    # apply any operator_contract_ops to upgrade executable: true -> python3
+    contracts_updated, contract_err = _apply_contract_ops(contract_ops)
+    if contract_err:
+        sys.stderr.write(f"[write_operator] contract_ops warning: {contract_err}\n")
+
     print(json.dumps({
         "write_operator": {
             "filename": filename,
             "node_name": node_name,
             "bytes": len(source.encode()),
             "path": str(dest),
+            "contracts_updated": contracts_updated,
         }
     }))
 
