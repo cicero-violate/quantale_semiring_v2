@@ -1,76 +1,3 @@
-#!/usr/bin/env python3
-"""External LLM operator — reads a JSON context payload from stdin, calls the
-browser-router, and writes the reply to stdout for ingestion by the agent loop.
-
-Exit codes:
-  0   success
-  1   API / HTTP error
-  127 connection failure (browser-router not reachable)
-
-Configuration (all via environment variables):
-  BROWSER_ROUTER_URL            default http://127.0.0.1:8090/v1/chat/completions
-  BROWSER_ROUTER_MODEL          default chatgpt-cdp
-  BROWSER_ROUTER_PROVIDER       default chatgpt_private
-  BROWSER_ROUTER_TARGET_URL     default https://chatgpt.com/
-  BROWSER_ROUTER_GROUP_CHAT_URL if set to a https://chatgpt.com/gg/... URL, all
-                                 requests are sent to that group chat room via the
-                                 /actions/group-chat endpoint.  The group chat URL
-                                 overrides model, provider, and target_url.
-  QUANTALE_TOPOLOGY             path to topology.json, default assets/topology.json
-  QUANTALE_OPERATORS            path to operators.json, default assets/operators.json
-  QUANTALE_TEMPLATES            path to call_llm_templates.json, default assets/call_llm_templates.json
-"""
-
-import sys
-import json
-import argparse
-import os
-import pathlib
-
-_ROUTER_BASE = os.environ.get("BROWSER_ROUTER_URL", "http://127.0.0.1:8090/v1/chat/completions")
-# Derive the base URL (scheme + host + port) from BROWSER_ROUTER_URL so that
-# the group-chat action endpoint lives on the same server.
-_ROUTER_ORIGIN = "/".join(_ROUTER_BASE.split("/")[:3])  # e.g. http://127.0.0.1:8090
-
-BROWSER_ROUTER_URL    = _ROUTER_BASE
-GROUP_CHAT_ACTION_URL = _ROUTER_ORIGIN + "/actions/group-chat"
-GROUP_CHAT_URL        = os.environ.get("BROWSER_ROUTER_GROUP_CHAT_URL", "").strip()
-MODEL                 = os.environ.get("BROWSER_ROUTER_MODEL", "chatgpt-cdp")
-BROWSER_PROVIDER      = os.environ.get("BROWSER_ROUTER_PROVIDER", "chatgpt_private")
-BROWSER_TARGET        = os.environ.get("BROWSER_ROUTER_TARGET_URL", "https://chatgpt.com/")
-ASSET_DIR             = pathlib.Path(__file__).resolve().parent.parent.parent / "assets"
-
-
-def asset_path(env_name: str, filename: str) -> pathlib.Path:
-    configured = os.environ.get(env_name)
-    return pathlib.Path(configured) if configured else ASSET_DIR / filename
-
-
-TOPOLOGY_PATH     = asset_path("QUANTALE_TOPOLOGY", "topology.json")
-OPERATORS_PATH    = asset_path("QUANTALE_OPERATORS", "operators.json")
-TEMPLATES_PATH    = asset_path("QUANTALE_TEMPLATES", "call_llm_templates.json")
-
-_EDGE_SCHEMA = """\
-Output ONLY a JSON array of tensor edge objects — no prose, no markdown fences.
-Each object must have exactly these keys:
-  "from"       : a node name from the valid set below
-  "to"         : a node name from the valid set below
-  "confidence" : a float in [0.0, 1.0] for correctness/confidence
-  "cost"       : a nonnegative float for compute/time cost
-  "safety"     : a float in [0.0, 1.0] for security/safety
-
-Valid node names:
-{nodes}
-
-Valid topology transitions:
-{transitions}
-
-Available JIT execution operators, loaded from operators.json:
-{jit_operators}
-
-Example output:
-{example_edges}"""
-
 _BUILTIN_TEMPLATES = {
     "plan": (
         "You are a neuro-symbolic planning engine embedded in a quantale-matrix agent loop.\n"
@@ -94,6 +21,53 @@ _BUILTIN_TEMPLATES = {
         "For JIT-capable recovery work, use adjacent jit_cuda execution nodes only when their declared effects form a data dependency.\n"
         "Do not invent node names, slot names, operators, kernels, Rust symbols, or CUDA code.\n\n"
         + _EDGE_SCHEMA
+    ),
+    "topology_mutate": (
+        "You are a neuro-symbolic topology architect embedded in a quantale-matrix agent loop.\n"
+        "Your output is applied directly to the live topology graph — be conservative and precise.\n\n"
+        "Diagnostic report from State::Introspect:\n{context}\n\n"
+        "Current topology nodes:\n{nodes}\n\n"
+        "Current topology transitions:\n{transitions}\n\n"
+        "Agent goal metrics:\n{goal_metrics}\n\n"
+        "Propose topology mutations that address failures and declining edges in the diagnostic report.\n"
+        "Prioritise: fixing high-failure nodes, adding missing paths, adjusting declining edge weights.\n"
+        "New operator nodes must have an operator_contract with executable=\'true\' as stub or an existing .py file.\n"
+        "Do NOT delete: Control::Halt, Control::Retry, Control::Repair, Control::GateExecution.\n"
+        "If no mutation is justified, emit an empty topology_ops array.\n\n"
+        "Node types: State, Control, Event, Execution, Analysis\n"
+        "Edge weights: default_weight, confidence, cost, safety — floats in [0.0,1.0]; cost=1-confidence baseline.\n\n"
+        "Output ONLY a JSON object — no prose, no markdown fences:\n"
+        '{{"topology_ops":[{{"op":"create_node","node":{{"name":"Namespace::Name","type":"State"}}}},{{"op":"create_edge","from":"A","to":"B","default_weight":0.5,"confidence":0.5,"cost":0.5,"safety":0.9}},{{"op":"update_edge","from":"A","to":"B","patch":{{"confidence":0.8,"cost":0.2}}}},{{"op":"delete_edge","from":"A","to":"B"}}],"operator_contracts":[{{"node_name":"Namespace::Name","executable":"true","static_args":[],"input_mapping":{{"stdin_mode":"json"}},"effects":{{"reads":[],"writes":[],"locks":[]}}}}],"reason":"one sentence"}}\n'
+    ),
+    "operator_write": (
+        "You are a neuro-symbolic operator developer. Write a complete Python operator file.\n\n"
+        "System context (goal, architecture, existing operators, stubs):\n{system_context}\n\n"
+        "Recent context (topology mutations just applied):\n{context}\n\n"
+        "Agent goal metrics:\n{goal_metrics}\n\n"
+        "Choose the most important stub from system_context and implement it.\n"
+        "Write a complete Python operator. File goes to crates/operators_lib/<filename>.\n\n"
+        "RULES:\n"
+        "- Unwrap context envelopes from stdin: payload may arrive as {{\"context\":\"<json>\"}}\n"
+        "- Print one JSON object to stdout. Exit 0 success, 1 error.\n"
+        "- Use only Python stdlib. No third-party imports.\n"
+        "- Asset paths: pathlib.Path(__file__).resolve().parent.parent.parent / \"assets\"\n"
+        "- Module docstring: node name, what it does, input/output shape.\n"
+        "- Under 150 lines. Follow existing operator patterns from system_context.\n\n"
+        "Also emit operator_contract_ops to upgrade executable=\'true\' to python3.\n"
+        "Output ONLY a JSON object — no prose, no markdown fences:\n"
+        '{{"filename":"snake_case.py","node_name":"Namespace::Name","source":"#!/usr/bin/env python3\\n...","operator_contract_ops":[{{"op":"update","node_name":"Namespace::Name","patch":{{"executable":"python3","static_args":["crates/operators_lib/snake_case.py"],"input_mapping":{{"stdin_mode":"json"}}}}}}]}}\n'
+    ),
+    "pattern_mutate": (
+        "You are a neuro-symbolic CKA pattern architect in a quantale-matrix agent loop.\n"
+        "Patterns define seq/par/choice/star execution structures for the batch scheduler.\n\n"
+        "Prior execution context:\n{context}\n\n"
+        "Current topology nodes:\n{nodes}\n\n"
+        "Agent goal metrics:\n{goal_metrics}\n\n"
+        "Propose pattern mutations to improve batch execution. Only reference existing nodes.\n"
+        "par requires effect-independent nodes. Do not delete identity_skip_marker or blocked_marker.\n\n"
+        "Expr grammar: string | {{\"seq\":[...]}} | {{\"choice\":[...]}} | {{\"par\":[...]}} | {{\"star\":{{\"body\":{{}},\"max_unroll\":3}}}}\n\n"
+        "Output ONLY a JSON object — no prose, no markdown fences:\n"
+        '{{"pattern_ops":[{{"op":"create","pattern":{{"name":"n","expr":{{"seq":["A","B"]}},"confidence":0.9,"cost":1.0,"safety":0.9}}}},{{"op":"update","name":"x","patch":{{"confidence":0.8}}}},{{"op":"delete","name":"y"}}],"reason":"one sentence"}}\n'
     ),
 }
 
@@ -263,6 +237,101 @@ def load_latest_market_snapshot() -> str:
         return "(market feed parse error)"
 
 
+def load_goal_metrics() -> str:
+    """Compact runtime metrics: paper PnL trend and step failure rate."""
+    metrics: dict = {}
+
+    fills_path = pathlib.Path("state/paper_fills.jsonl")
+    if not fills_path.exists():
+        fills_path = ASSET_DIR.parent / "state" / "paper_fills.jsonl"
+    fills = []
+    try:
+        for line in fills_path.read_text().splitlines()[-20:]:
+            line = line.strip()
+            if line:
+                fills.append(json.loads(line))
+    except OSError:
+        pass
+    if fills:
+        net = sum(f.get("notional", 0) * (1 if f.get("side") == "sell" else -1) for f in fills)
+        metrics["recent_fills"] = len(fills)
+        metrics["net_notional_last_fills"] = round(net, 2)
+
+    tlog_path = pathlib.Path("state/quantale.tlog")
+    if not tlog_path.exists():
+        tlog_path = ASSET_DIR.parent / "state" / "quantale.tlog"
+    steps = []
+    try:
+        for line in tlog_path.read_text().splitlines()[-400:]:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                r = json.loads(line)
+                if r.get("kind") == "AgentStep":
+                    steps.append(r["payload"])
+            except (json.JSONDecodeError, KeyError):
+                pass
+    except OSError:
+        pass
+    if steps:
+        failures = sum(1 for s in steps if s.get("exit_code", 0) != 0)
+        metrics["step_failure_rate"] = round(failures / len(steps), 3)
+        metrics["steps_sampled"] = len(steps)
+
+    return json.dumps(metrics, separators=(",", ":")) if metrics else "(metrics unavailable)"
+
+
+def load_system_context() -> str:
+    """Return a compact system context: goal, architecture excerpt, existing operator list."""
+    parts = []
+
+    goal_path = ASSET_DIR.parent / "GOAL.md"
+    try:
+        parts.append("=== GOAL ===\n" + goal_path.read_text().strip()[:800])
+    except OSError:
+        pass
+
+    arch_path = ASSET_DIR.parent / "ARCHITECTURE.md"
+    try:
+        lines = arch_path.read_text().splitlines()[:40]
+        parts.append("=== ARCHITECTURE (excerpt) ===\n" + "\n".join(lines))
+    except OSError:
+        pass
+
+    ops_lib = ASSET_DIR.parent / "crates" / "operators_lib"
+    op_lines = []
+    try:
+        for p in sorted(ops_lib.glob("*.py")):
+            try:
+                first_lines = p.read_text().splitlines()
+                doc = next(
+                    (l.strip().strip('"\'') for l in first_lines[1:10]
+                     if l.strip() and not l.strip().startswith("#")),
+                    ""
+                )
+                op_lines.append(f"  {p.name}: {doc[:80]}")
+            except OSError:
+                pass
+    except OSError:
+        pass
+    if op_lines:
+        parts.append("=== EXISTING OPERATORS ===\n" + "\n".join(op_lines))
+
+    try:
+        ops = json.loads(OPERATORS_PATH.read_text()).get("operators", [])
+        stub_lines = [
+            f"  {op['node_name']}: {op.get('description','(no description)')}  effects={json.dumps(op.get('effects',{}),separators=(',',':'))}"
+            for op in ops if op.get("executable") == "true"
+        ]
+        if stub_lines:
+            parts.append("=== STUB OPERATORS (need implementation) ===\n" + "\n".join(stub_lines[:15]))
+    except Exception:
+        pass
+
+    return "\n\n".join(parts) if parts else "(system context unavailable)"
+
+
 def load_jit_analysis_operator_summary(valid_nodes: tuple[str, ...]) -> str:
     """Load JIT analysis operators (Analysis:: prefix) from assets/operators.json."""
     try:
@@ -389,6 +458,8 @@ def main() -> None:
         "trading_policy": load_asset_json_str("trading_policy.json"),
         "trade_schema": load_asset_json_str("trade_decision_schema.json"),
         "market_snapshot": load_latest_market_snapshot(),
+        "goal_metrics": load_goal_metrics(),
+        "system_context": load_system_context(),
     }
     prompt = templates[args.template].format_map(format_vars)
 

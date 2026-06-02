@@ -100,7 +100,8 @@
           "repair.intent"
         ],
         "locks": []
-      }
+      },
+      "description": "Analyse failure receipt and emit a structured repair plan"
     },
     {
       "node_name": "Control::Retry",
@@ -117,7 +118,8 @@
           "retry.intent"
         ],
         "locks": []
-      }
+      },
+      "description": "Re-queue the last failed step for immediate retry with backoff"
     },
     {
       "node_name": "State::Optimize",
@@ -134,7 +136,8 @@
           "optimized.tensor"
         ],
         "locks": []
-      }
+      },
+      "description": "Apply tensor-weight optimisation pass to the current plan tensor"
     },
     {
       "node_name": "State::Execute",
@@ -153,7 +156,8 @@
         "locks": [
           "executor"
         ]
-      }
+      },
+      "description": "Dispatch the optimised plan to the operator executor and collect the execution result"
     },
     {
       "node_name": "State::Learn",
@@ -194,7 +198,8 @@
           "map.candidates"
         ],
         "locks": []
-      }
+      },
+      "description": "Enumerate candidate execution paths from the current task context"
     },
     {
       "node_name": "State::Search",
@@ -211,7 +216,8 @@
           "search.results"
         ],
         "locks": []
-      }
+      },
+      "description": "Score and rank map candidates against the quantale objective"
     },
     {
       "node_name": "State::Parse",
@@ -228,7 +234,8 @@
           "parse.tree"
         ],
         "locks": []
-      }
+      },
+      "description": "Parse raw task context into a structured intermediate representation"
     },
     {
       "node_name": "State::Score",
@@ -245,7 +252,8 @@
           "score.report"
         ],
         "locks": []
-      }
+      },
+      "description": "Score parse-tree nodes against the current quantale tensor weights"
     },
     {
       "node_name": "State::Goal",
@@ -262,7 +270,8 @@
           "state.goal.observed"
         ],
         "locks": []
-      }
+      },
+      "description": "Read the current symbolic goal state and emit an observation record"
     },
     {
       "node_name": "State::Input",
@@ -298,7 +307,8 @@
           "state.select.observed"
         ],
         "locks": []
-      }
+      },
+      "description": "Select the highest-scoring candidate for execution"
     },
     {
       "node_name": "Control::Allow",
@@ -315,7 +325,8 @@
           "control.allow.observed"
         ],
         "locks": []
-      }
+      },
+      "description": "Gate: allow the current execution context to proceed"
     },
     {
       "node_name": "Control::Block",
@@ -332,7 +343,8 @@
           "control.block.observed"
         ],
         "locks": []
-      }
+      },
+      "description": "Gate: block the current execution and emit a blocked receipt"
     },
     {
       "node_name": "Control::Commit",
@@ -372,7 +384,8 @@
           "control.rollback.observed"
         ],
         "locks": []
-      }
+      },
+      "description": "Roll back the most recently committed change and restore prior state"
     },
     {
       "node_name": "Control::Halt",
@@ -389,7 +402,8 @@
           "control.halt.observed"
         ],
         "locks": []
-      }
+      },
+      "description": "Halt the agent loop cleanly after completing the current step"
     },
     {
       "node_name": "Control::GateInput",
@@ -406,7 +420,8 @@
           "control.gateinput.observed"
         ],
         "locks": []
-      }
+      },
+      "description": "Gate: validate and admit the current input context"
     },
     {
       "node_name": "Control::GateReceipt",
@@ -423,7 +438,8 @@
           "control.gatereceipt.observed"
         ],
         "locks": []
-      }
+      },
+      "description": "Gate: validate the most recent process receipt before advancing"
     },
     {
       "node_name": "Control::GateMemory",
@@ -440,7 +456,8 @@
           "control.gatememory.observed"
         ],
         "locks": []
-      }
+      },
+      "description": "Gate: validate and admit the pending memory write"
     },
     {
       "node_name": "Control::GateLearn",
@@ -457,7 +474,8 @@
           "control.gatelearn.observed"
         ],
         "locks": []
-      }
+      },
+      "description": "Gate: validate and admit the pending learned edge update"
     },
     {
       "node_name": "Control::ChooseBest",
@@ -474,7 +492,8 @@
           "control.choosebest.observed"
         ],
         "locks": []
-      }
+      },
+      "description": "Choose the highest-value candidate from the current top-K selection"
     },
     {
       "node_name": "Event::FactArrived",
@@ -575,7 +594,8 @@
           "event.mapready.observed"
         ],
         "locks": []
-      }
+      },
+      "description": "Signals that map candidates are ready for scoring"
     },
     {
       "node_name": "Event::CandidateFound",
@@ -592,7 +612,8 @@
           "event.candidatefound.observed"
         ],
         "locks": []
-      }
+      },
+      "description": "Signals that a viable candidate was found during search"
     },
     {
       "node_name": "Event::ScoreReady",
@@ -609,7 +630,8 @@
           "event.scoreready.observed"
         ],
         "locks": []
-      }
+      },
+      "description": "Signals that scoring is complete and results are available"
     },
     {
       "node_name": "Event::TopKSelected",
@@ -626,7 +648,8 @@
           "event.topkselected.observed"
         ],
         "locks": []
-      }
+      },
+      "description": "Signals that top-K selection is complete"
     },
     {
       "node_name": "Event::PlanReady",
@@ -643,7 +666,8 @@
           "event.planready.observed"
         ],
         "locks": []
-      }
+      },
+      "description": "Signals that a tensor plan has been compiled and embedded"
     },
     {
       "node_name": "Event::OptimizeReady",
@@ -660,7 +684,8 @@
           "event.optimizeready.observed"
         ],
         "locks": []
-      }
+      },
+      "description": "Signals that plan optimisation is complete"
     },
     {
       "node_name": "Event::ExecuteStarted",
@@ -677,7 +702,8 @@
           "event.executestarted.observed"
         ],
         "locks": []
-      }
+      },
+      "description": "Signals that operator execution has begun"
     },
     {
       "node_name": "Event::ExecuteFinished",
@@ -694,7 +720,8 @@
           "event.executefinished.observed"
         ],
         "locks": []
-      }
+      },
+      "description": "Signals that operator execution has completed"
     },
     {
       "node_name": "Event::ReceiptAttached",
@@ -711,7 +738,8 @@
           "event.receiptattached.observed"
         ],
         "locks": []
-      }
+      },
+      "description": "Signals that a process receipt has been attached to the current step"
     },
     {
       "node_name": "Event::ReceiptAccepted",
@@ -770,7 +798,8 @@
           "event.hashnonzero.observed"
         ],
         "locks": []
-      }
+      },
+      "description": "Signals that the current tensor world hash is nonzero (state is non-bottom)"
     },
     {
       "node_name": "Event::MemoryWritten",
@@ -1295,6 +1324,168 @@
       "input_mapping": {
         "stdin_mode": "json"
       },
+      "effects": {
+        "reads": [],
+        "writes": [
+          "event.log"
+        ],
+        "locks": []
+      }
+    },
+    {
+      "node_name": "State::TopologyPlan",
+      "executable": "python3",
+      "static_args": [
+        "crates/operators_lib/call_llm.py",
+        "--template",
+        "topology_mutate"
+      ],
+      "input_mapping": {
+        "stdin_mode": "json"
+      },
+      "effects": {
+        "reads": [
+          "topology.json",
+          "state/quantale.tlog"
+        ],
+        "writes": [
+          "topology_ops.json"
+        ],
+        "locks": []
+      }
+    },
+    {
+      "node_name": "State::Introspect",
+      "executable": "python3",
+      "static_args": [
+        "crates/operators_lib/introspect.py"
+      ],
+      "input_mapping": {
+        "stdin_mode": "json"
+      },
+      "effects": {
+        "reads": [
+          "state/quantale.tlog",
+          "state/learned_edges.jsonl",
+          "state/topology_mutations.jsonl",
+          "assets/operators.json"
+        ],
+        "writes": [],
+        "locks": []
+      }
+    },
+    {
+      "node_name": "State::OperatorPlan",
+      "executable": "python3",
+      "static_args": [
+        "crates/operators_lib/call_llm.py",
+        "--template",
+        "operator_write"
+      ],
+      "input_mapping": {
+        "stdin_mode": "json"
+      },
+      "effects": {
+        "reads": [
+          "state/topology_mutations.jsonl"
+        ],
+        "writes": [],
+        "locks": []
+      }
+    },
+    {
+      "node_name": "Control::WriteOperator",
+      "executable": "python3",
+      "static_args": [
+        "crates/operators_lib/write_operator.py"
+      ],
+      "input_mapping": {
+        "stdin_mode": "json"
+      },
+      "effects": {
+        "reads": [],
+        "writes": [
+          "crates/operators_lib/"
+        ],
+        "locks": [
+          "operators_lib"
+        ]
+      }
+    },
+    {
+      "node_name": "Event::OperatorWritten",
+      "executable": "python3",
+      "static_args": [
+        "crates/operators_lib/event.py",
+        "--event",
+        "OperatorWritten"
+      ],
+      "input_mapping": {
+        "stdin_mode": "json"
+      },
+      "effects": {
+        "reads": [],
+        "writes": [
+          "event.log"
+        ],
+        "locks": []
+      }
+    },
+    {
+      "node_name": "State::PatternPlan",
+      "executable": "python3",
+      "static_args": [
+        "crates/operators_lib/call_llm.py",
+        "--template",
+        "pattern_mutate"
+      ],
+      "input_mapping": {
+        "stdin_mode": "json"
+      },
+      "description": "LLM proposes CKA pattern mutations based on execution metrics",
+      "effects": {
+        "reads": [
+          "assets/patterns.json",
+          "state/quantale.tlog"
+        ],
+        "writes": [],
+        "locks": []
+      }
+    },
+    {
+      "node_name": "Control::PatternMutate",
+      "executable": "python3",
+      "static_args": [
+        "crates/operators_lib/pattern_mutate.py"
+      ],
+      "input_mapping": {
+        "stdin_mode": "json"
+      },
+      "description": "Apply CRUD operations to assets/patterns.json",
+      "effects": {
+        "reads": [
+          "assets/patterns.json"
+        ],
+        "writes": [
+          "assets/patterns.json"
+        ],
+        "locks": [
+          "patterns"
+        ]
+      }
+    },
+    {
+      "node_name": "Event::PatternMutated",
+      "executable": "python3",
+      "static_args": [
+        "crates/operators_lib/event.py",
+        "--event",
+        "PatternMutated"
+      ],
+      "input_mapping": {
+        "stdin_mode": "json"
+      },
+      "description": "Signals that assets/patterns.json was successfully updated",
       "effects": {
         "reads": [],
         "writes": [

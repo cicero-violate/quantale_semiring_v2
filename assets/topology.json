@@ -326,6 +326,40 @@
     {
       "name": "Event::TopologyMutated",
       "type": "Event"
+    },
+    {
+      "name": "State::TopologyPlan",
+      "type": "State"
+    },
+    {
+      "name": "State::Introspect",
+      "type": "State"
+    },
+    {
+      "name": "State::OperatorPlan",
+      "type": "State"
+    },
+    {
+      "name": "Control::WriteOperator",
+      "type": "Control",
+      "action": "write_operator"
+    },
+    {
+      "name": "Event::OperatorWritten",
+      "type": "Event"
+    },
+    {
+      "name": "State::PatternPlan",
+      "type": "State"
+    },
+    {
+      "name": "Control::PatternMutate",
+      "type": "Control",
+      "action": "pattern_mutate"
+    },
+    {
+      "name": "Event::PatternMutated",
+      "type": "Event"
     }
   ],
   "transitions": [
@@ -987,15 +1021,6 @@
       "safety": 0.8
     },
     {
-      "from": "State::Plan",
-      "to": "Control::TopologyMutate",
-      "default_weight": 0.2,
-      "confidence": 0.2,
-      "cost": 0.8,
-      "safety": 0.95,
-      "policy_effect": "TopologyMutate"
-    },
-    {
       "from": "Control::TopologyMutate",
       "to": "Event::TopologyMutated",
       "default_weight": 0.97,
@@ -1012,6 +1037,105 @@
       "cost": 0.03,
       "safety": 0.98,
       "policy_effect": "BuildTopologyOverlayAfterMutate"
+    },
+    {
+      "from": "State::TopologyPlan",
+      "to": "Control::TopologyMutate",
+      "default_weight": 0.97,
+      "confidence": 0.97,
+      "cost": 0.03,
+      "safety": 0.98,
+      "policy_effect": "TopologyMutateFromPlan"
+    },
+    {
+      "from": "State::Learn",
+      "to": "State::Introspect",
+      "default_weight": 0.15,
+      "confidence": 0.15,
+      "cost": 0.85,
+      "safety": 0.95,
+      "policy_effect": "Introspect"
+    },
+    {
+      "from": "State::Introspect",
+      "to": "State::TopologyPlan",
+      "default_weight": 0.97,
+      "confidence": 0.97,
+      "cost": 0.03,
+      "safety": 0.97,
+      "policy_effect": "TopologyPlanFromIntrospect"
+    },
+    {
+      "from": "Event::TopologyMutated",
+      "to": "State::OperatorPlan",
+      "default_weight": 0.25,
+      "confidence": 0.25,
+      "cost": 0.75,
+      "safety": 0.95,
+      "policy_effect": "OperatorPlan"
+    },
+    {
+      "from": "State::OperatorPlan",
+      "to": "Control::WriteOperator",
+      "default_weight": 0.97,
+      "confidence": 0.97,
+      "cost": 0.03,
+      "safety": 0.97,
+      "policy_effect": "WriteOperator"
+    },
+    {
+      "from": "Control::WriteOperator",
+      "to": "Event::OperatorWritten",
+      "default_weight": 0.97,
+      "confidence": 0.97,
+      "cost": 0.03,
+      "safety": 0.98,
+      "policy_effect": "OperatorWritten"
+    },
+    {
+      "from": "Event::OperatorWritten",
+      "to": "Control::BuildTopologyOverlay",
+      "default_weight": 0.5,
+      "confidence": 0.5,
+      "cost": 0.5,
+      "safety": 0.97,
+      "policy_effect": "BuildOverlayAfterWrite"
+    },
+    {
+      "from": "State::Learn",
+      "to": "State::PatternPlan",
+      "default_weight": 0.12,
+      "confidence": 0.12,
+      "cost": 0.88,
+      "safety": 0.95,
+      "policy_effect": "PatternPlan"
+    },
+    {
+      "from": "State::PatternPlan",
+      "to": "Control::PatternMutate",
+      "default_weight": 0.97,
+      "confidence": 0.97,
+      "cost": 0.03,
+      "safety": 0.97,
+      "policy_effect": "PatternMutate"
+    },
+    {
+      "from": "Control::PatternMutate",
+      "to": "Event::PatternMutated",
+      "default_weight": 0.97,
+      "confidence": 0.97,
+      "cost": 0.03,
+      "safety": 0.98,
+      "policy_effect": "PatternMutated"
+    },
+    {
+      "from": "Event::PatternMutated",
+      "to": "Event::LearnUpdated",
+      "default_weight": 0.9,
+      "confidence": 0.9,
+      "cost": 0.1,
+      "safety": 0.95,
+      "policy_effect": "ResumeAfterPatternMutate"
     }
   ],
   "pages": [
