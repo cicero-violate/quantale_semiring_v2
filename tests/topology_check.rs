@@ -1,4 +1,4 @@
-use quantale_semiring_v2::{GraphTopology, TopologyInvariants, topology_check::{self, ViolationKind}};
+use quantale_semiring_v2::{GraphTopology, TopologyInvariants, ViolationKind, check};
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -7,7 +7,7 @@ fn parse(json: &str) -> GraphTopology {
 }
 
 fn violations_of_kind(topo: &GraphTopology, kind: ViolationKind) -> Vec<String> {
-    topology_check::check(topo, &TopologyInvariants::default())
+    check(topo, &TopologyInvariants::default())
         .into_iter()
         .filter(|v| v.kind == kind)
         .map(|v| v.node)
@@ -15,7 +15,7 @@ fn violations_of_kind(topo: &GraphTopology, kind: ViolationKind) -> Vec<String> 
 }
 
 fn has_violation(topo: &GraphTopology, kind: ViolationKind, node: &str) -> bool {
-    topology_check::check(topo, &TopologyInvariants::default())
+    check(topo, &TopologyInvariants::default())
         .iter()
         .any(|v| v.kind == kind && v.node == node)
 }
@@ -43,7 +43,7 @@ fn minimal_valid() -> &'static str {
 #[test]
 fn check_passes_on_valid_topology() {
     let topo = parse(minimal_valid());
-    let vs = topology_check::check(&topo, &TopologyInvariants::default());
+    let vs = check(&topo, &TopologyInvariants::default());
     assert!(vs.is_empty(), "expected no violations, got: {vs:?}");
 }
 
@@ -190,7 +190,7 @@ fn indirect_path_to_halt_is_accepted() {
             {"from":"State::A","to":"State::B",      "default_weight":0.9},
             {"from":"State::B","to":"Control::Halt", "default_weight":0.8}
         ],"pages":[]}"#);
-    assert!(topology_check::check(&topo, &TopologyInvariants::default()).is_empty());
+    assert!(check(&topo, &TopologyInvariants::default()).is_empty());
 }
 
 // ── 6. all violations returned at once ───────────────────────────────────────
@@ -224,7 +224,7 @@ fn check_reports_all_violations_not_just_first() {
 #[test]
 fn current_topology_passes_all_checks() {
     let topo = GraphTopology::default_asset().expect("bundled topology");
-    let violations = topology_check::check(&topo, &TopologyInvariants::default());
+    let violations = check(&topo, &TopologyInvariants::default());
     if !violations.is_empty() {
         for v in &violations {
             eprintln!("[topology_check] {v}");
