@@ -1050,9 +1050,9 @@
     {
       "from": "State::Learn",
       "to": "State::Introspect",
-      "default_weight": 0.35,
-      "confidence": 0.35,
-      "cost": 0.65,
+      "default_weight": 0.6,
+      "confidence": 0.6,
+      "cost": 0.4,
       "safety": 0.95,
       "policy_effect": "Introspect"
     },
@@ -1068,9 +1068,9 @@
     {
       "from": "Event::TopologyMutated",
       "to": "State::OperatorPlan",
-      "default_weight": 0.45,
-      "confidence": 0.45,
-      "cost": 0.55,
+      "default_weight": 0.65,
+      "confidence": 0.65,
+      "cost": 0.35,
       "safety": 0.95,
       "policy_effect": "OperatorPlan"
     },
