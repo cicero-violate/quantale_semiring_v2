@@ -6,9 +6,9 @@ use quantale_semiring_v2::{
     action_label, compile_pattern, compile_tensor_plan, dispatch_decision_batch_blocking,
     format_quantale_value, full_tensor_transition_edges, load_default_patterns,
     load_learned_tensor_edges, project_ready_batch_plan, runtime_check, topology_check,
-    ExecutionOutcome, ExplorationConfig, ExplorationEngine, GraphTopology,
-    LearningPolicy, Node, ProjectionBias, SystemConfig, TensorQuantaleWorld, TlogWriter,
-    TopologyInvariants, UniversalExecutor, LAYER_CONFIDENCE,
+    ExecutionOutcome, ExplorationConfig, ExplorationEngine, GraphTopology, LearningPolicy, Node,
+    ProjectionBias, SystemConfig, TensorQuantaleWorld, TlogWriter, TopologyInvariants,
+    UniversalExecutor, LAYER_CONFIDENCE,
 };
 
 fn main() {
