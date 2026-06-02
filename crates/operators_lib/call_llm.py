@@ -73,19 +73,49 @@ Example output:
 
 _BUILTIN_TEMPLATES = {
     "plan": (
-        "You are a neuro-symbolic planning engine embedded in a quantale-matrix agent loop.\n"
-        "Your output is compiled directly into GPU tensor weights, so it must be data-only JSON.\n\n"
-        "Prior execution context summary:\n{context}\n\n"
-        "Propose an ordered execution chain by emitting tensor edges that connect valid topology nodes.\n"
-        "A chain is represented only by consecutive edge objects: A -> B, B -> C, C -> D.\n"
-        "Prefer edges from the valid topology transitions list; add new edges only when the context justifies them.\n"
-        "For JIT-capable work, prefer adjacent jit_cuda execution nodes when their declared effects form a data dependency.\n"
-        "\n\nDEVELOPMENT CYCLE — propose when context shows failures, stagnant learning, or stub nodes:\n"
-        "  State::Learn -> State::Introspect  (confidence 0.3-0.5) — trigger topology self-development\n"
-        "  State::Learn -> State::PatternPlan (confidence 0.2-0.4) — evolve CKA patterns\n"
-        "Include at most one development edge per plan.\n"
-        "Do not invent node names, slot names, operators, kernels, Rust symbols, or CUDA code.\n"
-        "Do not output a separate chains object; the edge array is the structured chain.\n\n"
+        'You are a neuro-symbolic planning engine embedded in a quantale-matrix agent loop.\n'
+        'Your output is compiled directly into GPU tensor weights — data-only JSON, no prose.\n'
+        '\n'
+        'Prior execution context:\n'
+        '{context}\n'
+        '\n'
+        'Derive the primary cycle by reading the high-confidence transitions below.\n'
+        'The backbone is the sequence of highest-confidence edges — follow it and close the loop.\n'
+        '\n'
+        'PLANNING PRINCIPLES:\n'
+        '- Prefer edges already declared in "Valid topology transitions" with high confidence.\n'
+        '  The highest-confidence chain IS the primary cycle — trace it and close it.\n'
+        '- Chain edges consecutively: A->B then B->C (each "to" becomes the next "from").\n'
+        '- For JIT Execution:: or Analysis:: nodes, chain them only when slot dependencies\n'
+        "  are satisfied (each node's reads must be covered by prior writes or feed inputs).\n"
+        '- Use confidence 0.85-0.99 for well-established steps, 0.50-0.84 for speculative ones.\n'
+        '- Prefer low cost for acknowledgement/event nodes; accept higher cost for compute work.\n'
+        '- Skip stub nodes (executable=true) in the primary chain — they are no-ops.\n'
+        '\n'
+        'DEVELOPMENT CYCLE — propose when context shows failures, stubs firing, or stagnant learning:\n'
+        '  State::Learn -> State::Introspect  (confidence 0.3-0.5) — trigger topology self-development\n'
+        '  State::Learn -> State::PatternPlan (confidence 0.2-0.4) — evolve CKA execution patterns\n'
+        'At most one development edge per plan. Do not propose both in the same plan.\n'
+        '\n'
+        'Do not invent node names, slot names, operators, kernels, Rust symbols, or CUDA code.\n'
+        'Do not output a separate chains object; the edge array is the complete plan.\n'
+        + _EDGE_SCHEMA
+    ),
+    "repair": (
+        'You are a recovery subsystem for a quantale-matrix agent loop.\n'
+        'Your output is compiled directly into GPU tensor weights — data-only JSON, no prose.\n'
+        '\n'
+        'Failure context:\n'
+        '{context}\n'
+        '\n'
+        'Propose a recovery chain of tensor edges through valid topology nodes.\n'
+        '- Prefer edges with high safety values for the recovery path.\n'
+        '- Route through Control::Repair, Control::Retry, or Control::Rollback as appropriate\n'
+        '  for the failure type shown in context.\n'
+        '- For JIT-capable recovery, use adjacent execution nodes only when data dependencies\n'
+        '  are satisfied.\n'
+        '- Use high confidence for the most direct path back to normal operation.\n'
+        '- Do not invent node names, slot names, operators, kernels, Rust symbols, or CUDA code.\n'
         + _EDGE_SCHEMA
     ),
     "repair": (
@@ -100,51 +130,104 @@ _BUILTIN_TEMPLATES = {
         + _EDGE_SCHEMA
     ),
     "topology_mutate": (
-        "You are a neuro-symbolic topology architect embedded in a quantale-matrix agent loop.\n"
-        "Your output is applied directly to the live topology graph — be conservative and precise.\n\n"
-        "Diagnostic report from State::Introspect:\n{context}\n\n"
-        "Current topology nodes:\n{nodes}\n\n"
-        "Current topology transitions:\n{transitions}\n\n"
-        "Agent goal metrics:\n{goal_metrics}\n\n"
-        "Propose topology mutations that address failures and declining edges in the diagnostic report.\n"
-        "Prioritise: fixing high-failure nodes, adding missing paths, adjusting declining edge weights.\n"
-        "New operator nodes must have an operator_contract with executable=\'true\' as stub or an existing .py file.\n"
-        "Do NOT delete: Control::Halt, Control::Retry, Control::Repair, Control::GateExecution.\n"
-        "If no mutation is justified, emit an empty topology_ops array.\n\n"
-        "Node types: State, Control, Event, Execution, Analysis\n"
-        "Edge weights: default_weight, confidence, cost, safety — floats in [0.0,1.0]; cost=1-confidence baseline.\n\n"
-        "Output ONLY a JSON object — no prose, no markdown fences:\n"
-        '{{"topology_ops":[{{"op":"create_node","node":{{"name":"Namespace::Name","type":"State"}}}},{{"op":"create_edge","from":"A","to":"B","default_weight":0.5,"confidence":0.5,"cost":0.5,"safety":0.9}},{{"op":"update_edge","from":"A","to":"B","patch":{{"confidence":0.8,"cost":0.2}}}},{{"op":"delete_edge","from":"A","to":"B"}}],"operator_contracts":[{{"node_name":"Namespace::Name","executable":"true","static_args":[],"input_mapping":{{"stdin_mode":"json"}},"effects":{{"reads":[],"writes":[],"locks":[]}}}}],"reason":"one sentence"}}\n'
+        'You are a neuro-symbolic topology architect embedded in a quantale-matrix agent loop.\n'
+        'Your output is applied directly to the live topology graph — be conservative and precise.\n'
+        '\n'
+        'Diagnostic report from State::Introspect:\n'
+        '{context}\n'
+        '\n'
+        'Current topology nodes:\n'
+        '{nodes}\n'
+        '\n'
+        'Current topology transitions (sorted high-confidence first):\n'
+        '{transitions}\n'
+        '\n'
+        'Agent goal metrics:\n'
+        '{goal_metrics}\n'
+        '\n'
+        'Propose topology mutations that address failures and declining edges in the diagnostic.\n'
+        'Priority order: (1) fix high-failure nodes, (2) add missing paths, (3) tune edge weights.\n'
+        'If rollback_recommended=true in the diagnostic, emit delete ops to revert the bad change.\n'
+        '\n'
+        'NODE TYPES: State, Control, Event, Execution, Analysis\n'
+        'EDGE WEIGHTS: default_weight, confidence, cost, safety — floats [0,1]; cost = 1-confidence baseline.\n'
+        '\n'
+        'CREATING OPERATOR NODES — choose one executable type:\n'
+        '  python3   : static_args=["crates/operators_lib/script.py"], must include description\n'
+        '  true      : stub (implement later), must include description of intended behaviour\n'
+        '  jit_cuda  : add jit_body="out[i] = ...;" (C expression; in0..in2 inputs, out output)\n'
+        '               effects must declare exactly 1 write slot and 1-3 read slots\n'
+        '\n'
+        'UPGRADING STUBS: use operator_contract_ops with op="update" to change executable true->python3.\n'
+        '\n'
+        'FORBIDDEN: do not delete Control::Halt, Control::Retry, Control::Repair, Control::GateExecution.\n'
+        'If no mutation is justified, emit an empty topology_ops array.\n'
+        '\n'
+        'Output ONLY a JSON object — no prose, no markdown fences:\n'
+        '{{{{"topology_ops":[{{{{"op":"create_node","node":{{{{"name":"NS::Name","type":"State","description":"..."}}}}}}}},{{{{"op":"create_edge","from":"A","to":"B","default_weight":0.5,"confidence":0.5,"cost":0.5,"safety":0.9}}}},{{{{"op":"update_edge","from":"A","to":"B","patch":{{{{"confidence":0.8,"cost":0.2}}}}}}}},{{{{"op":"delete_edge","from":"A","to":"B"}}}}],"operator_contracts":[{{{{"node_name":"NS::Name","executable":"python3","static_args":["crates/operators_lib/x.py"],"description":"what it does","input_mapping":{{{{"stdin_mode":"json"}}}},"effects":{{{{"reads":[],"writes":[],"locks":[]}}}}}}}}],"operator_contract_ops":[{{{{"op":"update","node_name":"NS::Name","patch":{{{{"executable":"python3","static_args":["crates/operators_lib/x.py"]}}}}}}}}],"reason":"one sentence"}}}}\n'
     ),
     "operator_write": (
-        "You are a neuro-symbolic operator developer. Write a complete Python operator file.\n\n"
-        "System context (goal, architecture, existing operators, stubs):\n{system_context}\n\n"
-        "Recent context (topology mutations just applied):\n{context}\n\n"
-        "Agent goal metrics:\n{goal_metrics}\n\n"
-        "Choose the most important stub from system_context and implement it.\n"
-        "Write a complete Python operator. File goes to crates/operators_lib/<filename>.\n\n"
-        "RULES:\n"
-        "- Unwrap context envelopes from stdin: payload may arrive as {{\"context\":\"<json>\"}}\n"
-        "- Print one JSON object to stdout. Exit 0 success, 1 error.\n"
-        "- Use only Python stdlib. No third-party imports.\n"
-        "- Asset paths: pathlib.Path(__file__).resolve().parent.parent.parent / \"assets\"\n"
-        "- Module docstring: node name, what it does, input/output shape.\n"
-        "- Under 150 lines. Follow existing operator patterns from system_context.\n\n"
-        "Also emit operator_contract_ops to upgrade executable=\'true\' to python3.\n"
-        "Output ONLY a JSON object — no prose, no markdown fences:\n"
-        '{{"filename":"snake_case.py","node_name":"Namespace::Name","source":"#!/usr/bin/env python3\\n...","operator_contract_ops":[{{"op":"update","node_name":"Namespace::Name","patch":{{"executable":"python3","static_args":["crates/operators_lib/snake_case.py"],"input_mapping":{{"stdin_mode":"json"}}}}}}]}}\n'
+        'You are a neuro-symbolic operator developer. Write a complete Python operator file.\n'
+        '\n'
+        'System context (goal, architecture, existing operators, stubs needing implementation):\n'
+        '{system_context}\n'
+        '\n'
+        'Recent context (what topology mutations were just applied):\n'
+        '{context}\n'
+        '\n'
+        'Agent goal metrics:\n'
+        '{goal_metrics}\n'
+        '\n'
+        'Choose the most important unimplemented stub from the STUB OPERATORS section of\n'
+        'system_context and write a complete Python operator for it.\n'
+        '\n'
+        'OPERATOR CONTRACT:\n'
+        '- Read JSON from stdin; unwrap {{{{"context":"<json>"}}}} envelopes before reading fields.\n'
+        '- Print exactly one JSON result object to stdout on success.\n'
+        '- Exit 0 on success, exit 1 on any error (print {{{{"error":"..."}}}} to stdout).\n'
+        '- Use only Python stdlib. No third-party imports.\n'
+        '- Asset paths: _ASSET_DIR = pathlib.Path(__file__).resolve().parent.parent.parent / "assets"\n'
+        '- State paths: _STATE_DIR = pathlib.Path(__file__).resolve().parent.parent.parent / "state"\n'
+        '- Module docstring must include: node name, what it does, stdin shape, stdout shape.\n'
+        '- Under 150 lines. Follow the structure of existing operators in system_context.\n'
+        '\n'
+        'Also emit operator_contract_ops to upgrade the stub from executable=true to python3.\n'
+        'Output ONLY a JSON object — no prose, no markdown fences:\n'
+        '{{{{"filename":"snake_case.py","node_name":"Namespace::Name","source":"#!/usr/bin/env python3\\\\n...complete source...\\\\n","operator_contract_ops":[{{{{"op":"update","node_name":"Namespace::Name","patch":{{{{"executable":"python3","static_args":["crates/operators_lib/snake_case.py"],"input_mapping":{{{{"stdin_mode":"json"}}}}}}}}}}}}]}}}}\n'
     ),
     "pattern_mutate": (
-        "You are a neuro-symbolic CKA pattern architect in a quantale-matrix agent loop.\n"
-        "Patterns define seq/par/choice/star execution structures for the batch scheduler.\n\n"
-        "Prior execution context:\n{context}\n\n"
-        "Current topology nodes:\n{nodes}\n\n"
-        "Agent goal metrics:\n{goal_metrics}\n\n"
-        "Propose pattern mutations to improve batch execution. Only reference existing nodes.\n"
-        "par requires effect-independent nodes. Do not delete identity_skip_marker or blocked_marker.\n\n"
-        "Expr grammar: string | {{\"seq\":[...]}} | {{\"choice\":[...]}} | {{\"par\":[...]}} | {{\"star\":{{\"body\":{{}},\"max_unroll\":3}}}}\n\n"
-        "Output ONLY a JSON object — no prose, no markdown fences:\n"
-        '{{"pattern_ops":[{{"op":"create","pattern":{{"name":"n","expr":{{"seq":["A","B"]}},"confidence":0.9,"cost":1.0,"safety":0.9}}}},{{"op":"update","name":"x","patch":{{"confidence":0.8}}}},{{"op":"delete","name":"y"}}],"reason":"one sentence"}}\n'
+        'You are a neuro-symbolic CKA pattern architect embedded in a quantale-matrix agent loop.\n'
+        'Patterns define seq/par/choice/star execution structures compiled into the batch scheduler.\n'
+        '\n'
+        'Prior execution context:\n'
+        '{context}\n'
+        '\n'
+        'Current topology nodes:\n'
+        '{nodes}\n'
+        '\n'
+        'Agent goal metrics:\n'
+        '{goal_metrics}\n'
+        '\n'
+        'Propose pattern mutations that improve batch execution coverage or parallelism.\n'
+        'Base mutations on what the context reveals: high-visit node sequences → new seq patterns;\n'
+        'independent parallel nodes (disjoint effects) → par patterns; retry loops → star patterns.\n'
+        '\n'
+        'RULES:\n'
+        '- Only reference nodes that exist in the current topology node list.\n'
+        '- par requires effect-independent nodes (no shared reads/writes/locks).\n'
+        '- star max_unroll should be 2-5; avoid unbounded loops.\n'
+        '- Do not delete: identity_skip_marker, blocked_marker.\n'
+        '- If no pattern change is justified by the context, emit an empty pattern_ops array.\n'
+        '\n'
+        'Expr grammar:\n'
+        '  "NodeName"\n'
+        '  {{{{"seq": ["A", "B", "C"]}}}}\n'
+        '  {{{{"choice": [{{{{"seq":[...]}}}}, {{{{"seq":[...]}}}}]}}}}\n'
+        '  {{{{"par": [{{{{"seq":[...]}}}}, "NodeName"]}}}}   (only if effect-independent)\n'
+        '  {{{{"star": {{{{"body": {{{{"seq":[...]}}}}, "max_unroll": 3}}}}}}}}\n'
+        '\n'
+        'Output ONLY a JSON object — no prose, no markdown fences:\n'
+        '{{{{"pattern_ops":[{{{{"op":"create","pattern":{{{{"name":"name","expr":{{{{"seq":["A","B"]}}}},"confidence":0.9,"cost":1.0,"safety":0.9}}}}}}}},{{{{"op":"update","name":"existing","patch":{{{{"confidence":0.8}}}}}}}},{{{{"op":"delete","name":"stale"}}}}],"reason":"one sentence"}}}}\n'
     ),
 }
 
@@ -168,22 +251,19 @@ def load_valid_nodes() -> tuple[str, ...]:
 
 
 def load_transition_summary() -> str:
-    """Load legal transition declarations from topology.json."""
+    """Load topology transitions sorted by confidence descending so the LLM sees the backbone first."""
     try:
         data = load_topology()
+        edges = [e for e in data.get("transitions", []) if e.get("from") and e.get("to")]
+        edges.sort(key=lambda e: e.get("confidence", 0.0), reverse=True)
         lines = []
-        for edge in data.get("transitions", []):
-            src = edge.get("from")
-            dst = edge.get("to")
-            if not src or not dst:
-                continue
-            cost = edge.get("cost")
+        for edge in edges:
+            src        = edge["from"]
+            dst        = edge["to"]
             confidence = edge.get("confidence")
-            safety = edge.get("safety")
-            lines.append(
-                f"  {src} -> {dst} "
-                f"(confidence={confidence}, cost={cost}, safety={safety})"
-            )
+            cost       = edge.get("cost")
+            safety     = edge.get("safety")
+            lines.append(f"  {src} -> {dst} (confidence={confidence}, cost={cost}, safety={safety})")
         return "\n".join(lines) if lines else "  (no transitions declared)"
     except Exception as exc:
         sys.stderr.write(f"[call_llm] transition load failed ({TOPOLOGY_PATH}): {exc}\n")
