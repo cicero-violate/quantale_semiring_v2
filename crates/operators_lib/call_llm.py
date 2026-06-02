@@ -1,3 +1,76 @@
+#!/usr/bin/env python3
+"""External LLM operator — reads a JSON context payload from stdin, calls the
+browser-router, and writes the reply to stdout for ingestion by the agent loop.
+
+Exit codes:
+  0   success
+  1   API / HTTP error
+  127 connection failure (browser-router not reachable)
+
+Configuration (all via environment variables):
+  BROWSER_ROUTER_URL            default http://127.0.0.1:8090/v1/chat/completions
+  BROWSER_ROUTER_MODEL          default chatgpt-cdp
+  BROWSER_ROUTER_PROVIDER       default chatgpt_private
+  BROWSER_ROUTER_TARGET_URL     default https://chatgpt.com/
+  BROWSER_ROUTER_GROUP_CHAT_URL if set to a https://chatgpt.com/gg/... URL, all
+                                 requests are sent to that group chat room via the
+                                 /actions/group-chat endpoint.  The group chat URL
+                                 overrides model, provider, and target_url.
+  QUANTALE_TOPOLOGY             path to topology.json, default assets/topology.json
+  QUANTALE_OPERATORS            path to operators.json, default assets/operators.json
+  QUANTALE_TEMPLATES            path to call_llm_templates.json, default assets/call_llm_templates.json
+"""
+
+import sys
+import json
+import argparse
+import os
+import pathlib
+
+_ROUTER_BASE = os.environ.get("BROWSER_ROUTER_URL", "http://127.0.0.1:8090/v1/chat/completions")
+# Derive the base URL (scheme + host + port) from BROWSER_ROUTER_URL so that
+# the group-chat action endpoint lives on the same server.
+_ROUTER_ORIGIN = "/".join(_ROUTER_BASE.split("/")[:3])  # e.g. http://127.0.0.1:8090
+
+BROWSER_ROUTER_URL    = _ROUTER_BASE
+GROUP_CHAT_ACTION_URL = _ROUTER_ORIGIN + "/actions/group-chat"
+GROUP_CHAT_URL        = os.environ.get("BROWSER_ROUTER_GROUP_CHAT_URL", "").strip()
+MODEL                 = os.environ.get("BROWSER_ROUTER_MODEL", "chatgpt-cdp")
+BROWSER_PROVIDER      = os.environ.get("BROWSER_ROUTER_PROVIDER", "chatgpt_private")
+BROWSER_TARGET        = os.environ.get("BROWSER_ROUTER_TARGET_URL", "https://chatgpt.com/")
+ASSET_DIR             = pathlib.Path(__file__).resolve().parent.parent.parent / "assets"
+
+
+def asset_path(env_name: str, filename: str) -> pathlib.Path:
+    configured = os.environ.get(env_name)
+    return pathlib.Path(configured) if configured else ASSET_DIR / filename
+
+
+TOPOLOGY_PATH     = asset_path("QUANTALE_TOPOLOGY", "topology.json")
+OPERATORS_PATH    = asset_path("QUANTALE_OPERATORS", "operators.json")
+TEMPLATES_PATH    = asset_path("QUANTALE_TEMPLATES", "call_llm_templates.json")
+
+_EDGE_SCHEMA = """\
+Output ONLY a JSON array of tensor edge objects — no prose, no markdown fences.
+Each object must have exactly these keys:
+  "from"       : a node name from the valid set below
+  "to"         : a node name from the valid set below
+  "confidence" : a float in [0.0, 1.0] for correctness/confidence
+  "cost"       : a nonnegative float for compute/time cost
+  "safety"     : a float in [0.0, 1.0] for security/safety
+
+Valid node names:
+{nodes}
+
+Valid topology transitions:
+{transitions}
+
+Available JIT execution operators, loaded from operators.json:
+{jit_operators}
+
+Example output:
+{example_edges}"""
+
 _BUILTIN_TEMPLATES = {
     "plan": (
         "You are a neuro-symbolic planning engine embedded in a quantale-matrix agent loop.\n"
