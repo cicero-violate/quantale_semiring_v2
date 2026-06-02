@@ -11,8 +11,8 @@
 //!  20. s=⊥ with blocked=0  →  skip executor call    (enforced by decision_is_safe)
 //!  24. Control::Block executing  ⟹  blocked=1 ∨ halted=1  (BlockNodeNotBlocked)
 
-use crate::algebra::BOTTOM;
-use crate::projection::DecisionReport;
+use crate::types::BOTTOM;
+use crate::graph::DecisionReport;
 use crate::tensor::TENSOR_NODE_COUNT;
 
 /// A runtime tensor invariant violation.

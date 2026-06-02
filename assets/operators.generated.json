@@ -1,171 +1,165 @@
 {
   "operators": [
     {
-      "node_name": "Control::GateExecution",
-      "executable": "patch",
-      "static_args": [
-        "-p1",
-        "--batch"
-      ],
-      "input_mapping": {
-        "stdin_source": "diff"
-      },
       "effects": {
+        "locks": [
+          "workspace"
+        ],
         "reads": [
           "workspace.diff"
         ],
         "writes": [
           "workspace.files"
-        ],
-        "locks": [
-          "workspace"
         ]
-      }
+      },
+      "executable": "patch",
+      "input_mapping": {
+        "stdin_source": "diff"
+      },
+      "node_name": "Control::GateExecution",
+      "static_args": [
+        "-p1",
+        "--batch"
+      ]
     },
     {
-      "node_name": "State::Validate",
-      "executable": "cargo",
-      "static_args": [
-        "test",
-        "--release"
-      ],
-      "input_mapping": {
-        "stdin_source": null
-      },
       "effects": {
+        "locks": [],
         "reads": [
           "workspace.files"
         ],
         "writes": [
           "validation.report"
-        ],
-        "locks": []
-      }
+        ]
+      },
+      "executable": "cargo",
+      "input_mapping": {
+        "stdin_source": null
+      },
+      "node_name": "State::Validate",
+      "static_args": [
+        "test",
+        "--release"
+      ]
     },
     {
-      "node_name": "State::Plan",
-      "executable": "python3",
-      "static_args": [
-        "crates/operators_lib/call_llm.py",
-        "--template",
-        "plan"
-      ],
-      "input_mapping": {
-        "stdin_mode": "json"
-      },
-      "output_mode": "tensor_plan",
       "effects": {
+        "locks": [],
         "reads": [
           "task.context"
         ],
         "writes": [
           "plan.tensor"
-        ],
-        "locks": []
-      }
-    },
-    {
-      "node_name": "State::Memory",
+        ]
+      },
       "executable": "python3",
-      "static_args": [
-        "crates/operators_lib/memory.py"
-      ],
       "input_mapping": {
         "stdin_mode": "json"
       },
+      "node_name": "State::Plan",
+      "output_mode": "tensor_plan",
+      "static_args": [
+        "crates/operators_lib/call_llm.py",
+        "--template",
+        "plan"
+      ]
+    },
+    {
       "effects": {
+        "locks": [
+          "memory"
+        ],
         "reads": [
           "task.context"
         ],
         "writes": [
           "memory.store"
-        ],
-        "locks": [
-          "memory"
         ]
-      }
+      },
+      "executable": "python3",
+      "input_mapping": {
+        "stdin_mode": "json"
+      },
+      "node_name": "State::Memory",
+      "static_args": [
+        "crates/operators_lib/memory.py"
+      ]
     },
     {
-      "node_name": "Control::Repair",
-      "executable": "true",
-      "static_args": [],
-      "input_mapping": {
-        "stdin_source": null
-      },
       "effects": {
+        "locks": [],
         "reads": [
           "receipt.report"
         ],
         "writes": [
           "repair.intent"
-        ],
-        "locks": []
-      }
-    },
-    {
-      "node_name": "Control::Retry",
+        ]
+      },
       "executable": "true",
-      "static_args": [],
       "input_mapping": {
         "stdin_source": null
       },
+      "node_name": "Control::Repair",
+      "static_args": []
+    },
+    {
       "effects": {
+        "locks": [],
         "reads": [
           "receipt.report"
         ],
         "writes": [
           "retry.intent"
-        ],
-        "locks": []
-      }
-    },
-    {
-      "node_name": "State::Optimize",
+        ]
+      },
       "executable": "true",
-      "static_args": [],
       "input_mapping": {
         "stdin_source": null
       },
+      "node_name": "Control::Retry",
+      "static_args": []
+    },
+    {
       "effects": {
+        "locks": [],
         "reads": [
           "plan.tensor"
         ],
         "writes": [
           "optimized.tensor"
-        ],
-        "locks": []
-      }
-    },
-    {
-      "node_name": "State::Execute",
+        ]
+      },
       "executable": "true",
-      "static_args": [],
       "input_mapping": {
         "stdin_source": null
       },
+      "node_name": "State::Optimize",
+      "static_args": []
+    },
+    {
       "effects": {
+        "locks": [
+          "executor"
+        ],
         "reads": [
           "optimized.tensor"
         ],
         "writes": [
           "execution.report"
-        ],
-        "locks": [
-          "executor"
         ]
-      }
+      },
+      "executable": "true",
+      "input_mapping": {
+        "stdin_source": null
+      },
+      "node_name": "State::Execute",
+      "static_args": []
     },
     {
-      "node_name": "State::Learn",
-      "executable": "python3",
-      "static_args": [
-        "crates/operators_lib/learn.py"
-      ],
-      "input_mapping": {
-        "stdin_mode": "json"
-      },
-      "output_mode": "tensor_plan",
       "effects": {
+        "locks": [
+          "learning"
+        ],
         "reads": [
           "memory.store",
           "state/quantale.tlog"
@@ -173,177 +167,178 @@
         "writes": [
           "learning.tensor",
           "state/learned_edges.jsonl"
-        ],
-        "locks": [
-          "learning"
         ]
-      }
+      },
+      "executable": "python3",
+      "input_mapping": {
+        "stdin_mode": "json"
+      },
+      "node_name": "State::Learn",
+      "output_mode": "tensor_plan",
+      "static_args": [
+        "crates/operators_lib/learn.py"
+      ]
     },
     {
-      "node_name": "State::Map",
-      "executable": "true",
-      "static_args": [],
-      "input_mapping": {
-        "stdin_source": null
-      },
       "effects": {
+        "locks": [],
         "reads": [
           "task.context"
         ],
         "writes": [
           "map.candidates"
-        ],
-        "locks": []
-      }
-    },
-    {
-      "node_name": "State::Search",
+        ]
+      },
       "executable": "true",
-      "static_args": [],
       "input_mapping": {
         "stdin_source": null
       },
+      "node_name": "State::Map",
+      "static_args": []
+    },
+    {
       "effects": {
+        "locks": [],
         "reads": [
           "map.candidates"
         ],
         "writes": [
           "search.results"
-        ],
-        "locks": []
-      }
-    },
-    {
-      "node_name": "State::Parse",
+        ]
+      },
       "executable": "true",
-      "static_args": [],
       "input_mapping": {
         "stdin_source": null
       },
+      "node_name": "State::Search",
+      "static_args": []
+    },
+    {
       "effects": {
+        "locks": [],
         "reads": [
           "task.context"
         ],
         "writes": [
           "parse.tree"
-        ],
-        "locks": []
-      }
-    },
-    {
-      "node_name": "State::Score",
+        ]
+      },
       "executable": "true",
-      "static_args": [],
       "input_mapping": {
         "stdin_source": null
       },
+      "node_name": "State::Parse",
+      "static_args": []
+    },
+    {
       "effects": {
+        "locks": [],
         "reads": [
           "parse.tree"
         ],
         "writes": [
           "score.report"
-        ],
-        "locks": []
-      }
-    },
-    {
-      "node_name": "State::Goal",
+        ]
+      },
       "executable": "true",
-      "static_args": [],
       "input_mapping": {
         "stdin_source": null
       },
+      "node_name": "State::Score",
+      "static_args": []
+    },
+    {
       "effects": {
+        "locks": [],
         "reads": [
           "state.symbolic"
         ],
         "writes": [
           "state.goal.observed"
-        ],
-        "locks": []
-      }
+        ]
+      },
+      "executable": "true",
+      "input_mapping": {
+        "stdin_source": null
+      },
+      "node_name": "State::Goal",
+      "static_args": []
     },
     {
-      "node_name": "State::Input",
-      "executable": "python3",
-      "static_args": [
-        "crates/operators_lib/input.py"
-      ],
-      "input_mapping": {
-        "stdin_mode": "json"
-      },
       "effects": {
+        "locks": [],
         "reads": [
           "env.task"
         ],
         "writes": [
           "task.context"
-        ],
-        "locks": []
-      }
+        ]
+      },
+      "executable": "python3",
+      "input_mapping": {
+        "stdin_mode": "json"
+      },
+      "node_name": "State::Input",
+      "static_args": [
+        "crates/operators_lib/input.py"
+      ]
     },
     {
-      "node_name": "State::Select",
-      "executable": "true",
-      "static_args": [],
-      "input_mapping": {
-        "stdin_source": null
-      },
       "effects": {
+        "locks": [],
         "reads": [
           "state.symbolic"
         ],
         "writes": [
           "state.select.observed"
-        ],
-        "locks": []
-      }
-    },
-    {
-      "node_name": "Control::Allow",
+        ]
+      },
       "executable": "true",
-      "static_args": [],
       "input_mapping": {
         "stdin_source": null
       },
+      "node_name": "State::Select",
+      "static_args": []
+    },
+    {
       "effects": {
+        "locks": [],
         "reads": [
           "control.symbolic"
         ],
         "writes": [
           "control.allow.observed"
-        ],
-        "locks": []
-      }
-    },
-    {
-      "node_name": "Control::Block",
+        ]
+      },
       "executable": "true",
-      "static_args": [],
       "input_mapping": {
         "stdin_source": null
       },
+      "node_name": "Control::Allow",
+      "static_args": []
+    },
+    {
       "effects": {
+        "locks": [],
         "reads": [
           "control.symbolic"
         ],
         "writes": [
           "control.block.observed"
-        ],
-        "locks": []
-      }
+        ]
+      },
+      "executable": "true",
+      "input_mapping": {
+        "stdin_source": null
+      },
+      "node_name": "Control::Block",
+      "static_args": []
     },
     {
-      "node_name": "Control::Commit",
-      "executable": "python3",
-      "static_args": [
-        "crates/operators_lib/commit.py"
-      ],
-      "input_mapping": {
-        "stdin_mode": "json"
-      },
       "effects": {
+        "locks": [
+          "commit"
+        ],
         "reads": [
           "task.context",
           "execution.report",
@@ -351,475 +346,494 @@
         ],
         "writes": [
           "commit.record"
-        ],
-        "locks": [
-          "commit"
         ]
-      }
+      },
+      "executable": "python3",
+      "input_mapping": {
+        "stdin_mode": "json"
+      },
+      "node_name": "Control::Commit",
+      "static_args": [
+        "crates/operators_lib/commit.py"
+      ]
     },
     {
-      "node_name": "Control::Rollback",
-      "executable": "true",
-      "static_args": [],
-      "input_mapping": {
-        "stdin_source": null
-      },
       "effects": {
+        "locks": [],
         "reads": [
           "control.symbolic"
         ],
         "writes": [
           "control.rollback.observed"
-        ],
-        "locks": []
-      }
-    },
-    {
-      "node_name": "Control::Halt",
+        ]
+      },
       "executable": "true",
-      "static_args": [],
       "input_mapping": {
         "stdin_source": null
       },
+      "node_name": "Control::Rollback",
+      "static_args": []
+    },
+    {
       "effects": {
+        "locks": [],
         "reads": [
           "control.symbolic"
         ],
         "writes": [
           "control.halt.observed"
-        ],
-        "locks": []
-      }
-    },
-    {
-      "node_name": "Control::GateInput",
+        ]
+      },
       "executable": "true",
-      "static_args": [],
       "input_mapping": {
         "stdin_source": null
       },
+      "node_name": "Control::Halt",
+      "static_args": []
+    },
+    {
       "effects": {
+        "locks": [],
         "reads": [
           "control.symbolic"
         ],
         "writes": [
           "control.gateinput.observed"
-        ],
-        "locks": []
-      }
-    },
-    {
-      "node_name": "Control::GateReceipt",
+        ]
+      },
       "executable": "true",
-      "static_args": [],
       "input_mapping": {
         "stdin_source": null
       },
+      "node_name": "Control::GateInput",
+      "static_args": []
+    },
+    {
       "effects": {
+        "locks": [],
         "reads": [
           "control.symbolic"
         ],
         "writes": [
           "control.gatereceipt.observed"
-        ],
-        "locks": []
-      }
-    },
-    {
-      "node_name": "Control::GateMemory",
+        ]
+      },
       "executable": "true",
-      "static_args": [],
       "input_mapping": {
         "stdin_source": null
       },
+      "node_name": "Control::GateReceipt",
+      "static_args": []
+    },
+    {
       "effects": {
+        "locks": [],
         "reads": [
           "control.symbolic"
         ],
         "writes": [
           "control.gatememory.observed"
-        ],
-        "locks": []
-      }
-    },
-    {
-      "node_name": "Control::GateLearn",
+        ]
+      },
       "executable": "true",
-      "static_args": [],
       "input_mapping": {
         "stdin_source": null
       },
+      "node_name": "Control::GateMemory",
+      "static_args": []
+    },
+    {
       "effects": {
+        "locks": [],
         "reads": [
           "control.symbolic"
         ],
         "writes": [
           "control.gatelearn.observed"
-        ],
-        "locks": []
-      }
-    },
-    {
-      "node_name": "Control::ChooseBest",
+        ]
+      },
       "executable": "true",
-      "static_args": [],
       "input_mapping": {
         "stdin_source": null
       },
+      "node_name": "Control::GateLearn",
+      "static_args": []
+    },
+    {
       "effects": {
+        "locks": [],
         "reads": [
           "control.symbolic"
         ],
         "writes": [
           "control.choosebest.observed"
-        ],
-        "locks": []
-      }
+        ]
+      },
+      "executable": "true",
+      "input_mapping": {
+        "stdin_source": null
+      },
+      "node_name": "Control::ChooseBest",
+      "static_args": []
     },
     {
-      "node_name": "Event::FactArrived",
-      "executable": "python3",
-      "static_args": [
-        "crates/operators_lib/event.py",
-        "--event",
-        "FactArrived"
-      ],
-      "input_mapping": {
-        "stdin_mode": "json"
-      },
       "effects": {
+        "locks": [],
         "reads": [
           "event.symbolic"
         ],
         "writes": [
           "event.factarrived.observed"
-        ],
-        "locks": []
-      }
-    },
-    {
-      "node_name": "Event::InputAccepted",
+        ]
+      },
       "executable": "python3",
-      "static_args": [
-        "crates/operators_lib/event.py",
-        "--event",
-        "InputAccepted"
-      ],
       "input_mapping": {
         "stdin_mode": "json"
       },
+      "node_name": "Event::FactArrived",
+      "static_args": [
+        "crates/operators_lib/event.py",
+        "--event",
+        "FactArrived"
+      ]
+    },
+    {
       "effects": {
+        "locks": [],
         "reads": [
           "event.symbolic"
         ],
         "writes": [
           "event.inputaccepted.observed"
-        ],
-        "locks": []
-      }
-    },
-    {
-      "node_name": "Event::ParseOk",
+        ]
+      },
       "executable": "python3",
-      "static_args": [
-        "crates/operators_lib/event.py",
-        "--event",
-        "ParseOk"
-      ],
       "input_mapping": {
         "stdin_mode": "json"
       },
+      "node_name": "Event::InputAccepted",
+      "static_args": [
+        "crates/operators_lib/event.py",
+        "--event",
+        "InputAccepted"
+      ]
+    },
+    {
       "effects": {
+        "locks": [],
         "reads": [
           "event.symbolic"
         ],
         "writes": [
           "event.parseok.observed"
-        ],
-        "locks": []
-      }
-    },
-    {
-      "node_name": "Event::ParseErr",
+        ]
+      },
       "executable": "python3",
-      "static_args": [
-        "crates/operators_lib/event.py",
-        "--event",
-        "ParseErr"
-      ],
       "input_mapping": {
         "stdin_mode": "json"
       },
+      "node_name": "Event::ParseOk",
+      "static_args": [
+        "crates/operators_lib/event.py",
+        "--event",
+        "ParseOk"
+      ]
+    },
+    {
       "effects": {
+        "locks": [],
         "reads": [
           "event.symbolic"
         ],
         "writes": [
           "event.parseerr.observed"
-        ],
-        "locks": []
-      }
+        ]
+      },
+      "executable": "python3",
+      "input_mapping": {
+        "stdin_mode": "json"
+      },
+      "node_name": "Event::ParseErr",
+      "static_args": [
+        "crates/operators_lib/event.py",
+        "--event",
+        "ParseErr"
+      ]
     },
     {
-      "node_name": "Event::MapReady",
-      "executable": "true",
-      "static_args": [],
-      "input_mapping": {
-        "stdin_source": null
-      },
       "effects": {
+        "locks": [],
         "reads": [
           "event.symbolic"
         ],
         "writes": [
           "event.mapready.observed"
-        ],
-        "locks": []
-      }
-    },
-    {
-      "node_name": "Event::CandidateFound",
+        ]
+      },
       "executable": "true",
-      "static_args": [],
       "input_mapping": {
         "stdin_source": null
       },
+      "node_name": "Event::MapReady",
+      "static_args": []
+    },
+    {
       "effects": {
+        "locks": [],
         "reads": [
           "event.symbolic"
         ],
         "writes": [
           "event.candidatefound.observed"
-        ],
-        "locks": []
-      }
-    },
-    {
-      "node_name": "Event::ScoreReady",
+        ]
+      },
       "executable": "true",
-      "static_args": [],
       "input_mapping": {
         "stdin_source": null
       },
+      "node_name": "Event::CandidateFound",
+      "static_args": []
+    },
+    {
       "effects": {
+        "locks": [],
         "reads": [
           "event.symbolic"
         ],
         "writes": [
           "event.scoreready.observed"
-        ],
-        "locks": []
-      }
-    },
-    {
-      "node_name": "Event::TopKSelected",
+        ]
+      },
       "executable": "true",
-      "static_args": [],
       "input_mapping": {
         "stdin_source": null
       },
+      "node_name": "Event::ScoreReady",
+      "static_args": []
+    },
+    {
       "effects": {
+        "locks": [],
         "reads": [
           "event.symbolic"
         ],
         "writes": [
           "event.topkselected.observed"
-        ],
-        "locks": []
-      }
-    },
-    {
-      "node_name": "Event::PlanReady",
+        ]
+      },
       "executable": "true",
-      "static_args": [],
       "input_mapping": {
         "stdin_source": null
       },
+      "node_name": "Event::TopKSelected",
+      "static_args": []
+    },
+    {
       "effects": {
+        "locks": [],
         "reads": [
           "event.symbolic"
         ],
         "writes": [
           "event.planready.observed"
-        ],
-        "locks": []
-      }
-    },
-    {
-      "node_name": "Event::OptimizeReady",
+        ]
+      },
       "executable": "true",
-      "static_args": [],
       "input_mapping": {
         "stdin_source": null
       },
+      "node_name": "Event::PlanReady",
+      "static_args": []
+    },
+    {
       "effects": {
+        "locks": [],
         "reads": [
           "event.symbolic"
         ],
         "writes": [
           "event.optimizeready.observed"
-        ],
-        "locks": []
-      }
-    },
-    {
-      "node_name": "Event::ExecuteStarted",
+        ]
+      },
       "executable": "true",
-      "static_args": [],
       "input_mapping": {
         "stdin_source": null
       },
+      "node_name": "Event::OptimizeReady",
+      "static_args": []
+    },
+    {
       "effects": {
+        "locks": [],
         "reads": [
           "event.symbolic"
         ],
         "writes": [
           "event.executestarted.observed"
-        ],
-        "locks": []
-      }
-    },
-    {
-      "node_name": "Event::ExecuteFinished",
+        ]
+      },
       "executable": "true",
-      "static_args": [],
       "input_mapping": {
         "stdin_source": null
       },
+      "node_name": "Event::ExecuteStarted",
+      "static_args": []
+    },
+    {
       "effects": {
+        "locks": [],
         "reads": [
           "event.symbolic"
         ],
         "writes": [
           "event.executefinished.observed"
-        ],
-        "locks": []
-      }
-    },
-    {
-      "node_name": "Event::ReceiptAttached",
+        ]
+      },
       "executable": "true",
-      "static_args": [],
       "input_mapping": {
         "stdin_source": null
       },
+      "node_name": "Event::ExecuteFinished",
+      "static_args": []
+    },
+    {
       "effects": {
+        "locks": [],
         "reads": [
           "event.symbolic"
         ],
         "writes": [
           "event.receiptattached.observed"
-        ],
-        "locks": []
-      }
+        ]
+      },
+      "executable": "true",
+      "input_mapping": {
+        "stdin_source": null
+      },
+      "node_name": "Event::ReceiptAttached",
+      "static_args": []
     },
     {
-      "node_name": "Event::ReceiptAccepted",
-      "executable": "python3",
-      "static_args": [
-        "crates/operators_lib/event.py",
-        "--event",
-        "ReceiptAccepted"
-      ],
-      "input_mapping": {
-        "stdin_mode": "json"
-      },
       "effects": {
+        "locks": [],
         "reads": [
           "event.symbolic"
         ],
         "writes": [
           "event.receiptaccepted.observed"
-        ],
-        "locks": []
-      }
-    },
-    {
-      "node_name": "Event::ReceiptRejected",
+        ]
+      },
       "executable": "python3",
-      "static_args": [
-        "crates/operators_lib/event.py",
-        "--event",
-        "ReceiptRejected"
-      ],
       "input_mapping": {
         "stdin_mode": "json"
       },
+      "node_name": "Event::ReceiptAccepted",
+      "static_args": [
+        "crates/operators_lib/event.py",
+        "--event",
+        "ReceiptAccepted"
+      ]
+    },
+    {
       "effects": {
+        "locks": [],
         "reads": [
           "event.symbolic"
         ],
         "writes": [
           "event.receiptrejected.observed"
-        ],
-        "locks": []
-      }
+        ]
+      },
+      "executable": "python3",
+      "input_mapping": {
+        "stdin_mode": "json"
+      },
+      "node_name": "Event::ReceiptRejected",
+      "static_args": [
+        "crates/operators_lib/event.py",
+        "--event",
+        "ReceiptRejected"
+      ]
     },
     {
-      "node_name": "Event::HashNonzero",
-      "executable": "true",
-      "static_args": [],
-      "input_mapping": {
-        "stdin_source": null
-      },
       "effects": {
+        "locks": [],
         "reads": [
           "event.symbolic"
         ],
         "writes": [
           "event.hashnonzero.observed"
-        ],
-        "locks": []
-      }
+        ]
+      },
+      "executable": "true",
+      "input_mapping": {
+        "stdin_source": null
+      },
+      "node_name": "Event::HashNonzero",
+      "static_args": []
     },
     {
-      "node_name": "Event::MemoryWritten",
-      "executable": "python3",
-      "static_args": [
-        "crates/operators_lib/event.py",
-        "--event",
-        "MemoryWritten"
-      ],
-      "input_mapping": {
-        "stdin_mode": "json"
-      },
       "effects": {
+        "locks": [],
         "reads": [
           "event.symbolic"
         ],
         "writes": [
           "event.memorywritten.observed"
-        ],
-        "locks": []
-      }
-    },
-    {
-      "node_name": "Event::LearnUpdated",
+        ]
+      },
       "executable": "python3",
-      "static_args": [
-        "crates/operators_lib/event.py",
-        "--event",
-        "LearnUpdated"
-      ],
       "input_mapping": {
         "stdin_mode": "json"
       },
+      "node_name": "Event::MemoryWritten",
+      "static_args": [
+        "crates/operators_lib/event.py",
+        "--event",
+        "MemoryWritten"
+      ]
+    },
+    {
       "effects": {
+        "locks": [],
         "reads": [
           "event.symbolic"
         ],
         "writes": [
           "event.learnupdated.observed"
-        ],
-        "locks": []
-      }
+        ]
+      },
+      "executable": "python3",
+      "input_mapping": {
+        "stdin_mode": "json"
+      },
+      "node_name": "Event::LearnUpdated",
+      "static_args": [
+        "crates/operators_lib/event.py",
+        "--event",
+        "LearnUpdated"
+      ]
     },
     {
-      "node_name": "Execution::DynamicAlphaSignalEvaluator",
+      "effects": {
+        "locks": [],
+        "reads": [
+          "market.feed",
+          "portfolio.state",
+          "trading.signals"
+        ],
+        "writes": [
+          "execution.gpu.results"
+        ]
+      },
       "executable": "jit_cuda",
-      "static_args": [],
       "jit_body": "out[i] = tanhf(in0[i]) * in2[i] * (1.0f - fabsf(in1[i]));",
+      "node_name": "Execution::DynamicAlphaSignalEvaluator",
+      "static_args": []
+    },
+    {
       "effects": {
+        "locks": [],
         "reads": [
           "market.feed",
           "portfolio.state",
@@ -827,16 +841,16 @@
         ],
         "writes": [
           "execution.gpu.results"
-        ],
-        "locks": []
-      }
-    },
-    {
-      "node_name": "Execution::OrderBookImbalanceWeaver",
+        ]
+      },
       "executable": "jit_cuda",
-      "static_args": [],
       "jit_body": "out[i] = in2[i] * (1.0f + 0.5f * tanhf(in0[i]));",
+      "node_name": "Execution::OrderBookImbalanceWeaver",
+      "static_args": []
+    },
+    {
       "effects": {
+        "locks": [],
         "reads": [
           "market.feed",
           "portfolio.state",
@@ -844,16 +858,16 @@
         ],
         "writes": [
           "execution.gpu.results"
-        ],
-        "locks": []
-      }
-    },
-    {
-      "node_name": "Execution::PortfolioRiskConstraintFilter",
+        ]
+      },
       "executable": "jit_cuda",
-      "static_args": [],
       "jit_body": "out[i] = fmaxf(-1.0f, fminf(1.0f, in2[i] * (1.0f - fabsf(in1[i]))));",
+      "node_name": "Execution::PortfolioRiskConstraintFilter",
+      "static_args": []
+    },
+    {
       "effects": {
+        "locks": [],
         "reads": [
           "market.feed",
           "portfolio.state",
@@ -861,16 +875,16 @@
         ],
         "writes": [
           "execution.gpu.results"
-        ],
-        "locks": []
-      }
-    },
-    {
-      "node_name": "Execution::AdaptiveOptionsPricingArray",
+        ]
+      },
       "executable": "jit_cuda",
-      "static_args": [],
       "jit_body": "out[i] = expf(-fabsf(in1[i])) * fmaxf(0.0f, in0[i] + in2[i]);",
+      "node_name": "Execution::AdaptiveOptionsPricingArray",
+      "static_args": []
+    },
+    {
       "effects": {
+        "locks": [],
         "reads": [
           "market.feed",
           "portfolio.state",
@@ -878,65 +892,48 @@
         ],
         "writes": [
           "execution.gpu.results"
-        ],
-        "locks": []
-      }
-    },
-    {
-      "node_name": "Execution::HardwareTailoredFeedHandler",
+        ]
+      },
       "executable": "jit_cuda",
-      "static_args": [],
       "jit_body": "out[i] = tanhf(in0[i]) + 0.01f * in1[i] + 0.01f * in2[i];",
-      "effects": {
-        "reads": [
-          "market.feed",
-          "portfolio.state",
-          "trading.signals"
-        ],
-        "writes": [
-          "execution.gpu.results"
-        ],
-        "locks": []
-      }
+      "node_name": "Execution::HardwareTailoredFeedHandler",
+      "static_args": []
     },
     {
-      "node_name": "Execution::VectorAdd",
-      "executable": "jit_cuda",
-      "static_args": [],
-      "jit_body": "out[i] = in0[i] + in1[i];",
       "effects": {
+        "locks": [],
         "reads": [
           "math.a",
           "math.b"
         ],
         "writes": [
           "math.add_out"
-        ],
-        "locks": []
-      }
+        ]
+      },
+      "executable": "jit_cuda",
+      "jit_body": "out[i] = in0[i] + in1[i];",
+      "node_name": "Execution::VectorAdd",
+      "static_args": []
     },
     {
-      "node_name": "Execution::VectorScale",
-      "executable": "jit_cuda",
-      "static_args": [],
-      "jit_body": "out[i] = in0[i] * in1[i];",
       "effects": {
+        "locks": [],
         "reads": [
           "math.add_out",
           "math.scale"
         ],
         "writes": [
           "math.out"
-        ],
-        "locks": []
-      }
+        ]
+      },
+      "executable": "jit_cuda",
+      "jit_body": "out[i] = in0[i] * in1[i];",
+      "node_name": "Execution::VectorScale",
+      "static_args": []
     },
     {
-      "node_name": "Execution::FusedVectorAddScale",
-      "executable": "jit_cuda",
-      "static_args": [],
-      "jit_body": "out[i] = (in0[i] + in1[i]) * in2[i];",
       "effects": {
+        "locks": [],
         "reads": [
           "math.a",
           "math.b",
@@ -944,84 +941,82 @@
         ],
         "writes": [
           "math.out"
-        ],
-        "locks": []
-      }
+        ]
+      },
+      "executable": "jit_cuda",
+      "jit_body": "out[i] = (in0[i] + in1[i]) * in2[i];",
+      "node_name": "Execution::FusedVectorAddScale",
+      "static_args": []
     },
     {
-      "node_name": "State::MarketFeed",
-      "executable": "python3",
-      "static_args": [
-        "crates/operators_lib/market_feed.py"
-      ],
-      "input_mapping": {
-        "stdin_mode": "json"
-      },
       "effects": {
+        "locks": [],
         "reads": [
           "market.config"
         ],
         "writes": [
           "market.feed",
           "state/market_feed.jsonl"
-        ],
-        "locks": []
-      }
-    },
-    {
-      "node_name": "State::AnalysisPlan",
+        ]
+      },
       "executable": "python3",
-      "static_args": [
-        "crates/operators_lib/call_llm.py",
-        "--template",
-        "analysis"
-      ],
       "input_mapping": {
         "stdin_mode": "json"
       },
+      "node_name": "State::MarketFeed",
+      "static_args": [
+        "crates/operators_lib/market_feed.py"
+      ]
+    },
+    {
       "effects": {
+        "locks": [],
         "reads": [
           "market.feed",
           "analysis.config"
         ],
         "writes": [
           "analysis.plan"
-        ],
-        "locks": []
-      }
-    },
-    {
-      "node_name": "State::TradePlan",
+        ]
+      },
       "executable": "python3",
-      "static_args": [
-        "crates/operators_lib/call_llm.py",
-        "--template",
-        "trade"
-      ],
       "input_mapping": {
         "stdin_mode": "json"
       },
+      "node_name": "State::AnalysisPlan",
+      "static_args": [
+        "crates/operators_lib/call_llm.py",
+        "--template",
+        "analysis"
+      ]
+    },
+    {
       "effects": {
+        "locks": [],
         "reads": [
           "market.feed",
           "trading.policy"
         ],
         "writes": [
           "trade.decision"
-        ],
-        "locks": []
-      }
-    },
-    {
-      "node_name": "State::PaperTrade",
+        ]
+      },
       "executable": "python3",
-      "static_args": [
-        "crates/operators_lib/paper_trade.py"
-      ],
       "input_mapping": {
         "stdin_mode": "json"
       },
+      "node_name": "State::TradePlan",
+      "static_args": [
+        "crates/operators_lib/call_llm.py",
+        "--template",
+        "trade"
+      ]
+    },
+    {
       "effects": {
+        "locks": [
+          "paper_broker"
+        ],
         "reads": [
           "trade.decision",
           "market.feed",
@@ -1031,200 +1026,197 @@
           "trade.receipt",
           "state/paper_orders.jsonl",
           "state/paper_positions.json"
-        ],
-        "locks": [
-          "paper_broker"
         ]
-      }
-    },
-    {
-      "node_name": "Event::MarketFeedUpdated",
+      },
       "executable": "python3",
-      "static_args": [
-        "crates/operators_lib/event.py",
-        "--event",
-        "MarketFeedUpdated"
-      ],
       "input_mapping": {
         "stdin_mode": "json"
       },
+      "node_name": "State::PaperTrade",
+      "static_args": [
+        "crates/operators_lib/paper_trade.py"
+      ]
+    },
+    {
       "effects": {
+        "locks": [],
         "reads": [
           "event.symbolic"
         ],
         "writes": [
           "event.marketfeedupdated.observed"
-        ],
-        "locks": []
-      }
-    },
-    {
-      "node_name": "Event::AnalysisPlanReady",
+        ]
+      },
       "executable": "python3",
-      "static_args": [
-        "crates/operators_lib/event.py",
-        "--event",
-        "AnalysisPlanReady"
-      ],
       "input_mapping": {
         "stdin_mode": "json"
       },
+      "node_name": "Event::MarketFeedUpdated",
+      "static_args": [
+        "crates/operators_lib/event.py",
+        "--event",
+        "MarketFeedUpdated"
+      ]
+    },
+    {
       "effects": {
+        "locks": [],
         "reads": [
           "event.symbolic"
         ],
         "writes": [
           "event.analysisplanready.observed"
-        ],
-        "locks": []
-      }
-    },
-    {
-      "node_name": "Event::AnalysisFinished",
+        ]
+      },
       "executable": "python3",
-      "static_args": [
-        "crates/operators_lib/event.py",
-        "--event",
-        "AnalysisFinished"
-      ],
       "input_mapping": {
         "stdin_mode": "json"
       },
+      "node_name": "Event::AnalysisPlanReady",
+      "static_args": [
+        "crates/operators_lib/event.py",
+        "--event",
+        "AnalysisPlanReady"
+      ]
+    },
+    {
       "effects": {
+        "locks": [],
         "reads": [
           "event.symbolic"
         ],
         "writes": [
           "event.analysisfinished.observed"
-        ],
-        "locks": []
-      }
-    },
-    {
-      "node_name": "Event::TradeDecisionReady",
+        ]
+      },
       "executable": "python3",
-      "static_args": [
-        "crates/operators_lib/event.py",
-        "--event",
-        "TradeDecisionReady"
-      ],
       "input_mapping": {
         "stdin_mode": "json"
       },
+      "node_name": "Event::AnalysisFinished",
+      "static_args": [
+        "crates/operators_lib/event.py",
+        "--event",
+        "AnalysisFinished"
+      ]
+    },
+    {
       "effects": {
+        "locks": [],
         "reads": [
           "event.symbolic"
         ],
         "writes": [
           "event.tradedecisionready.observed"
-        ],
-        "locks": []
-      }
-    },
-    {
-      "node_name": "Event::PaperTradeFilled",
+        ]
+      },
       "executable": "python3",
-      "static_args": [
-        "crates/operators_lib/event.py",
-        "--event",
-        "PaperTradeFilled"
-      ],
       "input_mapping": {
         "stdin_mode": "json"
       },
+      "node_name": "Event::TradeDecisionReady",
+      "static_args": [
+        "crates/operators_lib/event.py",
+        "--event",
+        "TradeDecisionReady"
+      ]
+    },
+    {
       "effects": {
+        "locks": [],
         "reads": [
           "event.symbolic"
         ],
         "writes": [
           "event.papertradefilled.observed"
-        ],
-        "locks": []
-      }
-    },
-    {
-      "node_name": "Event::PaperTradeRejected",
+        ]
+      },
       "executable": "python3",
-      "static_args": [
-        "crates/operators_lib/event.py",
-        "--event",
-        "PaperTradeRejected"
-      ],
       "input_mapping": {
         "stdin_mode": "json"
       },
+      "node_name": "Event::PaperTradeFilled",
+      "static_args": [
+        "crates/operators_lib/event.py",
+        "--event",
+        "PaperTradeFilled"
+      ]
+    },
+    {
       "effects": {
+        "locks": [],
         "reads": [
           "event.symbolic"
         ],
         "writes": [
           "event.papertradereject.observed"
-        ],
-        "locks": []
-      }
+        ]
+      },
+      "executable": "python3",
+      "input_mapping": {
+        "stdin_mode": "json"
+      },
+      "node_name": "Event::PaperTradeRejected",
+      "static_args": [
+        "crates/operators_lib/event.py",
+        "--event",
+        "PaperTradeRejected"
+      ]
     },
     {
-      "node_name": "Analysis::Return1",
-      "executable": "jit_cuda",
-      "static_args": [],
-      "jit_body": "out[i] = (in0[i] - in1[i]) / (in1[i] + 1e-8f);",
       "effects": {
+        "locks": [],
         "reads": [
           "market.price",
           "market.open"
         ],
         "writes": [
           "analysis.return"
-        ],
-        "locks": []
-      }
+        ]
+      },
+      "executable": "jit_cuda",
+      "jit_body": "out[i] = (in0[i] - in1[i]) / (in1[i] + 1e-8f);",
+      "node_name": "Analysis::Return1",
+      "static_args": []
     },
     {
-      "node_name": "Analysis::Volatility",
-      "executable": "jit_cuda",
-      "static_args": [],
-      "jit_body": "out[i] = fabsf(in0[i] - in1[i]) / (in1[i] + 1e-8f);",
       "effects": {
+        "locks": [],
         "reads": [
           "market.price",
           "analysis.return"
         ],
         "writes": [
           "analysis.volatility"
-        ],
-        "locks": []
-      }
+        ]
+      },
+      "executable": "jit_cuda",
+      "jit_body": "out[i] = fabsf(in0[i] - in1[i]) / (in1[i] + 1e-8f);",
+      "node_name": "Analysis::Volatility",
+      "static_args": []
     },
     {
-      "node_name": "Analysis::SignalScore",
-      "executable": "jit_cuda",
-      "static_args": [],
-      "jit_body": "out[i] = in0[i] / (1.0f + fabsf(in1[i]));",
       "effects": {
+        "locks": [],
         "reads": [
           "analysis.return",
           "analysis.volatility"
         ],
         "writes": [
           "analysis.signal_score"
-        ],
-        "locks": []
-      }
+        ]
+      },
+      "executable": "jit_cuda",
+      "jit_body": "out[i] = in0[i] / (1.0f + fabsf(in1[i]));",
+      "node_name": "Analysis::SignalScore",
+      "static_args": []
     },
     {
-      "node_name": "Control::BuildTopologyOverlay",
-      "executable": "cargo",
-      "static_args": [
-        "run",
-        "--",
-        "topology",
-        "build-overlay"
-      ],
       "action": "build_topology_overlay",
-      "input_mapping": {
-        "stdin_mode": "json"
-      },
       "effects": {
+        "locks": [
+          "topology_assets"
+        ],
         "reads": [
           "assets/topology.json",
           "assets/operators.json",
@@ -1234,43 +1226,46 @@
         "writes": [
           "assets/topology.generated.json",
           "assets/operators.generated.json"
-        ],
-        "locks": [
-          "topology_assets"
         ]
-      }
-    },
-    {
-      "node_name": "Event::TopologyOverlayBuilt",
-      "executable": "python3",
-      "static_args": [
-        "crates/operators_lib/event.py",
-        "--event",
-        "TopologyOverlayBuilt"
-      ],
+      },
+      "executable": "cargo",
       "input_mapping": {
         "stdin_mode": "json"
       },
+      "node_name": "Control::BuildTopologyOverlay",
+      "static_args": [
+        "run",
+        "--",
+        "topology",
+        "build-overlay"
+      ]
+    },
+    {
       "effects": {
+        "locks": [],
         "reads": [
           "event.symbolic"
         ],
         "writes": [
           "event.topologyoverlaybuilt.observed"
-        ],
-        "locks": []
-      }
-    },
-    {
-      "node_name": "Control::TopologyMutate",
+        ]
+      },
       "executable": "python3",
-      "static_args": [
-        "crates/operators_lib/topology_mutate.py"
-      ],
       "input_mapping": {
         "stdin_mode": "json"
       },
+      "node_name": "Event::TopologyOverlayBuilt",
+      "static_args": [
+        "crates/operators_lib/event.py",
+        "--event",
+        "TopologyOverlayBuilt"
+      ]
+    },
+    {
       "effects": {
+        "locks": [
+          "topology"
+        ],
         "reads": [
           "topology.json",
           "operators.json"
@@ -1278,30 +1273,35 @@
         "writes": [
           "topology.json",
           "operators.json"
-        ],
-        "locks": [
-          "topology"
         ]
-      }
+      },
+      "executable": "python3",
+      "input_mapping": {
+        "stdin_mode": "json"
+      },
+      "node_name": "Control::TopologyMutate",
+      "static_args": [
+        "crates/operators_lib/topology_mutate.py"
+      ]
     },
     {
-      "node_name": "Event::TopologyMutated",
+      "effects": {
+        "locks": [],
+        "reads": [],
+        "writes": [
+          "event.log"
+        ]
+      },
       "executable": "python3",
+      "input_mapping": {
+        "stdin_mode": "json"
+      },
+      "node_name": "Event::TopologyMutated",
       "static_args": [
         "crates/operators_lib/event.py",
         "--event",
         "TopologyMutated"
-      ],
-      "input_mapping": {
-        "stdin_mode": "json"
-      },
-      "effects": {
-        "reads": [],
-        "writes": [
-          "event.log"
-        ],
-        "locks": []
-      }
+      ]
     }
   ]
 }

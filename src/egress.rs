@@ -11,7 +11,7 @@ use serde_json::Value;
 use crate::config::SystemConfig;
 #[cfg(feature = "cuda")]
 use crate::jit_kernel_fusion::{JitCache, SlotBuffers};
-use crate::receipt::ProcessReceipt;
+use crate::types::ProcessReceipt;
 use crate::topology::{GraphTopology, NodeRegistry};
 
 pub struct UniversalExecutor {
@@ -30,6 +30,20 @@ impl UniversalExecutor {
             operator_registry: config.operator_registry.clone(),
             node_registry: GraphTopology::bundled_registry()
                 .expect("bundled assets/topology.json must compile"),
+            #[cfg(feature = "cuda")]
+            jit_cache: Mutex::new(JitCache::new()),
+            #[cfg(feature = "cuda")]
+            slot_buffers: Mutex::new(SlotBuffers::default()),
+        }
+    }
+
+    pub fn from_registry(
+        operator_registry: HashMap<String, Value>,
+        node_registry: NodeRegistry,
+    ) -> Self {
+        Self {
+            operator_registry,
+            node_registry,
             #[cfg(feature = "cuda")]
             jit_cache: Mutex::new(JitCache::new()),
             #[cfg(feature = "cuda")]

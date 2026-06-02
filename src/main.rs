@@ -1,19 +1,59 @@
 use std::collections::BTreeSet;
+use std::path::PathBuf;
+use std::time::SystemTime;
 
 use serde_json::{json, Value};
 
 use quantale_semiring_v2::{
     action_label, compile_pattern, compile_tensor_plan, dispatch_decision_batch_blocking,
-    format_quantale_value, full_tensor_transition_edges, load_default_patterns,
-    load_learned_tensor_edges, project_ready_batch_plan, runtime_check, topology_check,
-    ExecutionOutcome, ExplorationConfig, ExplorationEngine, GraphTopology, LearningPolicy, Node,
-    ProjectionBias, SystemConfig, TensorQuantaleWorld, TlogWriter, TopologyInvariants,
+    format_quantale_value, load_default_patterns,
+    load_learned_tensor_edges, project_ready_batch_plan, runtime_check,
+    check, check_with_operators, format_violations, ViolationKind,
+    CompiledCkaPattern, ExecutionOutcome, ExplorationConfig, ExplorationEngine, GraphTopology,
+    LearningPolicy, Node, ProjectionBias, SystemConfig, TensorQuantaleWorld, TlogWriter,
+    TopologyInvariants, TopologyRuntime,
     UniversalExecutor, LAYER_CONFIDENCE,
 };
 
+use topology_core::build_overlay_assets;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct AssetFingerprint {
+    entries: Vec<(PathBuf, Option<(SystemTime, u64)>)>,
+}
+
+struct RuntimeEpoch {
+    id: usize,
+    fingerprint: AssetFingerprint,
+    topology: TopologyRuntime,
+    executor: UniversalExecutor,
+    tensor_edges: Vec<quantale_semiring_v2::TensorEdge>,
+    compiled_patterns: Vec<CompiledCkaPattern>,
+    world: TensorQuantaleWorld,
+    exploration_engine: ExplorationEngine,
+}
+
 fn main() {
+    let args = std::env::args().collect::<Vec<_>>();
+    if args.get(1).map(String::as_str) == Some("topology")
+        && args.get(2).map(String::as_str) == Some("build-overlay")
+    {
+        match build_overlay_assets(".") {
+            Ok(()) => {
+                println!(
+                    "wrote assets/topology.generated.json and assets/operators.generated.json"
+                );
+                std::process::exit(0);
+            }
+            Err(error) => {
+                eprintln!("[topology] build-overlay failed: {error}");
+                std::process::exit(1);
+            }
+        }
+    }
+
     // --check-topology: validate topology.json and exit without running the loop.
-    if std::env::args().any(|a| a == "--check-topology") {
+    if args.iter().any(|a| a == "--check-topology") {
         let topology = match GraphTopology::default_asset() {
             Ok(t) => t,
             Err(error) => {
@@ -22,7 +62,7 @@ fn main() {
             }
         };
         let inv = TopologyInvariants::default_asset();
-        let violations = topology_check::check(&topology, &inv);
+        let violations = check(&topology, &inv);
         if violations.is_empty() {
             println!(
                 "topology OK ({} nodes, {} transitions)",
@@ -31,14 +71,13 @@ fn main() {
             );
             std::process::exit(0);
         }
-        eprintln!("{}", topology_check::format_violations(&violations));
+        eprintln!("{}", format_violations(&violations));
         eprintln!("{} violation(s) found", violations.len());
         std::process::exit(1);
     }
 
-    let config = SystemConfig::default();
+    let mut config = SystemConfig::default();
     let projection_bias = ProjectionBias::default();
-    let invariants = TopologyInvariants::default_asset();
     let learning_policy = LearningPolicy::default_asset();
 
     let mut tlog = match TlogWriter::open(&config.tlog_path) {
@@ -49,100 +88,8 @@ fn main() {
         }
     };
 
-    let executor = UniversalExecutor::from_config(&config);
-    let mut tensor_edges = full_tensor_transition_edges();
-    if let Err(error) = tlog.append_tensor_edges("topology:tensor", &tensor_edges) {
-        eprintln!("{error}");
-        std::process::exit(1);
-    }
-
-    let topology_asset = match GraphTopology::default_asset() {
-        Ok(topology) => topology,
-        Err(error) => {
-            eprintln!("{error}");
-            std::process::exit(1);
-        }
-    };
-    let violations = topology_check::check(&topology_asset, &invariants);
-    if !violations.is_empty() {
-        eprintln!("{}", topology_check::format_violations(&violations));
-        eprintln!(
-            "topology has {} violation(s); refusing to start",
-            violations.len()
-        );
-        std::process::exit(1);
-    }
-    let topology = match topology_asset.compile() {
-        Ok(topology) => topology,
-        Err(error) => {
-            eprintln!("{error}");
-            std::process::exit(1);
-        }
-    };
-    let learned_edges = match load_learned_tensor_edges(
-        &config.learned_edges_path,
-        &topology.registry,
-        &topology.tensor_edges,
-        &learning_policy,
-    ) {
-        Ok(edges) => edges,
-        Err(error) => {
-            eprintln!("{error}");
-            std::process::exit(1);
-        }
-    };
-    if !learned_edges.is_empty() {
-        if let Err(error) = tlog.append_tensor_edges("state:learned", &learned_edges) {
-            eprintln!("{error}");
-            std::process::exit(1);
-        }
-        tensor_edges.extend(learned_edges);
-    }
-    let patterns = match load_default_patterns() {
-        Ok(patterns) => patterns,
-        Err(error) => {
-            eprintln!("{error}");
-            std::process::exit(1);
-        }
-    };
-    let mut compiled_patterns = Vec::new();
-    for pattern in &patterns.patterns {
-        let compiled = match compile_pattern(pattern, &topology, &config.operator_registry) {
-            Ok(compiled) => compiled,
-            Err(error) => {
-                eprintln!("{error}");
-                std::process::exit(1);
-            }
-        };
-        if let Err(error) = tlog.append_tensor_edges("pattern:cka", &compiled.edges) {
-            eprintln!("{error}");
-            std::process::exit(1);
-        }
-        tensor_edges.extend(compiled.edges.clone());
-        compiled_patterns.push(compiled);
-    }
-
-    let mut world = match TensorQuantaleWorld::from_tensor_edges(&tensor_edges) {
-        Ok(world) => world,
-        Err(error) => {
-            eprintln!("{error}");
-            std::process::exit(1);
-        }
-    };
-
-    let exploration_config = match ExplorationConfig::default_asset() {
-        Ok(config) => config,
-        Err(error) => {
-            eprintln!("{error}");
-            std::process::exit(1);
-        }
-    };
-    let mut exploration_engine = match ExplorationEngine::new(
-        exploration_config,
-        &topology_asset,
-        config.operator_registry.clone(),
-    ) {
-        Ok(engine) => engine,
+    let mut epoch = match build_runtime_epoch(0, &mut config, &learning_policy, &mut tlog) {
+        Ok(epoch) => epoch,
         Err(error) => {
             eprintln!("{error}");
             std::process::exit(1);
@@ -165,12 +112,36 @@ fn main() {
             break;
         }
         tick += 1;
-        if let Err(error) = world.close() {
+        if let Some(next_fingerprint) = changed_asset_fingerprint(&epoch.fingerprint) {
+            match build_runtime_epoch(epoch.id + 1, &mut config, &learning_policy, &mut tlog) {
+                Ok(next_epoch) => {
+                    println!(
+                        "[TOPOLOGY] reloaded epoch {} -> {} ({} nodes, {} transitions)",
+                        epoch.id,
+                        next_epoch.id,
+                        next_epoch.topology.document.nodes.len(),
+                        next_epoch.topology.document.transitions.len()
+                    );
+                    epoch = next_epoch;
+                    current_payload = json!({ "context": "market_analysis_loop" });
+                    consecutive_blocks = 0;
+                }
+                Err(error) => {
+                    eprintln!(
+                        "[TOPOLOGY] reload rejected; continuing epoch {}: {error}",
+                        epoch.id
+                    );
+                    epoch.fingerprint = next_fingerprint;
+                }
+            }
+        }
+
+        if let Err(error) = epoch.world.close() {
             eprintln!("{error}");
             std::process::exit(1);
         }
 
-        let exploration_candidates = match world.expand_exploration(&mut exploration_engine) {
+        let exploration_candidates = match epoch.world.expand_exploration(&mut epoch.exploration_engine) {
             Ok(candidates) => candidates,
             Err(error) => {
                 eprintln!("[WARN] exploration unavailable; falling back to CKA/frontier: {error}");
@@ -178,8 +149,8 @@ fn main() {
             }
         };
         if let Err(error) = tlog.append_exploration_seed(&json!({
-            "token_count": exploration_engine.tokens().len(),
-            "strategy_count": exploration_engine.config().strategies.len(),
+            "token_count": epoch.exploration_engine.tokens().len(),
+            "strategy_count": epoch.exploration_engine.config().strategies.len(),
         })) {
             eprintln!("{error}");
             std::process::exit(1);
@@ -191,14 +162,14 @@ fn main() {
             eprintln!("{error}");
             std::process::exit(1);
         }
-        let exploration_winner = exploration_engine.best_commit_candidate();
+        let exploration_winner = epoch.exploration_engine.best_commit_candidate();
         if let Some(candidate) = exploration_winner {
-            let commit_record = exploration_engine.commit_record(candidate);
+            let commit_record = epoch.exploration_engine.commit_record(candidate);
             if let Err(error) = tlog.append_exploration_commit(&commit_record) {
                 eprintln!("{error}");
                 std::process::exit(1);
             }
-            let decision = match world.commit_exploration_candidate(&candidate) {
+            let decision = match epoch.world.commit_exploration_candidate(&candidate) {
                 Ok(decision) => decision,
                 Err(error) => {
                     eprintln!("{error}");
@@ -209,26 +180,26 @@ fn main() {
                 eprintln!("{error}");
                 std::process::exit(1);
             }
-            exploration_engine.mark_candidate_committed(&candidate);
+            epoch.exploration_engine.mark_candidate_committed(&candidate);
             println!(
                 "exploration projection=({}->{}) first_hop={} score={} path={:?}",
-                node_name(decision.selected_src, &topology.registry),
-                node_name(decision.selected_dst, &topology.registry),
-                node_name(decision.first_hop, &topology.registry),
+                node_name(decision.selected_src, epoch.topology.registry()),
+                node_name(decision.selected_dst, epoch.topology.registry()),
+                node_name(decision.first_hop, epoch.topology.registry()),
                 format_quantale_value(decision.selected_value),
                 commit_record.path,
             );
             if decision.blocked != 0 {
                 continue;
             }
-            let Some(active_node) = Node::decode(decision.first_hop, &topology.registry) else {
+            let Some(active_node) = Node::decode(decision.first_hop, epoch.topology.registry()) else {
                 eprintln!(
                     "Invalid exploration first_hop index: {}",
                     decision.first_hop
                 );
                 break;
             };
-            let Some(active_node_name) = active_node.name(&topology.registry) else {
+            let Some(active_node_name) = active_node.name(epoch.topology.registry()) else {
                 eprintln!(
                     "Invalid exploration first_hop index: {}",
                     decision.first_hop
@@ -236,27 +207,27 @@ fn main() {
                 break;
             };
             let process_receipt =
-                executor.execute_abstract_node_blocking(active_node_name, &current_payload);
+                epoch.executor.execute_abstract_node_blocking(active_node_name, &current_payload);
             let outcome = ExecutionOutcome::from(&process_receipt);
-            world.queue_lattice_update(decision.selected_src, decision.first_hop, outcome);
-            exploration_engine.update_receipt_prior(decision.first_hop, &process_receipt);
+            epoch.world.queue_lattice_update(decision.selected_src, decision.first_hop, outcome);
+            epoch.exploration_engine.update_receipt_prior(decision.first_hop, &process_receipt);
             if let Err(error) = tlog.append_exploration_receipt(&json!({
                 "node": active_node_name,
                 "exit_code": process_receipt.exit_code,
-                "prior": exploration_engine.receipt_prior_for(decision.first_hop),
+                "prior": epoch.exploration_engine.receipt_prior_for(decision.first_hop),
             })) {
                 eprintln!("{error}");
                 std::process::exit(1);
             }
 
             if process_receipt.exit_code == 0 && !process_receipt.stdout_payload.is_empty() {
-                if executor.output_mode(active_node_name) == Some("tensor_plan") {
+                if epoch.executor.output_mode(active_node_name) == Some("tensor_plan") {
                     match compile_tensor_plan(&process_receipt.stdout_payload) {
                         Ok(plan_edges) => {
                             let plan_edges =
-                                filter_static_topology_edges(plan_edges, &topology.tensor_edges);
+                                filter_static_topology_edges(plan_edges, epoch.topology.tensor_edges());
                             if !plan_edges.is_empty() {
-                                if let Err(error) = world.embed_tensor_edges(&plan_edges) {
+                                if let Err(error) = epoch.world.embed_tensor_edges(&plan_edges) {
                                     eprintln!("{error}");
                                     std::process::exit(1);
                                 }
@@ -276,7 +247,7 @@ fn main() {
                             println!(
                                 "[WARN] Exploration tensor plan invalid ({reason}); dampening selected edge"
                             );
-                            world.queue_lattice_update(
+                            epoch.world.queue_lattice_update(
                                 decision.selected_src,
                                 decision.first_hop,
                                 ExecutionOutcome::Failure,
@@ -287,7 +258,7 @@ fn main() {
                     current_payload = json!({ "context": process_receipt.stdout_payload });
                 }
             }
-            if let Err(error) = world.drain_lattice_queue() {
+            if let Err(error) = epoch.world.drain_lattice_queue() {
                 eprintln!("{error}");
                 std::process::exit(1);
             }
@@ -302,8 +273,8 @@ fn main() {
                 consecutive_blocks += 1;
                 maybe_hard_reset_after_blocks(
                     &mut consecutive_blocks,
-                    &mut world,
-                    &tensor_edges,
+                    &mut epoch.world,
+                    &epoch.tensor_edges,
                     &mut current_payload,
                     std::time::Duration::from_millis(config.hard_reset_sleep_ms),
                     projection_bias,
@@ -311,7 +282,7 @@ fn main() {
                 continue;
             }
             consecutive_blocks = 0;
-            if let Err(error) = world.decay(config.decay_normal) {
+            if let Err(error) = epoch.world.decay(config.decay_normal) {
                 eprintln!("{error}");
                 std::process::exit(1);
             }
@@ -319,8 +290,8 @@ fn main() {
         }
 
         match project_ready_batch_plan(
-            &mut world,
-            &compiled_patterns,
+            &mut epoch.world,
+            &epoch.compiled_patterns,
             projection_bias,
             &config.operator_registry,
         ) {
@@ -333,7 +304,7 @@ fn main() {
                 let mut batch_failure_count = 0usize;
                 let mut plan_stdout = Vec::new();
                 for batch in &batch_plan.batches {
-                    if let Err(error) = world.commit_decision_batch(&batch.decisions) {
+                    if let Err(error) = epoch.world.commit_decision_batch(&batch.decisions) {
                         eprintln!("{error}");
                         std::process::exit(1);
                     }
@@ -346,16 +317,16 @@ fn main() {
                         println!(
                             "batch_step={} projection=({}->{}) first_hop={} score={} action={:?}",
                             decision.step,
-                            node_name(decision.selected_src, &topology.registry),
-                            node_name(decision.selected_dst, &topology.registry),
-                            node_name(decision.first_hop, &topology.registry),
+                            node_name(decision.selected_src, epoch.topology.registry()),
+                            node_name(decision.selected_dst, epoch.topology.registry()),
+                            node_name(decision.first_hop, epoch.topology.registry()),
                             format_quantale_value(decision.selected_value),
-                            action_label(decision.first_hop, &topology.registry),
+                            action_label(decision.first_hop, epoch.topology.registry()),
                         );
                     }
 
                     let scheduled_receipts =
-                        dispatch_decision_batch_blocking(&executor, batch, &current_payload);
+                        dispatch_decision_batch_blocking(&epoch.executor, batch, &current_payload);
                     let mut batch_stdout = Vec::new();
 
                     for scheduled in scheduled_receipts {
@@ -375,18 +346,18 @@ fn main() {
                             );
                         }
 
-                        world.queue_lattice_update(
+                        epoch.world.queue_lattice_update(
                             scheduled.decision.selected_src,
                             scheduled.decision.first_hop,
                             outcome,
                         );
 
-                        exploration_engine
+                        epoch.exploration_engine
                             .update_receipt_prior(scheduled.decision.first_hop, &scheduled.receipt);
                         if let Err(error) = tlog.append_exploration_receipt(&json!({
                             "node": active_node_name,
                             "exit_code": scheduled.receipt.exit_code,
-                            "prior": exploration_engine.receipt_prior_for(scheduled.decision.first_hop),
+                            "prior": epoch.exploration_engine.receipt_prior_for(scheduled.decision.first_hop),
                         })) {
                             eprintln!("{error}");
                             std::process::exit(1);
@@ -395,12 +366,12 @@ fn main() {
                         if scheduled.receipt.exit_code == 0
                             && !scheduled.receipt.stdout_payload.is_empty()
                         {
-                            if executor.output_mode(&active_node_name) == Some("tensor_plan") {
+                            if epoch.executor.output_mode(&active_node_name) == Some("tensor_plan") {
                                 match compile_tensor_plan(&scheduled.receipt.stdout_payload) {
                                     Ok(plan_edges) => {
                                         let plan_edges = filter_static_topology_edges(
                                             plan_edges,
-                                            &topology.tensor_edges,
+                                            epoch.topology.tensor_edges(),
                                         );
                                         if !plan_edges.is_empty() {
                                             println!(
@@ -408,7 +379,7 @@ fn main() {
                                                 plan_edges.len()
                                             );
                                             if let Err(error) =
-                                                world.embed_tensor_edges(&plan_edges)
+                                                epoch.world.embed_tensor_edges(&plan_edges)
                                             {
                                                 eprintln!("{error}");
                                                 std::process::exit(1);
@@ -426,7 +397,7 @@ fn main() {
                                         println!(
                                             "[WARN] Tensor batch plan invalid ({reason}); dampening selected edge"
                                         );
-                                        world.queue_lattice_update(
+                                        epoch.world.queue_lattice_update(
                                             scheduled.decision.selected_src,
                                             scheduled.decision.first_hop,
                                             ExecutionOutcome::Failure,
@@ -437,7 +408,7 @@ fn main() {
                             // Only pass non-tensor-plan stdout forward as
                             // context — tensor plan edges are already in the
                             // GPU world and would create nested JSON if recycled.
-                            if executor.output_mode(&active_node_name) != Some("tensor_plan") {
+                            if epoch.executor.output_mode(&active_node_name) != Some("tensor_plan") {
                                 batch_stdout.push(json!({
                                     "node": active_node_name,
                                     "stdout": scheduled.receipt.stdout_payload,
@@ -454,7 +425,7 @@ fn main() {
                         }
                     }
 
-                    if let Err(error) = world.drain_lattice_queue() {
+                    if let Err(error) = epoch.world.drain_lattice_queue() {
                         eprintln!("{error}");
                         std::process::exit(1);
                     }
@@ -468,8 +439,8 @@ fn main() {
                     consecutive_blocks += batch_failure_count;
                     maybe_hard_reset_after_blocks(
                         &mut consecutive_blocks,
-                        &mut world,
-                        &tensor_edges,
+                        &mut epoch.world,
+                        &epoch.tensor_edges,
                         &mut current_payload,
                         std::time::Duration::from_millis(config.hard_reset_sleep_ms),
                         projection_bias,
@@ -481,11 +452,11 @@ fn main() {
                     current_payload = json!({ "context": plan_stdout });
                 }
 
-                if let Err(error) = world.decay(config.decay_normal) {
+                if let Err(error) = epoch.world.decay(config.decay_normal) {
                     eprintln!("{error}");
                     std::process::exit(1);
                 }
-                let _ = world.reconstruct_projected_tensor_path(LAYER_CONFIDENCE);
+                let _ = epoch.world.reconstruct_projected_tensor_path(LAYER_CONFIDENCE);
                 continue;
             }
             Ok(None) => {}
@@ -495,7 +466,7 @@ fn main() {
             }
         }
 
-        let decision = match world.frontier_step(projection_bias) {
+        let decision = match epoch.world.frontier_step(projection_bias) {
             Ok(decision) => decision,
             Err(error) => {
                 eprintln!("{error}");
@@ -511,11 +482,11 @@ fn main() {
         println!(
             "step={} projection=({}->{}) first_hop={} score={} action={:?} halted={} blocked={}",
             decision.step,
-            node_name(decision.selected_src, &topology.registry),
-            node_name(decision.selected_dst, &topology.registry),
-            node_name(decision.first_hop, &topology.registry),
+            node_name(decision.selected_src, epoch.topology.registry()),
+            node_name(decision.selected_dst, epoch.topology.registry()),
+            node_name(decision.first_hop, epoch.topology.registry()),
             format_quantale_value(decision.selected_value),
-            action_label(decision.first_hop, &topology.registry),
+            action_label(decision.first_hop, epoch.topology.registry()),
             decision.halted,
             decision.blocked,
         );
@@ -523,13 +494,13 @@ fn main() {
         if decision.halted != 0 {
             if config.max_ticks == 0 {
                 // Continuous mode: dampen the halt edge and restart the trading cycle.
-                world.queue_lattice_update(
+                epoch.world.queue_lattice_update(
                     decision.selected_src,
                     decision.first_hop,
                     ExecutionOutcome::Failure,
                 );
-                let _ = world.drain_lattice_queue();
-                let _ = world.decay(config.decay_blocked);
+                let _ = epoch.world.drain_lattice_queue();
+                let _ = epoch.world.decay(config.decay_blocked);
                 current_payload = json!({ "context": "market_analysis_loop" });
                 if let Some(dur) = sleep_dur {
                     std::thread::sleep(dur);
@@ -545,8 +516,8 @@ fn main() {
             if consecutive_blocks >= config.hard_reset_blocks {
                 maybe_hard_reset_after_blocks(
                     &mut consecutive_blocks,
-                    &mut world,
-                    &tensor_edges,
+                    &mut epoch.world,
+                    &epoch.tensor_edges,
                     &mut current_payload,
                     std::time::Duration::from_millis(config.hard_reset_sleep_ms),
                     projection_bias,
@@ -569,11 +540,11 @@ fn main() {
 
         consecutive_blocks = 0;
 
-        let Some(active_node) = Node::decode(decision.first_hop, &topology.registry) else {
+        let Some(active_node) = Node::decode(decision.first_hop, epoch.topology.registry()) else {
             eprintln!("Invalid first_hop index: {}", decision.first_hop);
             break;
         };
-        let Some(active_node_name) = active_node.name(&topology.registry) else {
+        let Some(active_node_name) = active_node.name(epoch.topology.registry()) else {
             eprintln!("Invalid first_hop index: {}", decision.first_hop);
             break;
         };
@@ -586,7 +557,7 @@ fn main() {
         println!("[STEP] Tensor frontier advanced to node: {active_node_name}");
 
         let process_receipt =
-            executor.execute_abstract_node_blocking(active_node_name, &current_payload);
+            epoch.executor.execute_abstract_node_blocking(active_node_name, &current_payload);
         let outcome = ExecutionOutcome::from(&process_receipt);
 
         println!(
@@ -608,29 +579,29 @@ fn main() {
             }
         }
 
-        world.queue_lattice_update(decision.selected_src, decision.first_hop, outcome);
-        exploration_engine.update_receipt_prior(decision.first_hop, &process_receipt);
+        epoch.world.queue_lattice_update(decision.selected_src, decision.first_hop, outcome);
+        epoch.exploration_engine.update_receipt_prior(decision.first_hop, &process_receipt);
         if let Err(error) = tlog.append_exploration_receipt(&json!({
             "node": active_node_name,
             "exit_code": process_receipt.exit_code,
-            "prior": exploration_engine.receipt_prior_for(decision.first_hop),
+            "prior": epoch.exploration_engine.receipt_prior_for(decision.first_hop),
         })) {
             eprintln!("{error}");
             std::process::exit(1);
         }
 
         if process_receipt.exit_code == 0 && !process_receipt.stdout_payload.is_empty() {
-            if executor.output_mode(active_node_name) == Some("tensor_plan") {
+            if epoch.executor.output_mode(active_node_name) == Some("tensor_plan") {
                 match compile_tensor_plan(&process_receipt.stdout_payload) {
                     Ok(plan_edges) => {
                         let plan_edges =
-                            filter_static_topology_edges(plan_edges, &topology.tensor_edges);
+                            filter_static_topology_edges(plan_edges, epoch.topology.tensor_edges());
                         if !plan_edges.is_empty() {
                             println!(
                                 "[ALGEBRA] Tensor LLM plan: {} edge(s) → VRAM",
                                 plan_edges.len()
                             );
-                            if let Err(error) = world.embed_tensor_edges(&plan_edges) {
+                            if let Err(error) = epoch.world.embed_tensor_edges(&plan_edges) {
                                 eprintln!("{error}");
                                 std::process::exit(1);
                             }
@@ -650,7 +621,7 @@ fn main() {
                         println!(
                             "[WARN] Tensor LLM plan invalid ({reason}); dampening selected edge"
                         );
-                        world.queue_lattice_update(
+                        epoch.world.queue_lattice_update(
                             decision.selected_src,
                             decision.first_hop,
                             ExecutionOutcome::Failure,
@@ -662,12 +633,12 @@ fn main() {
             }
         }
 
-        if let Err(error) = world.drain_lattice_queue() {
+        if let Err(error) = epoch.world.drain_lattice_queue() {
             eprintln!("{error}");
             std::process::exit(1);
         }
 
-        if let Err(error) = world.decay(config.decay_normal) {
+        if let Err(error) = epoch.world.decay(config.decay_normal) {
             eprintln!("{error}");
             std::process::exit(1);
         }
@@ -681,8 +652,8 @@ fn main() {
             consecutive_blocks += 1;
             maybe_hard_reset_after_blocks(
                 &mut consecutive_blocks,
-                &mut world,
-                &tensor_edges,
+                &mut epoch.world,
+                &epoch.tensor_edges,
                 &mut current_payload,
                 std::time::Duration::from_millis(config.hard_reset_sleep_ms),
                 projection_bias,
@@ -691,7 +662,7 @@ fn main() {
         }
         consecutive_blocks = 0;
 
-        let _ = world.reconstruct_projected_tensor_path(LAYER_CONFIDENCE);
+        let _ = epoch.world.reconstruct_projected_tensor_path(LAYER_CONFIDENCE);
         if let Some(dur) = sleep_dur {
             std::thread::sleep(dur);
         }
@@ -722,6 +693,122 @@ fn filter_static_topology_edges(
         .into_iter()
         .filter(|edge| allowed.contains(&(edge.src, edge.dst)))
         .collect()
+}
+
+fn build_runtime_epoch(
+    id: usize,
+    config: &mut SystemConfig,
+    learning_policy: &LearningPolicy,
+    tlog: &mut TlogWriter,
+) -> Result<RuntimeEpoch, String> {
+    config.reload_default_operator_registry()?;
+
+    let topology = TopologyRuntime::load_checked_default().map_err(|error| error.to_string())?;
+    let invariants = TopologyInvariants::default_asset();
+    let operator_violations =
+        check_with_operators(&topology.document, &invariants, &config.operator_registry);
+    let blocking_operator_violations: Vec<_> = operator_violations
+        .into_iter()
+        .filter(|violation| violation.kind == ViolationKind::MissingOperator)
+        .collect();
+    if !blocking_operator_violations.is_empty() {
+        return Err(format!(
+            "{}\n{} operator topology violation(s) found",
+            format_violations(&blocking_operator_violations),
+            blocking_operator_violations.len()
+        ));
+    }
+
+    let executor = UniversalExecutor::from_registry(
+        config.operator_registry.clone(),
+        topology.registry().clone(),
+    );
+
+    let mut tensor_edges = topology.tensor_edges().to_vec();
+    tlog.append_tensor_edges(&format!("topology:tensor:epoch:{id}"), &tensor_edges)
+        .map_err(|error| error.to_string())?;
+
+    let learned_edges = load_learned_tensor_edges(
+        &config.learned_edges_path,
+        topology.registry(),
+        topology.tensor_edges(),
+        learning_policy,
+    )
+    .map_err(|error| error.to_string())?;
+    if !learned_edges.is_empty() {
+        tlog.append_tensor_edges(&format!("state:learned:epoch:{id}"), &learned_edges)
+            .map_err(|error| error.to_string())?;
+        tensor_edges.extend(learned_edges);
+    }
+
+    let patterns = load_default_patterns().map_err(|error| error.to_string())?;
+    let mut compiled_patterns = Vec::new();
+    for pattern in &patterns.patterns {
+        let compiled = compile_pattern(pattern, &topology.compiled, &config.operator_registry)
+            .map_err(|error| error.to_string())?;
+        tlog.append_tensor_edges(&format!("pattern:cka:epoch:{id}"), &compiled.edges)
+            .map_err(|error| error.to_string())?;
+        tensor_edges.extend(compiled.edges.clone());
+        compiled_patterns.push(compiled);
+    }
+
+    let world = TensorQuantaleWorld::from_tensor_edges(&tensor_edges)
+        .map_err(|error| error.to_string())?;
+
+    let exploration_config = ExplorationConfig::default_asset().map_err(|error| error.to_string())?;
+    let exploration_engine = ExplorationEngine::new(
+        exploration_config,
+        &topology.document,
+        config.operator_registry.clone(),
+    )
+    .map_err(|error| error.to_string())?;
+
+    Ok(RuntimeEpoch {
+        id,
+        fingerprint: current_asset_fingerprint(),
+        topology,
+        executor,
+        tensor_edges,
+        compiled_patterns,
+        world,
+        exploration_engine,
+    })
+}
+
+fn changed_asset_fingerprint(previous: &AssetFingerprint) -> Option<AssetFingerprint> {
+    let current = current_asset_fingerprint();
+    (current != *previous).then_some(current)
+}
+
+fn current_asset_fingerprint() -> AssetFingerprint {
+    AssetFingerprint {
+        entries: watched_asset_paths()
+            .into_iter()
+            .map(|path| {
+                let metadata = std::fs::metadata(&path).ok();
+                let stamp = metadata.and_then(|metadata| {
+                    metadata
+                        .modified()
+                        .ok()
+                        .map(|modified| (modified, metadata.len()))
+                });
+                (path, stamp)
+            })
+            .collect(),
+    }
+}
+
+fn watched_asset_paths() -> Vec<PathBuf> {
+    [
+        "assets/topology.generated.json",
+        "assets/topology.json",
+        "assets/operators.generated.json",
+        "assets/operators.json",
+        "assets/patterns.json",
+    ]
+    .into_iter()
+    .map(PathBuf::from)
+    .collect()
 }
 
 fn maybe_hard_reset_after_blocks(

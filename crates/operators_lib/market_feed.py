@@ -25,7 +25,7 @@ import time
 import urllib.error
 import urllib.request
 
-ASSET_DIR = pathlib.Path(__file__).resolve().parent
+ASSET_DIR = pathlib.Path(__file__).resolve().parent.parent.parent / "assets"
 STATE_DIR = pathlib.Path("state")
 MARKET_FEED_CONFIG = ASSET_DIR / "market_feed.json"
 MARKET_FEED_LOG = STATE_DIR / "market_feed.jsonl"

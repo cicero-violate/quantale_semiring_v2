@@ -10,7 +10,7 @@ use std::path::Path;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
-use crate::config::{OperatorRegistry, load_operator_registry};
+use crate::config::{OperatorRegistry, default_operators_path, load_operator_registry};
 use crate::error::CudaError;
 use crate::tensor::TensorEdge;
 use crate::topology::{CompiledTopology, GraphTopology};
@@ -106,7 +106,7 @@ pub fn compile_patterns_to_tensor_edges(
     patterns: &CkaPatternSet,
 ) -> Result<Vec<TensorEdge>, CudaError> {
     let topology = GraphTopology::default_asset()?.compile()?;
-    let operator_registry = load_operator_registry("assets/operators.json").unwrap_or_default();
+    let operator_registry = load_operator_registry(default_operators_path()).unwrap_or_default();
     let mut edges = Vec::new();
     for pattern in &patterns.patterns {
         edges.extend(compile_pattern(pattern, &topology, &operator_registry)?.edges);

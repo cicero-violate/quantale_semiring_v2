@@ -14,16 +14,14 @@ use serde::{Deserialize, Serialize};
 use crate::config::DEFAULT_BLOCK_SIZE;
 use crate::error::CudaError;
 use crate::exploration::{ExplorationCandidate, ExplorationEngine, ExplorationToken};
-use crate::node::Node;
-use crate::path::reconstruct_path_from_witness_matrix;
-use crate::projection::DecisionReport;
-use crate::receipt::ProcessReceipt;
+use crate::graph::{DecisionReport, Node, reconstruct_path_from_witness_matrix};
+use crate::types::ProcessReceipt;
 use crate::topology::{GraphTopology, NodeRegistry};
 
 pub const TENSOR_LAYER_COUNT: usize = 3;
 // Must match N in cuda/quantale_world.cu.
-// 47 original + 13 market-trading nodes (State::MarketFeed .. Analysis::SignalScore) = 60.
-pub const TENSOR_NODE_COUNT: usize = 60;
+// 47 original + 13 market-trading nodes + 2 topology command nodes = 62.
+pub const TENSOR_NODE_COUNT: usize = 62;
 pub const MATRIX_LEN: usize = TENSOR_NODE_COUNT * TENSOR_NODE_COUNT;
 pub const TENSOR_LEN: usize = TENSOR_LAYER_COUNT * MATRIX_LEN;
 pub const COST_INFINITY: f32 = 1.0e20;
@@ -922,5 +920,5 @@ pub fn tensor_start_node() -> i32 {
 }
 
 fn bundled_registry() -> Result<NodeRegistry, CudaError> {
-    GraphTopology::bundled_registry()
+    Ok(GraphTopology::bundled_registry()?)
 }

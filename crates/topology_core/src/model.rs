@@ -1,0 +1,61 @@
+use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TopologyNode {
+    pub id: usize,
+    pub name: String,
+    #[serde(rename = "type")]
+    pub node_type: String,
+    #[serde(default)]
+    pub action: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TopologyTransition {
+    pub from: String,
+    pub to: String,
+    pub default_weight: f32,
+    #[serde(default)]
+    pub confidence: Option<f32>,
+    #[serde(default)]
+    pub cost: Option<f32>,
+    #[serde(default)]
+    pub safety: Option<f32>,
+    #[serde(default)]
+    pub policy_effect: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TopologyPage {
+    pub name: String,
+    #[serde(default)]
+    pub node_names: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct GraphTopology {
+    pub matrix_name: String,
+    pub nodes: Vec<TopologyNode>,
+    pub transitions: Vec<TopologyTransition>,
+    #[serde(default)]
+    pub pages: Vec<TopologyPage>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct CompiledTopology {
+    pub matrix_name: String,
+    pub node_count: usize,
+    pub matrix_len: usize,
+    pub registry: crate::NodeRegistry,
+    pub transitions: Vec<CompiledTransition>,
+    pub pages: Vec<TopologyPage>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CompiledTransition {
+    pub src: usize,
+    pub dst: usize,
+    pub confidence: f32,
+    pub cost: f32,
+    pub safety: f32,
+}

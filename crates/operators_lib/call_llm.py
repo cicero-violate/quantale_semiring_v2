@@ -38,7 +38,7 @@ GROUP_CHAT_URL        = os.environ.get("BROWSER_ROUTER_GROUP_CHAT_URL", "").stri
 MODEL                 = os.environ.get("BROWSER_ROUTER_MODEL", "chatgpt-cdp")
 BROWSER_PROVIDER      = os.environ.get("BROWSER_ROUTER_PROVIDER", "chatgpt_private")
 BROWSER_TARGET        = os.environ.get("BROWSER_ROUTER_TARGET_URL", "https://chatgpt.com/")
-ASSET_DIR             = pathlib.Path(__file__).resolve().parent
+ASSET_DIR             = pathlib.Path(__file__).resolve().parent.parent.parent / "assets"
 
 
 def asset_path(env_name: str, filename: str) -> pathlib.Path:
@@ -216,6 +216,53 @@ def load_asset_json_str(filename: str) -> str:
         return ""
 
 
+def load_latest_market_snapshot() -> str:
+    """Return a compact price table from the most recent market_feed.jsonl entry.
+
+    Falls back to "(market feed unavailable)" if the file is absent or empty.
+    The snapshot is injected into the trade template so the LLM sees real prices
+    even when the execution context carries no fresh market data.
+    """
+    state_log = pathlib.Path("state") / "market_feed.jsonl"
+    if not state_log.exists():
+        state_log = ASSET_DIR.parent / "state" / "market_feed.jsonl"
+    last_line = ""
+    try:
+        with state_log.open() as fh:
+            for line in fh:
+                stripped = line.strip()
+                if stripped:
+                    last_line = stripped
+    except OSError:
+        return "(market feed unavailable)"
+    if not last_line:
+        return "(market feed unavailable — no entries)"
+    try:
+        obj = json.loads(last_line)
+        feed = obj.get("market_feed", {})
+        observed_at = feed.get("observed_at", "unknown time")
+        symbols = feed.get("symbols", [])
+        if not symbols:
+            return f"(market feed empty at {observed_at})"
+        lines = [f"Latest prices as of {observed_at}:"]
+        for entry in symbols:
+            sym = entry.get("symbol", "?")
+            price = entry.get("price")
+            open_ = entry.get("open")
+            high = entry.get("high")
+            low = entry.get("low")
+            change_pct = ""
+            if price is not None and open_ is not None and open_ != 0:
+                pct = (price - open_) / open_ * 100
+                change_pct = f"  change_from_open={pct:+.2f}%"
+            lines.append(
+                f"  {sym}: price={price}  open={open_}  high={high}  low={low}{change_pct}"
+            )
+        return "\n".join(lines)
+    except (json.JSONDecodeError, AttributeError):
+        return "(market feed parse error)"
+
+
 def load_jit_analysis_operator_summary(valid_nodes: tuple[str, ...]) -> str:
     """Load JIT analysis operators (Analysis:: prefix) from assets/operators.json."""
     try:
@@ -341,6 +388,7 @@ def main() -> None:
         "analysis_schema": load_asset_json_str("analysis_decision_schema.json"),
         "trading_policy": load_asset_json_str("trading_policy.json"),
         "trade_schema": load_asset_json_str("trade_decision_schema.json"),
+        "market_snapshot": load_latest_market_snapshot(),
     }
     prompt = templates[args.template].format_map(format_vars)
 

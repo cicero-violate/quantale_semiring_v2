@@ -1,9 +1,9 @@
 //! Static topology graph checker.
 //!
-//! Validates a `GraphTopology` against invariants before any tensor operations
-//! run.  Call `check()` after parsing topology.json and before creating
-//! `TensorQuantaleWorld`.  Returns every violation found; the caller decides
-//! whether to abort.
+//! Validates a `GraphTopology` against invariants before runtime execution.
+//! Call `check()` after parsing topology.json and before compiling runtime
+//! transitions. Returns every violation found; the caller decides whether to
+//! abort.
 //!
 //! Invariants enforced by `check()`
 //! ---------------------------------
@@ -32,35 +32,59 @@
 //! Phase 5 — frontier one-hot and reset assertions are in tensor.rs / main.rs.
 
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::fs;
 
-use crate::config::OperatorRegistry;
-use crate::topology::{GraphTopology, TopologyTransition};
+use serde::Deserialize;
+
+use serde_json::Value;
+
+use crate::{GraphTopology, TopologyTransition};
 
 // ── Gate dominance configuration ──────────────────────────────────────────────
 
-/// (gate, protected) pairs: every path from start to `protected` must pass
-/// through `gate`.
-///
-/// Note: ("Control::Commit", "State::Memory") is intentionally absent because
-/// the market trading path (PaperTradeFilled/PaperTradeRejected → Memory) is a
-/// legitimate bypass of the commit gate.  The receipt-chain dominance pairs
-/// below still protect the primary sequential path.
-const REQUIRED_DOMINATORS: &[(&str, &str)] = &[
-    ("State::Validate", "Control::Commit"),
-    ("Control::GateReceipt", "Event::ReceiptAccepted"),
-    ("Event::ReceiptAccepted", "Event::HashNonzero"),
-    ("Event::HashNonzero", "State::Validate"),
-];
+const DEFAULT_TOPOLOGY_INVARIANTS_JSON: &str =
+    include_str!("../assets/topology_invariants.json");
 
-/// Every path from `Event::ExecuteFinished` to `Control::Commit` must contain
-/// all of these nodes.
-const RECEIPT_CUTSET: &[&str] = &[
-    "Event::ReceiptAttached",
-    "Control::GateReceipt",
-    "Event::ReceiptAccepted",
-    "Event::HashNonzero",
-    "State::Validate",
-];
+pub type OperatorRegistry = HashMap<String, Value>;
+
+/// A (gate, protected) dominator requirement.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct DominatorPair {
+    pub gate: String,
+    pub protected: String,
+}
+
+/// Validator policy tables loaded from `assets/topology_invariants.json`.
+///
+/// Pass `&TopologyInvariants::default()` at call sites to use the embedded
+/// defaults.  Override by loading a custom file via `from_json_str`.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct TopologyInvariants {
+    pub required_dominators: Vec<DominatorPair>,
+    pub receipt_cutset: Vec<String>,
+}
+
+impl Default for TopologyInvariants {
+    fn default() -> Self {
+        serde_json::from_str(DEFAULT_TOPOLOGY_INVARIANTS_JSON)
+            .expect("embedded topology_invariants.json is valid")
+    }
+}
+
+impl TopologyInvariants {
+    pub fn from_json_str(input: &str) -> Result<Self, String> {
+        serde_json::from_str(input).map_err(|e| format!("parse topology_invariants: {e}"))
+    }
+
+    /// Try to load from `assets/topology_invariants.json`; fall back to the
+    /// embedded defaults if the file is absent or malformed.
+    pub fn default_asset() -> Self {
+        fs::read_to_string("assets/topology_invariants.json")
+            .ok()
+            .and_then(|s| Self::from_json_str(&s).ok())
+            .unwrap_or_default()
+    }
+}
 
 // ── ViolationKind ─────────────────────────────────────────────────────────────
 
@@ -167,20 +191,21 @@ impl std::fmt::Display for TopologyViolation {
 /// Run all checks (phases 1 and 3) plus the original structural checks on
 /// `topology`.  Returns every violation found; the caller decides whether to
 /// abort.  All passes run so the caller sees every problem at once.
-pub fn check(topology: &GraphTopology) -> Vec<TopologyViolation> {
+pub fn check(topology: &GraphTopology, invariants: &TopologyInvariants) -> Vec<TopologyViolation> {
     let mut violations = Vec::new();
     check_phase1(&mut violations, topology);
     check_structural(&mut violations, topology);
-    check_phase3(&mut violations, topology);
+    check_phase3(&mut violations, topology, invariants);
     violations
 }
 
 /// Run operator-binding checks (phase 2) in addition to all other checks.
 pub fn check_with_operators(
     topology: &GraphTopology,
+    invariants: &TopologyInvariants,
     operator_registry: &OperatorRegistry,
 ) -> Vec<TopologyViolation> {
-    let mut violations = check(topology);
+    let mut violations = check(topology, invariants);
     check_phase2(&mut violations, topology, operator_registry);
     violations
 }
@@ -344,15 +369,14 @@ fn check_phase1(violations: &mut Vec<TopologyViolation>, topology: &GraphTopolog
     for (&src, edges) in &by_src {
         let mut seen_tuples: HashSet<(u32, u32, u32, &str)> = HashSet::new();
         for t in edges {
-            let dw = t.default_weight.raw().to_bits();
+            let dw = t.default_weight.to_bits();
             let safety = t
                 .safety
-                .map(|s| s.raw())
-                .unwrap_or_else(|| t.default_weight.raw())
+                .unwrap_or(t.default_weight)
                 .to_bits();
             let cost = t
                 .cost
-                .unwrap_or_else(|| 1.0 - t.default_weight.raw())
+                .unwrap_or_else(|| 1.0 - t.default_weight)
                 .to_bits();
             let key = (dw, safety, cost, t.to.as_str());
             if !seen_tuples.insert(key) {
@@ -371,9 +395,9 @@ fn check_phase1(violations: &mut Vec<TopologyViolation>, topology: &GraphTopolog
 }
 
 fn check_edge_weights(violations: &mut Vec<TopologyViolation>, t: &TopologyTransition) {
-    let eff_confidence = t.confidence.map(|c| c.raw()).unwrap_or_else(|| t.default_weight.raw());
-    let eff_safety = t.safety.map(|s| s.raw()).unwrap_or_else(|| t.default_weight.raw());
-    let eff_cost = t.cost.unwrap_or_else(|| 1.0 - t.default_weight.raw());
+    let eff_confidence = t.confidence.unwrap_or(t.default_weight);
+    let eff_safety = t.safety.unwrap_or(t.default_weight);
+    let eff_cost = t.cost.unwrap_or_else(|| 1.0 - t.default_weight);
     let label = format!("'{}' → '{}'", t.from, t.to);
 
     if !valid_unit(eff_confidence) {
@@ -594,7 +618,11 @@ fn check_phase2(
 
 // ── Phase 3: dominator and cycle checks ──────────────────────────────────────
 
-fn check_phase3(violations: &mut Vec<TopologyViolation>, topology: &GraphTopology) {
+fn check_phase3(
+    violations: &mut Vec<TopologyViolation>,
+    topology: &GraphTopology,
+    invariants: &TopologyInvariants,
+) {
     if topology.nodes.is_empty() {
         return;
     }
@@ -636,7 +664,8 @@ fn check_phase3(violations: &mut Vec<TopologyViolation>, topology: &GraphTopolog
     let dom = compute_dominators(&reverse, &all_ids, 0);
 
     // Invariant 9: required gate dominance pairs
-    for &(gate_name, protected_name) in REQUIRED_DOMINATORS {
+    for pair in &invariants.required_dominators {
+        let (gate_name, protected_name) = (pair.gate.as_str(), pair.protected.as_str());
         let (Some(&gate_id), Some(&protected_id)) = (
             node_ids.get(gate_name),
             node_ids.get(protected_name),
@@ -673,6 +702,7 @@ fn check_phase3(violations: &mut Vec<TopologyViolation>, topology: &GraphTopolog
             &reverse,
             exec_fin_id,
             commit_id,
+            invariants,
         );
     }
 
@@ -692,7 +722,7 @@ fn check_phase3(violations: &mut Vec<TopologyViolation>, topology: &GraphTopolog
         .filter_map(|t| {
             let s = *node_ids.get(t.from.as_str())?;
             let d = *node_ids.get(t.to.as_str())?;
-            let cost = t.cost.unwrap_or_else(|| 1.0 - t.default_weight.raw());
+            let cost = t.cost.unwrap_or_else(|| 1.0 - t.default_weight);
             Some(((s, d), cost))
         })
         .collect();
@@ -786,6 +816,7 @@ fn check_receipt_cutset(
     reverse: &HashMap<usize, Vec<usize>>,
     exec_fin_id: usize,
     commit_id: usize,
+    invariants: &TopologyInvariants,
 ) {
     // Restrict to nodes reachable from exec_fin AND that can reach commit
     let from_exec = bfs(forward, exec_fin_id);
@@ -820,7 +851,7 @@ fn check_receipt_cutset(
         None => return,
     };
 
-    for &member in RECEIPT_CUTSET {
+    for member in invariants.receipt_cutset.iter().map(String::as_str) {
         let Some(&member_id) = node_ids.get(member) else {
             continue;
         };

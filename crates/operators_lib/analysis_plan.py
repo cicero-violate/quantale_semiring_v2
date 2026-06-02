@@ -21,11 +21,12 @@ import pathlib
 import subprocess
 import sys
 
-ASSET_DIR = pathlib.Path(__file__).resolve().parent
-TOPOLOGY_PATH = ASSET_DIR / "topology.json"
-OPERATORS_PATH = ASSET_DIR / "operators.json"
-MARKET_ANALYSIS_PATH = ASSET_DIR / "market_analysis.json"
-ANALYSIS_SCHEMA_PATH = ASSET_DIR / "analysis_decision_schema.json"
+_OPERATORS_LIB = pathlib.Path(__file__).resolve().parent
+_ASSET_DIR = _OPERATORS_LIB.parent.parent.parent / "assets"
+TOPOLOGY_PATH = _ASSET_DIR / "topology.json"
+OPERATORS_PATH = _ASSET_DIR / "operators.json"
+MARKET_ANALYSIS_PATH = _ASSET_DIR / "market_analysis.json"
+ANALYSIS_SCHEMA_PATH = _ASSET_DIR / "analysis_decision_schema.json"
 
 
 def load_topology_node_names() -> set:
@@ -78,7 +79,7 @@ def main() -> None:
     stdin_data = read_stdin_payload()
 
     result = subprocess.run(
-        [sys.executable, str(ASSET_DIR / "call_llm.py"), "--template", "analysis"],
+        [sys.executable, str(_OPERATORS_LIB / "call_llm.py"), "--template", "analysis"],
         input=stdin_data,
         capture_output=True,
         text=True,

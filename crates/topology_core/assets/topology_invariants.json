@@ -1,0 +1,15 @@
+{
+  "required_dominators": [
+    { "gate": "State::Validate",        "protected": "Control::Commit" },
+    { "gate": "Control::GateReceipt",   "protected": "Event::ReceiptAccepted" },
+    { "gate": "Event::ReceiptAccepted", "protected": "Event::HashNonzero" },
+    { "gate": "Event::HashNonzero",     "protected": "State::Validate" }
+  ],
+  "receipt_cutset": [
+    "Event::ReceiptAttached",
+    "Control::GateReceipt",
+    "Event::ReceiptAccepted",
+    "Event::HashNonzero",
+    "State::Validate"
+  ]
+}

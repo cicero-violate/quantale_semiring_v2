@@ -42,3 +42,9 @@ impl fmt::Display for CudaError {
 }
 
 impl std::error::Error for CudaError {}
+
+impl From<topology_core::TopologyError> for CudaError {
+    fn from(error: topology_core::TopologyError) -> Self {
+        Self::invalid_input(error.message)
+    }
+}

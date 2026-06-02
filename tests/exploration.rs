@@ -1,8 +1,8 @@
 use quantale_semiring_v2::{
     COST_INFINITY, ExplorationCandidate, ExplorationConfig, ExplorationEngine, GraphTopology,
     LAYER_CONFIDENCE, LAYER_COST, LAYER_SAFETY, NodeRegistry, ProcessReceipt, ProjectionBias,
-    TENSOR_LEN, TENSOR_NODE_COUNT, TensorEdge, TensorQuantaleWorld, load_operator_registry,
-    tensor_idx,
+    TENSOR_LEN, TENSOR_NODE_COUNT, TensorEdge, TensorQuantaleWorld, TopologyRuntime,
+    load_operator_registry, tensor_idx,
 };
 
 fn reg() -> NodeRegistry {
@@ -209,9 +209,8 @@ fn gpu_exploration_expands_tokens_bounded() {
 
 #[test]
 fn gpu_exploration_selects_topk_candidates() {
-    let mut world =
-        TensorQuantaleWorld::from_tensor_edges(&topology().compile().unwrap().tensor_edges)
-            .unwrap();
+    let runtime = TopologyRuntime::load_checked_default().unwrap();
+    let mut world = TensorQuantaleWorld::from_tensor_edges(runtime.tensor_edges()).unwrap();
     world.close().unwrap();
     let mut config = config();
     config.beam_width = 2;

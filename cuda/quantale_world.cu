@@ -18,8 +18,8 @@ struct DecisionReport {
     int blocked;
 };
 
-// Node universe size — must match TENSOR_NODE_COUNT in src/tensor.rs. Currently 60.
-#define N 60
+// Node universe size — must match TENSOR_NODE_COUNT in src/tensor.rs. Currently 62.
+#define N 62
 #define MATRIX_LEN (N * N)
 
 #define BOTTOM   0.0f

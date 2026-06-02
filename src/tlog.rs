@@ -9,8 +9,8 @@ use serde_json::json;
 
 use crate::batch::BatchPlan;
 use crate::exploration::ExplorationCommitRecord;
-use crate::projection::DecisionReport;
-use crate::receipt::ProcessReceipt;
+use crate::graph::DecisionReport;
+use crate::types::ProcessReceipt;
 use crate::tensor::TensorEdge;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -157,8 +157,8 @@ fn count_jsonl_records(path: &Path) -> io::Result<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::projection::DecisionReport;
-    use crate::receipt::ProcessReceipt;
+    use crate::graph::DecisionReport;
+    use crate::types::ProcessReceipt;
 
     #[test]
     fn log_step_marks_failed_receipts_as_blocked() {

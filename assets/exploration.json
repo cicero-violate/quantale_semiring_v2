@@ -14,29 +14,88 @@
     {
       "name": "fast_path",
       "start": "State::Plan",
-      "bias": {
-        "confidence": 0.70,
-        "cost": 1.50,
-        "safety": 0.80
-      }
+      "bias": { "confidence": 0.70, "cost": 1.50, "safety": 0.80 }
     },
     {
       "name": "safe_path",
       "start": "State::Validate",
-      "bias": {
-        "confidence": 0.60,
-        "cost": 0.80,
-        "safety": 1.80
-      }
+      "bias": { "confidence": 0.60, "cost": 0.80, "safety": 1.80 }
     },
     {
       "name": "repair_path",
       "start": "Control::Repair",
-      "bias": {
-        "confidence": 0.80,
-        "cost": 1.00,
-        "safety": 1.20
-      }
+      "bias": { "confidence": 0.80, "cost": 1.00, "safety": 1.20 }
     }
-  ]
+  ],
+  "receipt_policy": {
+    "exit_observations": {
+      "0":   1.0,
+      "124": -0.5
+    },
+    "default_observation": -0.25,
+    "ema_current":     0.8,
+    "ema_observation": 0.2
+  },
+  "node_features": {
+    "State::Goal":                { "novelty": 0.1, "entropy": 0.1 },
+    "State::Input":               { "novelty": 0.2, "entropy": 0.2 },
+    "State::Parse":               { "novelty": 0.3, "entropy": 0.3 },
+    "State::Map":                 { "novelty": 0.4, "entropy": 0.4 },
+    "State::Search":              { "novelty": 0.5, "entropy": 0.5 },
+    "State::Score":               { "novelty": 0.6, "entropy": 0.1 },
+    "State::Select":              { "novelty": 0.7, "entropy": 0.2 },
+    "State::Plan":                { "novelty": 0.1, "entropy": 0.3 },
+    "State::Optimize":            { "novelty": 0.2, "entropy": 0.4 },
+    "State::Execute":             { "novelty": 0.3, "entropy": 0.5 },
+    "State::Validate":            { "novelty": 0.4, "entropy": 0.1 },
+    "State::Memory":              { "novelty": 0.5, "entropy": 0.2 },
+    "State::Learn":               { "novelty": 0.6, "entropy": 0.3 },
+    "Control::Allow":             { "novelty": 0.7, "entropy": 0.4 },
+    "Control::Block":             { "novelty": 0.1, "entropy": 0.5 },
+    "Control::Retry":             { "novelty": 0.2, "entropy": 0.1 },
+    "Control::Repair":            { "novelty": 0.3, "entropy": 0.2 },
+    "Control::Commit":            { "novelty": 0.4, "entropy": 0.3 },
+    "Control::Rollback":          { "novelty": 0.5, "entropy": 0.4 },
+    "Control::Halt":              { "novelty": 0.6, "entropy": 0.5 },
+    "Control::GateInput":         { "novelty": 0.7, "entropy": 0.1 },
+    "Control::GateExecution":     { "novelty": 0.1, "entropy": 0.2 },
+    "Control::GateReceipt":       { "novelty": 0.2, "entropy": 0.3 },
+    "Control::GateMemory":        { "novelty": 0.3, "entropy": 0.4 },
+    "Control::GateLearn":         { "novelty": 0.4, "entropy": 0.5 },
+    "Control::ChooseBest":        { "novelty": 0.5, "entropy": 0.1 },
+    "Event::FactArrived":         { "novelty": 0.6, "entropy": 0.2 },
+    "Event::InputAccepted":       { "novelty": 0.7, "entropy": 0.3 },
+    "Event::ParseOk":             { "novelty": 0.1, "entropy": 0.4 },
+    "Event::ParseErr":            { "novelty": 0.2, "entropy": 0.5 },
+    "Event::MapReady":            { "novelty": 0.3, "entropy": 0.1 },
+    "Event::CandidateFound":      { "novelty": 0.4, "entropy": 0.2 },
+    "Event::ScoreReady":          { "novelty": 0.5, "entropy": 0.3 },
+    "Event::TopKSelected":        { "novelty": 0.6, "entropy": 0.4 },
+    "Event::PlanReady":           { "novelty": 0.7, "entropy": 0.5 },
+    "Event::OptimizeReady":       { "novelty": 0.1, "entropy": 0.1 },
+    "Event::ExecuteStarted":      { "novelty": 0.2, "entropy": 0.2 },
+    "Event::ExecuteFinished":     { "novelty": 0.3, "entropy": 0.3 },
+    "Event::ReceiptAttached":     { "novelty": 0.4, "entropy": 0.4 },
+    "Event::ReceiptAccepted":     { "novelty": 0.5, "entropy": 0.5 },
+    "Event::ReceiptRejected":     { "novelty": 0.6, "entropy": 0.1 },
+    "Event::HashNonzero":         { "novelty": 0.7, "entropy": 0.2 },
+    "Event::MemoryWritten":       { "novelty": 0.1, "entropy": 0.3 },
+    "Event::LearnUpdated":        { "novelty": 0.2, "entropy": 0.4 },
+    "Execution::VectorAdd":       { "novelty": 0.3, "entropy": 0.5 },
+    "Execution::VectorScale":     { "novelty": 0.4, "entropy": 0.1 },
+    "Execution::FusedVectorAddScale": { "novelty": 0.5, "entropy": 0.2 },
+    "State::MarketFeed":          { "novelty": 0.6, "entropy": 0.3 },
+    "State::AnalysisPlan":        { "novelty": 0.7, "entropy": 0.4 },
+    "State::TradePlan":           { "novelty": 0.1, "entropy": 0.5 },
+    "State::PaperTrade":          { "novelty": 0.2, "entropy": 0.1 },
+    "Event::MarketFeedUpdated":   { "novelty": 0.3, "entropy": 0.2 },
+    "Event::AnalysisPlanReady":   { "novelty": 0.4, "entropy": 0.3 },
+    "Event::AnalysisFinished":    { "novelty": 0.5, "entropy": 0.4 },
+    "Event::TradeDecisionReady":  { "novelty": 0.6, "entropy": 0.5 },
+    "Event::PaperTradeFilled":    { "novelty": 0.7, "entropy": 0.1 },
+    "Event::PaperTradeRejected":  { "novelty": 0.1, "entropy": 0.2 },
+    "Analysis::Return1":          { "novelty": 0.2, "entropy": 0.3 },
+    "Analysis::Volatility":       { "novelty": 0.3, "entropy": 0.4 },
+    "Analysis::SignalScore":       { "novelty": 0.4, "entropy": 0.5 }
+  }
 }

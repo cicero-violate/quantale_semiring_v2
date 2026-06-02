@@ -13,16 +13,51 @@ use cudarc::driver::DeviceRepr;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+
 use crate::config::OperatorRegistry;
 use crate::error::CudaError;
-use crate::node::Node;
-use crate::receipt::ProcessReceipt;
+use crate::graph::Node;
+use crate::types::ProcessReceipt;
 use crate::tensor::{
     COST_INFINITY, LAYER_CONFIDENCE, LAYER_COST, LAYER_SAFETY, ProjectionBias, tensor_idx,
 };
 use crate::topology::{GraphTopology, NodeRegistry};
 
 pub const DEFAULT_EXPLORATION_JSON: &str = include_str!("../assets/exploration.json");
+
+/// Per-exit-code observation values for the receipt EMA update rule.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ReceiptPolicy {
+    /// Map from exit code (as string) to observation value.
+    pub exit_observations: HashMap<String, f32>,
+    /// Observation value used when the exit code is not in `exit_observations`.
+    pub default_observation: f32,
+    /// Weight applied to the current EMA value each update.
+    pub ema_current: f32,
+    /// Weight applied to the new observation each update.
+    pub ema_observation: f32,
+}
+
+impl Default for ReceiptPolicy {
+    fn default() -> Self {
+        let mut exit_observations = HashMap::new();
+        exit_observations.insert("0".to_string(), 1.0_f32);
+        exit_observations.insert("124".to_string(), -0.5_f32);
+        Self {
+            exit_observations,
+            default_observation: -0.25,
+            ema_current: 0.8,
+            ema_observation: 0.2,
+        }
+    }
+}
+
+/// Novelty and entropy feature values for a single topology node.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct NodeFeatures {
+    pub novelty: f32,
+    pub entropy: f32,
+}
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ExplorationConfig {
@@ -36,12 +71,20 @@ pub struct ExplorationConfig {
     pub max_terminal_visits: usize,
     pub max_first_hop_visits: usize,
     pub strategies: Vec<ExplorationStrategy>,
+    #[serde(default)]
+    pub receipt_policy: ReceiptPolicy,
+    #[serde(default)]
+    pub node_features: HashMap<String, NodeFeatures>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 struct ExplorationConfigFile {
     engine: ExplorationEngineConfig,
     strategies: Vec<ExplorationStrategy>,
+    #[serde(default)]
+    receipt_policy: ReceiptPolicy,
+    #[serde(default)]
+    node_features: HashMap<String, NodeFeatures>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -139,6 +182,8 @@ impl ExplorationConfig {
             max_terminal_visits: file.engine.max_terminal_visits,
             max_first_hop_visits: file.engine.max_first_hop_visits,
             strategies: file.strategies,
+            receipt_policy: file.receipt_policy,
+            node_features: file.node_features,
         };
         config.validate_basic()?;
         Ok(config)
@@ -347,9 +392,9 @@ impl ExplorationEngine {
                 confidence: confidence * strategy.bias.confidence,
                 cost: tensor_cost(tensor, start, node) * strategy.bias.cost,
                 safety: safety * strategy.bias.safety,
-                novelty: novelty_for_node(node),
+                novelty: self.novelty_for_node(node),
                 receipt_prior: self.receipt_prior_for(node),
-                entropy: entropy_for_node(node),
+                entropy: self.entropy_for_node(node),
                 parent: -1,
             });
         }
@@ -436,17 +481,34 @@ impl ExplorationEngine {
 
     pub fn update_receipt_prior(&mut self, node: i32, receipt: &ProcessReceipt) {
         let current = self.receipt_prior_for(node);
-        let observation = match receipt.exit_code {
-            0 => 1.0,
-            124 => -0.5,
-            _ => -0.25,
-        };
-        let updated = (current * 0.8) + (observation * 0.2);
+        let policy = &self.config.receipt_policy;
+        let observation = policy
+            .exit_observations
+            .get(&receipt.exit_code.to_string())
+            .copied()
+            .unwrap_or(policy.default_observation);
+        let updated = (current * policy.ema_current) + (observation * policy.ema_observation);
         self.receipt_priors.insert(node, updated.clamp(-1.0, 1.0));
     }
 
     pub fn receipt_prior_for(&self, node: i32) -> f32 {
         self.receipt_priors.get(&node).copied().unwrap_or(0.0)
+    }
+
+    fn novelty_for_node(&self, node: i32) -> f32 {
+        let name = self.node_name(node);
+        if let Some(features) = self.config.node_features.get(&name) {
+            return features.novelty;
+        }
+        ((node.rem_euclid(7) + 1) as f32) / 10.0
+    }
+
+    fn entropy_for_node(&self, node: i32) -> f32 {
+        let name = self.node_name(node);
+        if let Some(features) = self.config.node_features.get(&name) {
+            return features.entropy;
+        }
+        ((node.rem_euclid(5) + 1) as f32) / 10.0
     }
 
     fn node_id_from_name(&self, name: &str) -> Result<i32, CudaError> {
@@ -496,13 +558,4 @@ fn tensor_cost(tensor: &[f32], src: i32, dst: i32) -> f32 {
     } else {
         COST_INFINITY
     }
-}
-
-fn novelty_for_node(node: i32) -> f32 {
-    // Stable deterministic novelty proxy until CUDA frontier heat is wired in.
-    ((node.rem_euclid(7) + 1) as f32) / 10.0
-}
-
-fn entropy_for_node(node: i32) -> f32 {
-    ((node.rem_euclid(5) + 1) as f32) / 10.0
 }

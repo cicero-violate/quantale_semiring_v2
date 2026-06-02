@@ -306,6 +306,26 @@
       "id": 59,
       "name": "Analysis::SignalScore",
       "type": "Execution"
+    },
+    {
+      "id": 60,
+      "name": "Control::BuildTopologyOverlay",
+      "type": "Control",
+      "action": "build_topology_overlay"
+    },
+    {
+      "id": 61,
+      "name": "Event::TopologyOverlayBuilt",
+      "type": "Event"
+    },
+    {
+      "name": "Control::TopologyMutate",
+      "type": "Control",
+      "action": "topology_mutate"
+    },
+    {
+      "name": "Event::TopologyMutated",
+      "type": "Event"
     }
   ],
   "transitions": [
@@ -706,22 +726,49 @@
       "safety": 0.91
     },
     {
+      "from": "State::Learn",
+      "to": "Control::BuildTopologyOverlay",
+      "default_weight": 0.34,
+      "policy_effect": "BuildTopologyOverlay",
+      "confidence": 0.34,
+      "cost": 0.66,
+      "safety": 0.95
+    },
+    {
+      "from": "Control::BuildTopologyOverlay",
+      "to": "Event::TopologyOverlayBuilt",
+      "default_weight": 0.97,
+      "policy_effect": "TopologyOverlayBuilt",
+      "confidence": 0.97,
+      "cost": 0.03,
+      "safety": 0.98
+    },
+    {
+      "from": "Event::TopologyOverlayBuilt",
+      "to": "Event::LearnUpdated",
+      "default_weight": 0.9,
+      "policy_effect": "ResumeAfterTopologyOverlayBuild",
+      "confidence": 0.9,
+      "cost": 0.1,
+      "safety": 0.95
+    },
+    {
       "from": "Control::Block",
       "to": "State::Input",
-      "default_weight": 0.30,
+      "default_weight": 0.3,
       "policy_effect": "RecoverFromBlock",
-      "confidence": 0.30,
-      "cost": 0.70,
-      "safety": 0.30
+      "confidence": 0.3,
+      "cost": 0.7,
+      "safety": 0.3
     },
     {
       "from": "Event::LearnUpdated",
       "to": "Control::Halt",
-      "default_weight": 0.70,
+      "default_weight": 0.7,
       "policy_effect": "Halt",
-      "confidence": 0.70,
-      "cost": 0.30,
-      "safety": 0.70
+      "confidence": 0.7,
+      "cost": 0.3,
+      "safety": 0.7
     },
     {
       "from": "Event::LearnUpdated",
@@ -735,20 +782,20 @@
     {
       "from": "State::Execute",
       "to": "Execution::VectorAdd",
-      "default_weight": 0.80,
+      "default_weight": 0.8,
       "policy_effect": "DispatchVectorAdd",
-      "confidence": 0.80,
+      "confidence": 0.8,
       "cost": 1.5,
-      "safety": 0.80
+      "safety": 0.8
     },
     {
       "from": "State::Execute",
       "to": "Execution::VectorScale",
-      "default_weight": 0.80,
+      "default_weight": 0.8,
       "policy_effect": "DispatchVectorScale",
-      "confidence": 0.80,
+      "confidence": 0.8,
       "cost": 1.5,
-      "safety": 0.80
+      "safety": 0.8
     },
     {
       "from": "State::Execute",
@@ -784,7 +831,7 @@
       "policy_effect": "GateAfterFusedVectorAddScale",
       "confidence": 0.92,
       "cost": 0.6,
-      "safety": 0.90
+      "safety": 0.9
     },
     {
       "from": "State::Input",
@@ -834,20 +881,20 @@
     {
       "from": "Analysis::Return1",
       "to": "Analysis::Volatility",
-      "default_weight": 0.90,
+      "default_weight": 0.9,
       "policy_effect": "ChainReturn1ToVolatility",
-      "confidence": 0.90,
+      "confidence": 0.9,
       "cost": 1.0,
-      "safety": 0.90
+      "safety": 0.9
     },
     {
       "from": "Analysis::Volatility",
       "to": "Analysis::SignalScore",
-      "default_weight": 0.90,
+      "default_weight": 0.9,
       "policy_effect": "ChainVolatilityToSignalScore",
-      "confidence": 0.90,
+      "confidence": 0.9,
       "cost": 1.0,
-      "safety": 0.90
+      "safety": 0.9
     },
     {
       "from": "Analysis::SignalScore",
@@ -861,11 +908,11 @@
     {
       "from": "State::AnalysisPlan",
       "to": "Event::AnalysisFinished",
-      "default_weight": 0.60,
+      "default_weight": 0.6,
       "policy_effect": "SkipAnalysisChain",
-      "confidence": 0.60,
-      "cost": 0.40,
-      "safety": 0.60
+      "confidence": 0.6,
+      "cost": 0.4,
+      "safety": 0.6
     },
     {
       "from": "Event::AnalysisFinished",
@@ -915,11 +962,11 @@
     {
       "from": "State::PaperTrade",
       "to": "Event::PaperTradeRejected",
-      "default_weight": 0.10,
+      "default_weight": 0.1,
       "policy_effect": "PaperTradeRejected",
-      "confidence": 0.10,
-      "cost": 0.90,
-      "safety": 0.10
+      "confidence": 0.1,
+      "cost": 0.9,
+      "safety": 0.1
     },
     {
       "from": "Event::PaperTradeFilled",
@@ -933,11 +980,38 @@
     {
       "from": "Event::PaperTradeRejected",
       "to": "State::Memory",
-      "default_weight": 0.80,
+      "default_weight": 0.8,
       "policy_effect": "MemoryAfterRejection",
-      "confidence": 0.80,
-      "cost": 0.20,
-      "safety": 0.80
+      "confidence": 0.8,
+      "cost": 0.2,
+      "safety": 0.8
+    },
+    {
+      "from": "State::Plan",
+      "to": "Control::TopologyMutate",
+      "default_weight": 0.2,
+      "confidence": 0.2,
+      "cost": 0.8,
+      "safety": 0.95,
+      "policy_effect": "TopologyMutate"
+    },
+    {
+      "from": "Control::TopologyMutate",
+      "to": "Event::TopologyMutated",
+      "default_weight": 0.97,
+      "confidence": 0.97,
+      "cost": 0.03,
+      "safety": 0.98,
+      "policy_effect": "TopologyMutated"
+    },
+    {
+      "from": "Event::TopologyMutated",
+      "to": "Control::BuildTopologyOverlay",
+      "default_weight": 0.97,
+      "confidence": 0.97,
+      "cost": 0.03,
+      "safety": 0.98,
+      "policy_effect": "BuildTopologyOverlayAfterMutate"
     }
   ],
   "pages": [
@@ -1000,7 +1074,9 @@
         "Event::PaperTradeRejected",
         "Analysis::Return1",
         "Analysis::Volatility",
-        "Analysis::SignalScore"
+        "Analysis::SignalScore",
+        "Control::BuildTopologyOverlay",
+        "Event::TopologyOverlayBuilt"
       ]
     }
   ]

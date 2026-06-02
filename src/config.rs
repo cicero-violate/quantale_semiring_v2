@@ -33,11 +33,19 @@ pub struct SystemConfig {
     pub max_ticks: usize,
     /// Milliseconds to sleep after each tick. 0 means no sleep.
     pub tick_sleep_ms: u64,
+    /// Decay factor applied each normal (unblocked) tick.
+    pub decay_normal: f32,
+    /// Decay factor applied when the current tick is blocked or halted.
+    pub decay_blocked: f32,
+    /// Consecutive blocked/failed steps before a hard reset fires.
+    pub hard_reset_blocks: usize,
+    /// Milliseconds to sleep during a hard reset.
+    pub hard_reset_sleep_ms: u64,
 }
 
 impl Default for SystemConfig {
     fn default() -> Self {
-        let operators_path = PathBuf::from("assets/operators.json");
+        let operators_path = default_operators_path();
         let operator_registry = load_operator_registry(&operators_path)
             .or_else(|_| parse_operator_registry_str(DEFAULT_OPERATORS_JSON))
             .unwrap_or_default();
@@ -56,7 +64,20 @@ impl Default for SystemConfig {
             ingress_capacity_hint: 1024,
             max_ticks: max_ticks_from_env(),
             tick_sleep_ms: tick_sleep_ms_from_env(),
+            decay_normal: 0.995,
+            decay_blocked: 0.97,
+            hard_reset_blocks: 3,
+            hard_reset_sleep_ms: 200,
         }
+    }
+}
+
+pub fn default_operators_path() -> PathBuf {
+    let generated = PathBuf::from("assets/operators.generated.json");
+    if generated.exists() {
+        generated
+    } else {
+        PathBuf::from("assets/operators.json")
     }
 }
 
@@ -80,6 +101,11 @@ impl SystemConfig {
     pub fn reload_operator_registry(&mut self) -> Result<(), String> {
         self.operator_registry = load_operator_registry(&self.operators_path)?;
         Ok(())
+    }
+
+    pub fn reload_default_operator_registry(&mut self) -> Result<(), String> {
+        self.operators_path = default_operators_path();
+        self.reload_operator_registry()
     }
 
     pub fn validate(&self) -> Result<(), String> {

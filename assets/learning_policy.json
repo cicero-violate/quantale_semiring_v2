@@ -1,0 +1,5 @@
+{
+  "learned_edge_cost_floor": 0.001,
+  "confidence_clamp": [0.0, 1.0],
+  "safety_clamp": [0.0, 1.0]
+}

@@ -9,10 +9,9 @@ use serde_json::Value;
 use crate::config::OperatorRegistry;
 use crate::egress::UniversalExecutor;
 use crate::error::CudaError;
-use crate::node::Node;
+use crate::graph::{DecisionReport, Node};
 use crate::pattern::{CompiledCkaPattern, operator_effects_for_node, safe_parallel};
-use crate::projection::DecisionReport;
-use crate::receipt::ProcessReceipt;
+use crate::types::ProcessReceipt;
 use crate::tensor::{ProjectionBias, TensorQuantaleWorld};
 use crate::topology::{GraphTopology, NodeRegistry};
 
