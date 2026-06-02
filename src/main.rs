@@ -6,8 +6,9 @@ use quantale_semiring_v2::{
     action_label, compile_pattern, compile_tensor_plan, dispatch_decision_batch_blocking,
     format_quantale_value, full_tensor_transition_edges, load_default_patterns,
     load_learned_tensor_edges, project_ready_batch_plan, runtime_check, topology_check,
-    ExecutionOutcome, ExplorationConfig, ExplorationEngine, GraphTopology, Node, ProjectionBias,
-    SystemConfig, TensorQuantaleWorld, TlogWriter, UniversalExecutor, LAYER_CONFIDENCE,
+    ExecutionOutcome, ExplorationConfig, ExplorationEngine, GraphTopology,
+    LearningPolicy, Node, ProjectionBias, SystemConfig, TensorQuantaleWorld, TlogWriter,
+    TopologyInvariants, UniversalExecutor, LAYER_CONFIDENCE,
 };
 
 fn main() {
@@ -20,7 +21,8 @@ fn main() {
                 std::process::exit(1);
             }
         };
-        let violations = topology_check::check(&topology);
+        let inv = TopologyInvariants::default_asset();
+        let violations = topology_check::check(&topology, &inv);
         if violations.is_empty() {
             println!(
                 "topology OK ({} nodes, {} transitions)",
@@ -36,6 +38,8 @@ fn main() {
 
     let config = SystemConfig::default();
     let projection_bias = ProjectionBias::default();
+    let invariants = TopologyInvariants::default_asset();
+    let learning_policy = LearningPolicy::default_asset();
 
     let mut tlog = match TlogWriter::open(&config.tlog_path) {
         Ok(tlog) => tlog,
@@ -59,7 +63,7 @@ fn main() {
             std::process::exit(1);
         }
     };
-    let violations = topology_check::check(&topology_asset);
+    let violations = topology_check::check(&topology_asset, &invariants);
     if !violations.is_empty() {
         eprintln!("{}", topology_check::format_violations(&violations));
         eprintln!(
@@ -79,6 +83,7 @@ fn main() {
         &config.learned_edges_path,
         &topology.registry,
         &topology.tensor_edges,
+        &learning_policy,
     ) {
         Ok(edges) => edges,
         Err(error) => {
@@ -233,12 +238,7 @@ fn main() {
             let process_receipt =
                 executor.execute_abstract_node_blocking(active_node_name, &current_payload);
             let outcome = ExecutionOutcome::from(&process_receipt);
-            if let Err(error) =
-                world.update_lattice_edge(decision.selected_src, decision.first_hop, outcome)
-            {
-                eprintln!("{error}");
-                std::process::exit(1);
-            }
+            world.queue_lattice_update(decision.selected_src, decision.first_hop, outcome);
             exploration_engine.update_receipt_prior(decision.first_hop, &process_receipt);
             if let Err(error) = tlog.append_exploration_receipt(&json!({
                 "node": active_node_name,
@@ -276,19 +276,20 @@ fn main() {
                             println!(
                                 "[WARN] Exploration tensor plan invalid ({reason}); dampening selected edge"
                             );
-                            if let Err(error) = world.update_lattice_edge(
+                            world.queue_lattice_update(
                                 decision.selected_src,
                                 decision.first_hop,
                                 ExecutionOutcome::Failure,
-                            ) {
-                                eprintln!("{error}");
-                                std::process::exit(1);
-                            }
+                            );
                         }
                     }
                 } else {
                     current_payload = json!({ "context": process_receipt.stdout_payload });
                 }
+            }
+            if let Err(error) = world.drain_lattice_queue() {
+                eprintln!("{error}");
+                std::process::exit(1);
             }
             if let Err(error) = tlog.log_step(&process_receipt, &decision) {
                 eprintln!("{error}");
@@ -304,13 +305,13 @@ fn main() {
                     &mut world,
                     &tensor_edges,
                     &mut current_payload,
-                    sleep_dur,
+                    std::time::Duration::from_millis(config.hard_reset_sleep_ms),
                     projection_bias,
                 );
                 continue;
             }
             consecutive_blocks = 0;
-            if let Err(error) = world.decay(0.995) {
+            if let Err(error) = world.decay(config.decay_normal) {
                 eprintln!("{error}");
                 std::process::exit(1);
             }
@@ -374,14 +375,11 @@ fn main() {
                             );
                         }
 
-                        if let Err(error) = world.update_lattice_edge(
+                        world.queue_lattice_update(
                             scheduled.decision.selected_src,
                             scheduled.decision.first_hop,
                             outcome,
-                        ) {
-                            eprintln!("{error}");
-                            std::process::exit(1);
-                        }
+                        );
 
                         exploration_engine
                             .update_receipt_prior(scheduled.decision.first_hop, &scheduled.receipt);
@@ -428,14 +426,11 @@ fn main() {
                                         println!(
                                             "[WARN] Tensor batch plan invalid ({reason}); dampening selected edge"
                                         );
-                                        if let Err(error) = world.update_lattice_edge(
+                                        world.queue_lattice_update(
                                             scheduled.decision.selected_src,
                                             scheduled.decision.first_hop,
                                             ExecutionOutcome::Failure,
-                                        ) {
-                                            eprintln!("{error}");
-                                            std::process::exit(1);
-                                        }
+                                        );
                                     }
                                 }
                             }
@@ -459,6 +454,11 @@ fn main() {
                         }
                     }
 
+                    if let Err(error) = world.drain_lattice_queue() {
+                        eprintln!("{error}");
+                        std::process::exit(1);
+                    }
+
                     if !batch_stdout.is_empty() {
                         plan_stdout.extend(batch_stdout);
                     }
@@ -471,7 +471,7 @@ fn main() {
                         &mut world,
                         &tensor_edges,
                         &mut current_payload,
-                        sleep_dur,
+                        std::time::Duration::from_millis(config.hard_reset_sleep_ms),
                         projection_bias,
                     );
                     continue 'ticks;
@@ -481,7 +481,7 @@ fn main() {
                     current_payload = json!({ "context": plan_stdout });
                 }
 
-                if let Err(error) = world.decay(0.995) {
+                if let Err(error) = world.decay(config.decay_normal) {
                     eprintln!("{error}");
                     std::process::exit(1);
                 }
@@ -523,12 +523,13 @@ fn main() {
         if decision.halted != 0 {
             if config.max_ticks == 0 {
                 // Continuous mode: dampen the halt edge and restart the trading cycle.
-                let _ = world.update_lattice_edge(
+                world.queue_lattice_update(
                     decision.selected_src,
                     decision.first_hop,
                     ExecutionOutcome::Failure,
                 );
-                let _ = world.decay(0.97);
+                let _ = world.drain_lattice_queue();
+                let _ = world.decay(config.decay_blocked);
                 current_payload = json!({ "context": "market_analysis_loop" });
                 if let Some(dur) = sleep_dur {
                     std::thread::sleep(dur);
@@ -541,13 +542,13 @@ fn main() {
 
         if decision.blocked != 0 {
             consecutive_blocks += 1;
-            if consecutive_blocks >= 3 {
+            if consecutive_blocks >= config.hard_reset_blocks {
                 maybe_hard_reset_after_blocks(
                     &mut consecutive_blocks,
                     &mut world,
                     &tensor_edges,
                     &mut current_payload,
-                    sleep_dur,
+                    std::time::Duration::from_millis(config.hard_reset_sleep_ms),
                     projection_bias,
                 );
             }
@@ -607,13 +608,7 @@ fn main() {
             }
         }
 
-        if let Err(error) =
-            world.update_lattice_edge(decision.selected_src, decision.first_hop, outcome)
-        {
-            eprintln!("{error}");
-            std::process::exit(1);
-        }
-
+        world.queue_lattice_update(decision.selected_src, decision.first_hop, outcome);
         exploration_engine.update_receipt_prior(decision.first_hop, &process_receipt);
         if let Err(error) = tlog.append_exploration_receipt(&json!({
             "node": active_node_name,
@@ -655,14 +650,11 @@ fn main() {
                         println!(
                             "[WARN] Tensor LLM plan invalid ({reason}); dampening selected edge"
                         );
-                        if let Err(error) = world.update_lattice_edge(
+                        world.queue_lattice_update(
                             decision.selected_src,
                             decision.first_hop,
                             ExecutionOutcome::Failure,
-                        ) {
-                            eprintln!("{error}");
-                            std::process::exit(1);
-                        }
+                        );
                     }
                 }
             } else {
@@ -670,7 +662,12 @@ fn main() {
             }
         }
 
-        if let Err(error) = world.decay(0.995) {
+        if let Err(error) = world.drain_lattice_queue() {
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
+
+        if let Err(error) = world.decay(config.decay_normal) {
             eprintln!("{error}");
             std::process::exit(1);
         }
@@ -687,7 +684,7 @@ fn main() {
                 &mut world,
                 &tensor_edges,
                 &mut current_payload,
-                sleep_dur,
+                std::time::Duration::from_millis(config.hard_reset_sleep_ms),
                 projection_bias,
             );
             continue;
@@ -732,10 +729,10 @@ fn maybe_hard_reset_after_blocks(
     world: &mut TensorQuantaleWorld,
     tensor_edges: &[quantale_semiring_v2::TensorEdge],
     current_payload: &mut Value,
-    sleep_dur: Option<std::time::Duration>,
+    hard_reset_sleep: std::time::Duration,
     projection_bias: ProjectionBias,
 ) {
-    if *consecutive_blocks < 3 {
+    if *consecutive_blocks == 0 {
         return;
     }
 
@@ -759,8 +756,7 @@ fn maybe_hard_reset_after_blocks(
     }
     *current_payload = json!({ "context": "market_analysis_loop" });
     *consecutive_blocks = 0;
-    let reset_dur = sleep_dur.unwrap_or(std::time::Duration::from_millis(200));
-    std::thread::sleep(reset_dur);
+    std::thread::sleep(hard_reset_sleep);
 
     // Invariant 17: verify reset restored a valid frontier. Uses project
     // (read-only) so active[] is not advanced.

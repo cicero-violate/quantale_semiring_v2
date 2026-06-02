@@ -138,9 +138,8 @@ fn gpu_tensor_update_and_decay_mutate_layers() {
     let mut world =
         TensorQuantaleWorld::from_tensor_edges(&[TensorEdge::new(goal, plan, 0.8, 2.0, 0.9)])
             .unwrap();
-    world
-        .update_lattice_edge(goal, plan, ExecutionOutcome::SafetyViolation)
-        .unwrap();
+    world.queue_lattice_update(goal, plan, ExecutionOutcome::SafetyViolation);
+    world.drain_lattice_queue().unwrap();
     world.decay(0.9).unwrap();
     world.synchronize().unwrap();
     let tensor = world.tensor().unwrap();

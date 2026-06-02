@@ -39,7 +39,7 @@ const CLOSURE_KERNEL: &str = "tensor_quantale_closure";
 const PROJECT_KERNEL: &str = "tensor_quantale_project";
 const PROJECT_BATCH_KERNEL: &str = "tensor_quantale_project_batch";
 const COMMIT_BATCH_KERNEL: &str = "tensor_quantale_commit_batch";
-const UPDATE_KERNEL: &str = "tensor_quantale_update_edge";
+const DRAIN_KERNEL: &str = "tensor_quantale_drain_queue";
 const DECAY_KERNEL: &str = "tensor_quantale_decay";
 const FRONTIER_STEP_KERNEL: &str = "tensor_quantale_frontier_step";
 const TICK_KERNEL: &str = "tensor_quantale_tick";
@@ -117,6 +117,16 @@ impl ExecutionOutcome {
     }
 }
 
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct ExecutionReceipt {
+    pub src: i32,
+    pub dst: i32,
+    pub outcome: i32,
+}
+
+unsafe impl DeviceRepr for ExecutionReceipt {}
+
 impl From<&ProcessReceipt> for ExecutionOutcome {
     fn from(receipt: &ProcessReceipt) -> Self {
         match receipt.exit_code {
@@ -148,6 +158,8 @@ pub struct TensorQuantaleWorld {
     /// than re-uploading from the host edge list, so it works even when the
     /// original edge list is no longer in scope.
     base_tensor: Vec<f32>,
+    /// Host-side queue of execution receipts pending a drain_lattice_queue call.
+    event_queue: Vec<ExecutionReceipt>,
 }
 
 impl TensorQuantaleWorld {
@@ -165,7 +177,7 @@ impl TensorQuantaleWorld {
                 PROJECT_KERNEL,
                 PROJECT_BATCH_KERNEL,
                 COMMIT_BATCH_KERNEL,
-                UPDATE_KERNEL,
+                DRAIN_KERNEL,
                 DECAY_KERNEL,
                 FRONTIER_STEP_KERNEL,
                 TICK_KERNEL,
@@ -242,6 +254,7 @@ impl TensorQuantaleWorld {
             exploration_token_count,
             exploration_selected_count,
             base_tensor: Vec::new(),
+            event_queue: Vec::new(),
         };
         world.reset()?;
         Ok(world)
@@ -556,23 +569,40 @@ impl TensorQuantaleWorld {
         self.decision_report()
     }
 
-    pub fn update_lattice_edge(
-        &mut self,
-        src: i32,
-        dst: i32,
-        outcome: ExecutionOutcome,
-    ) -> Result<(), CudaError> {
+    /// Push an execution receipt onto the host-side event queue.
+    /// Call drain_lattice_queue to flush the batch to the GPU.
+    pub fn queue_lattice_update(&mut self, src: i32, dst: i32, outcome: ExecutionOutcome) {
+        self.event_queue.push(ExecutionReceipt {
+            src,
+            dst,
+            outcome: outcome.code(),
+        });
+    }
+
+    /// Drain all pending execution receipts to the GPU in a single parallel kernel launch.
+    /// No-ops if the queue is empty.
+    pub fn drain_lattice_queue(&mut self) -> Result<(), CudaError> {
+        if self.event_queue.is_empty() {
+            return Ok(());
+        }
+        let receipts = std::mem::take(&mut self.event_queue);
+        let count = i32::try_from(receipts.len())
+            .map_err(|_| CudaError::invalid_input("too many queued lattice updates"))?;
+        let receipt_buf = self
+            .dev
+            .htod_copy(receipts)
+            .map_err(|error| CudaError::new("htod_copy lattice receipts", error))?;
         let kernel = self
             .dev
-            .get_func(MODULE_NAME, UPDATE_KERNEL)
-            .ok_or(CudaError::missing_function(UPDATE_KERNEL))?;
+            .get_func(MODULE_NAME, DRAIN_KERNEL)
+            .ok_or(CudaError::missing_function(DRAIN_KERNEL))?;
         unsafe {
             kernel.launch(
                 kernel_config(),
-                (&mut self.tensor, src, dst, outcome.code()),
+                (&mut self.tensor, &receipt_buf, count),
             )
         }
-        .map_err(|error| CudaError::new("tensor_quantale_update_edge", error))
+        .map_err(|error| CudaError::new("tensor_quantale_drain_queue", error))
     }
 
     pub fn decay(&mut self, factor: f32) -> Result<(), CudaError> {

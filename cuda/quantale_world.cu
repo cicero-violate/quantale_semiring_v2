@@ -133,6 +133,37 @@ __device__ __forceinline__ bool tensor_better(int layer, float candidate, float 
     return layer == LAYER_COST ? candidate < current : candidate > current;
 }
 
+// ── atomic float helpers ──────────────────────────────────────────────────
+
+// CAS-loop multiply: atomically applies tensor[addr] *= factor.
+__device__ __forceinline__ void atomic_float_mul(float* addr, float factor) {
+    int* iptr = (int*)addr;
+    int ob, nb;
+    do {
+        ob = *((volatile int*)iptr);
+        nb = __float_as_int(__int_as_float(ob) * factor);
+    } while (atomicCAS(iptr, ob, nb) != ob);
+}
+
+// CAS-loop capped add: atomically applies tensor[addr] += delta, capped at COST_INFINITY.
+__device__ __forceinline__ void atomic_float_add_capped(float* addr, float delta) {
+    int* iptr = (int*)addr;
+    int ob, nb;
+    do {
+        ob = *((volatile int*)iptr);
+        float v = __int_as_float(ob);
+        float nv = (v >= COST_INFINITY) ? COST_INFINITY : v + delta;
+        if (nv > COST_INFINITY) nv = COST_INFINITY;
+        nb = __float_as_int(nv);
+    } while (atomicCAS(iptr, ob, nb) != ob);
+}
+
+struct ExecutionReceipt {
+    int src;
+    int dst;
+    int outcome; // 0=success, 1=failure, 2=timeout, 3=safety violation
+};
+
 // ── kernels ───────────────────────────────────────────────────────────────
 
 extern "C" __global__ void tensor_quantale_reset(
@@ -206,49 +237,69 @@ extern "C" __global__ void tensor_quantale_embed_edges(
 
 extern "C" __global__ void tensor_quantale_closure(
     float* tensor,
-    float* scratch,
+    float* scratch,  // unused; retained so tensor_quantale_tick can call with same args
     int*   witness
 ) {
-    for (int idx = threadIdx.x; idx < TENSOR_LEN; idx += blockDim.x)
-        scratch[idx] = tensor[idx];
+    // Three float layers cached in L1/shared: 3 × 3600 × 4 = 43,200 bytes < 48 KB.
+    __shared__ float s_conf[MATRIX_LEN];
+    __shared__ float s_cost[MATRIX_LEN];
+    __shared__ float s_safe[MATRIX_LEN];
+
+    int tid = threadIdx.x;
+
+    // Coalesced load from global memory into shared memory.
+    for (int idx = tid; idx < MATRIX_LEN; idx += blockDim.x) {
+        s_conf[idx] = tensor[idx + 0 * MATRIX_LEN];
+        s_cost[idx] = tensor[idx + 1 * MATRIX_LEN];
+        s_safe[idx] = tensor[idx + 2 * MATRIX_LEN];
+    }
     __syncthreads();
 
+    // Floyd-Warshall transitive closure executing from shared memory.
+    // Invariant: during step k, row k and column k are unchanged (diagonal = identity),
+    // so parallel reads within a step are data-race-free.
     for (int k = 0; k < N; ++k) {
-        for (int idx = threadIdx.x; idx < MATRIX_LEN; idx += blockDim.x) {
+        for (int idx = tid; idx < MATRIX_LEN; idx += blockDim.x) {
             int i = idx / N, j = idx % N;
+            int ij = i * N + j;
+            int ik = i * N + k;
+            int kj = k * N + j;
 
-            int c_ij = tensor_idx(LAYER_CONFIDENCE, i, j);
-            int c_ik = tensor_idx(LAYER_CONFIDENCE, i, k);
-            int c_kj = tensor_idx(LAYER_CONFIDENCE, k, j);
-            float c_candidate = tensor_conf_compose(scratch[c_ik], scratch[c_kj]);
-            if (c_candidate > scratch[c_ij]) {
-                scratch[c_ij] = c_candidate;
-                witness[c_ij] = witness[c_ik];
+            // Layer 0: confidence (max-times)
+            float c_cand = s_conf[ik] * s_conf[kj];
+            if (c_cand > 1.0f) c_cand = 1.0f;
+            if (c_cand > s_conf[ij]) {
+                s_conf[ij] = c_cand;
+                witness[tensor_idx(LAYER_CONFIDENCE, i, j)] =
+                    witness[tensor_idx(LAYER_CONFIDENCE, i, k)];
             }
 
-            int e_ij = tensor_idx(LAYER_COST, i, j);
-            int e_ik = tensor_idx(LAYER_COST, i, k);
-            int e_kj = tensor_idx(LAYER_COST, k, j);
-            float e_candidate = tensor_cost_compose(scratch[e_ik], scratch[e_kj]);
-            if (e_candidate < scratch[e_ij]) {
-                scratch[e_ij] = e_candidate;
-                witness[e_ij] = witness[e_ik];
+            // Layer 1: cost (min-plus)
+            float e_cand = (s_cost[ik] >= COST_INFINITY || s_cost[kj] >= COST_INFINITY)
+                           ? COST_INFINITY : s_cost[ik] + s_cost[kj];
+            if (e_cand < s_cost[ij]) {
+                s_cost[ij] = e_cand;
+                witness[tensor_idx(LAYER_COST, i, j)] =
+                    witness[tensor_idx(LAYER_COST, i, k)];
             }
 
-            int s_ij = tensor_idx(LAYER_SAFETY, i, j);
-            int s_ik = tensor_idx(LAYER_SAFETY, i, k);
-            int s_kj = tensor_idx(LAYER_SAFETY, k, j);
-            float s_candidate = tensor_safety_compose(scratch[s_ik], scratch[s_kj]);
-            if (s_candidate > scratch[s_ij]) {
-                scratch[s_ij] = s_candidate;
-                witness[s_ij] = witness[s_ik];
+            // Layer 2: safety (max-min)
+            float s_cand = s_safe[ik] < s_safe[kj] ? s_safe[ik] : s_safe[kj];
+            if (s_cand > s_safe[ij]) {
+                s_safe[ij] = s_cand;
+                witness[tensor_idx(LAYER_SAFETY, i, j)] =
+                    witness[tensor_idx(LAYER_SAFETY, i, k)];
             }
         }
         __syncthreads();
     }
 
-    for (int idx = threadIdx.x; idx < TENSOR_LEN; idx += blockDim.x)
-        tensor[idx] = scratch[idx];
+    // Flush shared memory back to global tensor.
+    for (int idx = tid; idx < MATRIX_LEN; idx += blockDim.x) {
+        tensor[idx + 0 * MATRIX_LEN] = s_conf[idx];
+        tensor[idx + 1 * MATRIX_LEN] = s_cost[idx];
+        tensor[idx + 2 * MATRIX_LEN] = s_safe[idx];
+    }
 }
 
 extern "C" __global__ void tensor_quantale_project(
@@ -413,32 +464,46 @@ extern "C" __global__ void tensor_quantale_commit_batch(
     for (int i = tid; i < N; i += blockDim.x) active[i] = next_active[i];
 }
 
-extern "C" __global__ void tensor_quantale_update_edge(
+extern "C" __global__ void tensor_quantale_drain_queue(
     float* tensor,
-    int src, int dst, int outcome
+    const ExecutionReceipt* receipts,
+    int count
 ) {
-    if (threadIdx.x != 0 || blockIdx.x != 0) return;
-    if (src < 0 || src >= N || dst < 0 || dst >= N || src == dst) return;
+    for (int event_idx = threadIdx.x; event_idx < count; event_idx += blockDim.x) {
+        ExecutionReceipt r = receipts[event_idx];
+        if (r.src < 0 || r.src >= N || r.dst < 0 || r.dst >= N || r.src == r.dst) continue;
 
-    int cidx = tensor_idx(LAYER_CONFIDENCE, src, dst);
-    int eidx = tensor_idx(LAYER_COST,       src, dst);
-    int sidx = tensor_idx(LAYER_SAFETY,     src, dst);
+        int cidx = tensor_idx(LAYER_CONFIDENCE, r.src, r.dst);
+        int eidx = tensor_idx(LAYER_COST,       r.src, r.dst);
+        int sidx = tensor_idx(LAYER_SAFETY,     r.src, r.dst);
 
-    if (outcome == 0) { // success
-        tensor[cidx] = q_join(tensor[cidx], 1.0f);
-        tensor[eidx] = tensor[eidx] > 0.01f ? tensor[eidx] * 0.5f : tensor[eidx];
-        tensor[sidx] = q_join(tensor[sidx], 1.0f);
-    } else if (outcome == 1) { // failure
-        tensor[cidx] = tensor[cidx] * 0.1f;
-        tensor[eidx] = tensor_cost_compose(tensor[eidx], 10.0f);
-        tensor[sidx] = tensor[sidx] * 0.5f;
-    } else if (outcome == 2) { // timeout
-        tensor[cidx] = tensor[cidx] * 0.5f;
-        tensor[eidx] = tensor_cost_compose(tensor[eidx], 100.0f);
-    } else if (outcome == 3) { // safety violation
-        tensor[cidx] = tensor[cidx] * 0.25f;
-        tensor[eidx] = tensor_cost_compose(tensor[eidx], 25.0f);
-        tensor[sidx] = BOTTOM;
+        if (r.outcome == 0) { // success
+            // q_join(x, 1.0) = 1.0 always — safe to atomicExch.
+            atomicExch(&tensor[cidx], 1.0f);
+            // Halve cost only if above threshold; CAS loop preserves atomicity.
+            {
+                int* ptr = (int*)&tensor[eidx];
+                int ob, nb;
+                do {
+                    ob = *((volatile int*)ptr);
+                    float v = __int_as_float(ob);
+                    if (v <= 0.01f) break;
+                    nb = __float_as_int(v * 0.5f);
+                } while (atomicCAS(ptr, ob, nb) != ob);
+            }
+            atomicExch(&tensor[sidx], 1.0f);
+        } else if (r.outcome == 1) { // failure
+            atomic_float_mul(&tensor[cidx], 0.1f);
+            atomic_float_add_capped(&tensor[eidx], 10.0f);
+            atomic_float_mul(&tensor[sidx], 0.5f);
+        } else if (r.outcome == 2) { // timeout
+            atomic_float_mul(&tensor[cidx], 0.5f);
+            atomic_float_add_capped(&tensor[eidx], 100.0f);
+        } else if (r.outcome == 3) { // safety violation
+            atomic_float_mul(&tensor[cidx], 0.25f);
+            atomic_float_add_capped(&tensor[eidx], 25.0f);
+            atomicExch(&tensor[sidx], BOTTOM);
+        }
     }
 }
 
