@@ -1,8 +1,8 @@
 # quantale_semiring_v2
 
-CUDA-first tensor quantale orchestrator with a data-driven Concurrent Kleene Algebra pattern layer.
+CUDA-first tensor quantale orchestrator with a data-driven topology DSL, Concurrent Kleene Algebra pattern layer, and JIT kernel fusion pipeline.
 
-The runtime compiles declarative JSON assets into tensor-edge deltas, runs tensor closure and projection on CUDA, dispatches selected operators, and feeds execution receipts back into the tensor as ordinary edge deltas.
+The runtime compiles declarative JSON assets into quantale-valued tensor-edge graphs and kernel fusion regions, runs tensor closure and projection on CUDA, dispatches selected operators (process, jit_cuda, cuda_ptx), and feeds execution receipts back into the tensor as ordinary edge deltas.
 
 ## Runtime invariant
 
@@ -14,45 +14,38 @@ CUDA commits selected safe thought.
 Receipts validate actual thought.
 ```
 
-## Canonical runtime path
+## Canonical pipeline
 
 ```text
-assets/topology.json
-  → NodeRegistry (single source of truth for node names and IDs)
-  → full_tensor_transition_edges()
-assets/patterns.json
-  → CKA pattern compiler
-  → TensorEdge deltas
-  → TlogWriter::append_tensor_edges("pattern:cka", ...)
-  → TensorQuantaleWorld::from_tensor_edges(...)
-  → tensor_quantale_closure
-  → ExplorationEngine / assets/exploration.json
-      → tensor_quantale_seed_exploration
-      → tensor_quantale_expand_tokens
-      → tensor_quantale_score_tokens
-      → tensor_quantale_select_topk_tokens
-      → tensor_quantale_commit_exploration
-  → CKA fallback via project_ready_batch_plan(...)
-      → tensor_quantale_project_batch
-      → effect-safe DecisionBatch
-      → tensor_quantale_commit_batch
-      → host parallel operator dispatch
-  → fallback tensor_quantale_frontier_step when no batch is ready
-  → operator execution from assets/operators.json
+assets/topology.source.json              (authoritative DSL source)
+  ──▶  cargo run -- topology build-overlay
+         ├─ topology.generated.json      (flat quantale transitions; runtime input)
+         ├─ operators.generated.json     (compiled operator registry)
+         ├─ patterns.source.json         (CKA tensor-weight patterns)
+         └─ topology.fusion.json         (maximal GPU-safe kernel regions)
+
+assets/topology.generated.json
+  → NodeRegistry + TensorEdge[]
+assets/patterns.source.json
+  → CompiledCkaPattern { edges, parallel_groups } → TensorEdge[]
+assets/topology.fusion.json
+  → FusionDispatch → JitChain → synthesize_kernel → JitCache (NVRTC)
+
+TensorEdge[]
+  → TensorQuantaleWorld → tensor_quantale_closure
+  → Exploration scheduler  (seed / expand / score / topk / commit)
+  → CKA batch scheduler    (project_batch → effect-safe commit_batch → dispatch)
+  → Single-step fallback   (frontier_step)
   → ProcessReceipt
-  → tensor edge feedback kernel
-  → TensorQuantaleWorld::embed_tensor_edges
-  → TensorQuantaleWorld::decay
+  → tensor_quantale_update_edge → T := T ∨ ΔT
 ```
 
-`main.rs` uses the tensor path only. The scalar CUDA matrix runtime, scalar LLM plan format, CPU routing planner, DSL/search/ingress demo layer, paging registry, and side-channel policy files must not be reintroduced.
+`main.rs` uses the generated artifact path only. The scalar CUDA matrix runtime, scalar LLM plan format, CPU routing planner, DSL/search/ingress demo layer, and side-channel policy files must not be reintroduced.
 
 ## Tensor model
 
-Canonical tensor:
-
 ```text
-T ∈ R^(3 × 60 × 60)
+T ∈ R^(3 × N × N)
 ```
 
 Layers:
@@ -69,37 +62,37 @@ Projection score:
 score = α·confidence - β·cost + γ·safety
 ```
 
-The tensor is the execution substrate. It is not a sidecar.
-
 ## Data assets
 
 ```text
-assets/topology.json      node registry and base tensor topology
-assets/patterns.json      CKA structural patterns compiled to TensorEdge deltas
-assets/operators.json     external operator contracts, output modes, and effect metadata
-assets/exploration.json   token-value exploration policy, beam width, depth, scoring and anti-repeat weights
-assets/call_llm.py        example tensor-plan operator
-assets/memory.py          example memory operator
-state/learned_edges.jsonl learned sparse tensor-edge checkpoints
+assets/topology.source.json      DSL source: 74 nodes, 52 slots, 11 resources, 11 programs
+assets/topology.generated.json   Generated: flat quantale-valued tensor graph (runtime input)
+assets/operators.generated.json  Generated: compiled operator registry (runtime input)
+assets/patterns.source.json      Generated: CKA tensor-weight patterns (replaces patterns.json)
+assets/topology.fusion.json      Generated: fusible kernel regions (runtime input)
+assets/operators.json            Build input: operator contracts with jit_body and effects
+assets/topology.json             Build input: flat topology fed into build-overlay
+assets/exploration.json          Token-value exploration policy, scoring and anti-repeat weights
+state/learned_edges.jsonl        Learned sparse tensor-edge checkpoints
+state/quantale.tlog              Append-only JSONL execution trace
 ```
 
-Tensor edges use explicit tensor-native fields:
+Quantale-valued transition fields:
 
 ```json
 {
-  "from": "State::Plan",
-  "to": "State::Optimize",
-  "confidence": 0.95,
-  "cost": 2.0,
-  "safety": 0.90
+  "from": "Analysis::Return1",
+  "to": "Analysis::Volatility",
+  "confidence": 0.9,
+  "cost": 1.0,
+  "safety": 0.9,
+  "policy_effect": "market_analysis_cycle"
 }
 ```
 
-The legacy scalar `weight` plan format is intentionally rejected by `compile_tensor_plan`.
-
 ## Node registry
 
-The node universe is defined entirely in `assets/topology.json`. There are no hard-coded node constants in Rust.
+The node universe is declared in `assets/topology.source.json` and compiled into `topology.generated.json`. There are no hard-coded node constants in Rust.
 
 `topology.rs::NodeRegistry` is the single source of truth:
 
@@ -107,116 +100,82 @@ The node universe is defined entirely in `assets/topology.json`. There are no ha
 registry.id_of("State::Execute")   // Option<usize>
 registry.name_of(9)                 // Option<&str>
 registry.action_of(17)              // Option<&str>  — from JSON "action" field
-registry.len()                      // node count
+registry.len()                      // node count (74)
 registry.matrix_len()               // len * len
 ```
 
-To add a node: edit `assets/topology.json`. No Rust code changes required.
-
-Operator CUDA kernels (`jit_cuda` backend) declare fused paths as normal operator entries in `assets/operators.json` and normal graph nodes in `assets/topology.json`. Fusion is expressed as a `choice` in `assets/patterns.json` with lower-cost topology weights — the quantale scheduler selects the fused path when cost favors it. No Rust `if fused` logic.
+To add a node: edit `assets/topology.source.json`, then run `cargo run -- topology build-overlay`.
 
 ## CUDA kernel split
-
-CUDA execution uses cudarc for both the quantale world and operator JIT path:
 
 ```text
 cuda/quantale_world.cu
   → compiled at runtime via NVRTC (cudarc::nvrtc::compile_ptx)
   → kernels: closure, projection, exploration, frontier, tick, decay
 
-jit_cuda operator chains
-  → synthesized from assets/operators.json at runtime
-  → compiled via NVRTC (cudarc::nvrtc::compile_ptx)
-  → loaded and cached via cudarc::driver
+cuda/trading_execution_kernels.cu
+  → compiled by nvcc at build time (--features cuda)
+  → embedded PTX loaded at runtime
+
+JIT fusion kernels (src/jit_kernel_fusion/)
+  → synthesized from topology.fusion.json + operators.json at startup
+  → compiled via NVRTC through JitCache::get_or_compile
+  → Analysis::Return1 + Volatility + SignalScore → single fused kernel
 ```
 
-The `cuda` feature is enabled by default. Use `--no-default-features` to test the
-explicit non-CUDA fallback path.
+## JIT fusion dispatch
 
-## Operator CUDA dispatch
+```text
+FusionDispatch::load("assets/topology.fusion.json", &operator_registry)
+  → detect_jit_chains(region.nodes, registry)   validates jit_cuda linkage
+  → JitChain { operators, inputs, outputs, internals }
+  → synthesize_all()                            dry-run at startup (no device)
+  → JitCache::get_or_compile(device, chain)     NVRTC → PTX (cfg(feature="cuda"))
 
-When an operator declares `"executable": "jit_cuda"` in `operators.json`, `egress.rs` routes to the CUDA JIT executor instead of spawning a process:
-
-```json
-{
-  "node_name": "Analysis::Return1",
-  "executable": "jit_cuda",
-  "effects": {
-    "reads": ["market_feed"],
-    "writes": ["return_1"]
-  }
-}
+Runtime lookup:
+  config.fusion_dispatch.is_fusion_entry(node)   O(1)
+  config.fusion_dispatch.get_by_entry(node)       → &FusionEntry
 ```
 
-With `--no-default-features`, the dispatcher returns an explicit capability error — never a process-spawn failure.
+## Operator dispatch
 
-## Exploration anti-repeat policy
+`egress.rs` routes by `executable` in `operators.generated.json`:
 
-`assets/exploration.json` includes:
-
-```json
-{
-  "repeat_penalty": 1.25,
-  "max_terminal_visits": 1,
-  "max_first_hop_visits": 1
-}
+```text
+jit_cuda      → JIT fusion chain (NVRTC via JitCache)
+cuda_ptx      → precompiled PTX module
+anything else → Command::new(binary)
 ```
-
-CUDA top-k selection receives terminal and first-hop visit vectors from `ExplorationEngine`. Candidates at the configured visit limit are skipped; remaining repeated candidates are score-penalized before selection. The host reference selector applies the same policy.
 
 ## Concurrent Kleene Algebra
 
-Implemented CKA operators:
+Source topology programs and runtime patterns use the same algebra:
 
 ```text
-zero   blocked / impossible
+zero   blocked / impossible (bottom)
 one    identity / skip
 node   atomic endpoint
 seq    a ; b
-choice a + b
+choice a + b  (quantale join; no cross-edges)
 star   bounded Kleene repetition
-par    a || b
+par    a || b  (effect independence required)
 ```
 
-Main surfaces:
+Compilation paths:
 
 ```text
-src/pattern.rs       CKA JSON model, validation, and TensorEdge compiler
-src/batch.rs         effect-safe DecisionBatch preparation and parallel dispatch
-assets/patterns.json bundled CKA patterns
-```
+topology.source.json programs
+  → crates/topology_core/src/programs.rs
+  → flat transitions + parallel_groups
+  → topology.generated.json
 
-Compilation path:
-
-```text
-CkaExpr
-  → validate_cka_expr(...)
+assets/patterns.source.json (generated)
+  → src/pattern.rs
   → CompiledCkaPattern { edges, parallel_groups }
   → TensorEdge deltas
-  → TensorQuantaleWorld
 ```
-
-Bounded `star` is finite unroll only. `par` requires effect independence before CUDA commit or host dispatch.
-
-## Operator coverage
-
-`assets/operators.json` contains an explicit contract for every topology node. Symbolic Control/Event nodes that do not need real side effects are covered by safe `true` no-op contracts with declared read/write metadata, so the executor no longer emits missing-contract receipts for normal symbolic traversal. Real operators keep their concrete contracts.
 
 ## Effect safety
-
-Operator effects live in `assets/operators.json`:
-
-```json
-{
-  "effects": {
-    "reads": [],
-    "writes": [],
-    "locks": []
-  }
-}
-```
-
-Parallel branches must satisfy:
 
 ```text
 safe_parallel(a,b) =
@@ -226,145 +185,83 @@ safe_parallel(a,b) =
   ∧ locks(a) ∩ locks(b) = ∅
 ```
 
-## CUDA kernels (quantale world)
-
-The tensor runtime loads kernels from `cuda/quantale_world.cu` via NVRTC:
-
-```text
-tensor_quantale_reset
-tensor_quantale_embed_edges
-tensor_quantale_closure
-tensor_quantale_project
-tensor_quantale_project_batch
-tensor_quantale_commit_batch
-tensor_quantale_seed_exploration
-tensor_quantale_expand_tokens
-tensor_quantale_score_tokens
-tensor_quantale_select_topk_tokens
-tensor_quantale_commit_exploration
-tensor_quantale_frontier_step
-tensor_quantale_tick
-tensor_quantale_update_edge
-tensor_quantale_decay
-```
-
-`tensor_quantale_project_batch` projects candidate decisions for a CKA `par` group without mutating frontier state. After host-side effect validation and batch construction, `tensor_quantale_commit_batch` marks the selected first hops consumed and advances the active frontier to all committed batch nodes.
+Effects are declared in `topology.source.json` node entries and validated at build-overlay time.
 
 ## Main Rust surfaces
 
 ```text
-src/main.rs             runtime loop and scheduler integration
-src/tensor.rs           CUDA tensor world, TensorEdge API, batch projection/commit API,
-                        base_tensor snapshot and restore_base_tensor() for hard reset
-src/topology.rs         topology.json parser, NodeRegistry (primary node/action lookup)
-src/topology_check.rs   static invariant checker — phases 1–3 and operator binding
-src/runtime_check.rs    runtime invariant checker — decision_is_safe(), check_decision()
-src/pattern.rs          CKA pattern compiler
-src/batch.rs            DecisionBatch, BatchPlan, scheduler dispatch (backend-agnostic)
-src/egress.rs           data-driven executor: process operators and jit_cuda operators
-src/config.rs           operator registry and runtime config (dimensions from registry)
-src/projection.rs       DecisionReport and action_label (data-driven via registry)
-src/transitions.rs      bundled tensor topology entrypoint
-src/learning.rs         learned_edges.jsonl checkpoint loader
-src/plan.rs             tensor LLM plan compiler
-src/tlog.rs             append-only JSONL trace log
-src/path.rs             tensor witness path reconstruction
-src/node.rs             thin Node(i32) ID wrapper (names/actions owned by NodeRegistry)
-src/exploration.rs      ExplorationEngine, token management, anti-repeat policy
+src/main.rs                runtime loop and scheduler integration
+src/tensor.rs              CUDA tensor world, TensorEdge API, batch projection/commit
+src/topology.rs            topology.generated.json parser, NodeRegistry
+src/fusion_dispatch.rs     FusionDispatch: load topology.fusion.json → JitChain
+src/jit_kernel_fusion/     chain detection, kernel synthesis, NVRTC cache, slot buffers
+src/pattern.rs             CKA pattern compiler
+src/batch.rs               DecisionBatch, BatchPlan, scheduler dispatch
+src/egress.rs              data-driven executor: process / jit_cuda / cuda_ptx
+src/config.rs              SystemConfig: operator registry + FusionDispatch + runtime config
+src/learning.rs            learned_edges.jsonl checkpoint loader
+src/plan.rs                tensor LLM plan compiler
+src/tlog.rs                append-only JSONL trace log
+src/exploration.rs         ExplorationEngine, token management, anti-repeat policy
+src/runtime_check.rs       runtime decision invariant checker
+crates/topology_core/      DSL compiler: programs, validators, fusion partitioner
+  src/programs.rs          CKA compiler + slot/resource/quantale validators
+  src/fusion.rs            partition_fusible_regions → topology.fusion.json
+  src/overlay.rs           build_overlay_assets pipeline
 ```
 
 ## Execution loop
 
-At each loop iteration:
-
-1. Learned edge checkpoints from `state/learned_edges.jsonl` are embedded with topology and CKA edges at startup.
-2. CUDA closes the tensor.
-3. Exploration seeds strategies from `assets/exploration.json`.
-4. CUDA expands, scores, top-k selects, and commits the best effect-safe exploration candidate that passes terminal and first-hop anti-repeat limits.
-5. If exploration cannot commit, the scheduler attempts a CKA batch projection for compiled `par` groups.
-6. If a full batch is runnable and effect-safe, CUDA commits the batch and host workers execute operators concurrently. All backends (`jit_cuda`, process) go through the same dispatch path; routing by backend is `egress.rs`'s responsibility.
-7. If no batch is ready, CUDA runs the normal single frontier step.
-8. Before execution, `runtime_check::decision_is_safe()` guards against score=⊥ with blocked=0 (invariant 20). `runtime_check::check_decision()` logs invariant 18/19 violations.
-9. Process results become `ProcessReceipt` evidence.
-10. Receipts update the selected tensor edge through the GPU feedback kernel and update exploration receipt priors; committed terminals and first hops are tracked to prevent repeated exploration dominance.
-11. Tensor-plan stdout is parsed and embedded when an operator declares `output_mode = "tensor_plan"`.
-12. After 3 consecutive blocked or unsafe steps, a hard reset restores the world via `reset() + embed_tensor_edges() + close()`.
-13. Decisions, exploration records, batch plans, receipts, and edge deltas are logged to `state/quantale.tlog`.
+1. `cargo run -- topology build-overlay` generates all runtime artifacts from `topology.source.json`.
+2. At startup: learned edge checkpoints + topology + CKA pattern edges are embedded. `FusionDispatch` loads `topology.fusion.json` and builds `JitChain`s; fusion kernels are synthesized (and compiled via NVRTC if `--features cuda`).
+3. CUDA closes the tensor.
+4. Exploration seeds strategies from `assets/exploration.json`, expands CUDA tokens, scores and selects top-K.
+5. Best effect-safe exploration candidate is committed if available.
+6. If not, CKA batch scheduler projects compiled `par` groups, validates effect safety, commits and dispatches.
+7. If no batch is ready, CUDA runs normal single frontier step.
+8. `runtime_check::decision_is_safe()` guards every execution step.
+9. Process results become `ProcessReceipt` evidence; tensor edge feedback and exploration receipt priors are updated.
+10. Asset fingerprint changes (from `assets/reload_policy.json`) trigger epoch reload.
 
 ## Validation
 
 ```bash
+cargo run -- topology build-overlay
+cargo run -- --check-topology
 cargo fmt --check
 cargo check
 cargo test
 cargo check --no-default-features
 cargo test --no-default-features
 cargo run --bin bench_tensor_quantale -- 3
-cargo run --bin quantale_semiring_v2 -- --check-topology
-cargo run --bin quantale_semiring_v2
 ```
-
-CUDA operator execution is enabled by default. Use `--no-default-features` to
-exercise the explicit non-CUDA fallback path.
 
 Current validated test counts:
 
 ```text
-cargo test                         101 passed (8 suites)
-cargo test --no-default-features   101 passed (8 suites)
+cargo test                         117 passed (8 suites)
+cargo test --no-default-features   117 passed (8 suites)
 ```
-
-Current debug benchmark sample (recorded on 44-node topology; recapture for 60):
-
-```text
-iterations=3
-edge_count=45
-tensor_closure avg_us≈220
-tensor_projection avg_us≈26
-tensor_decay avg_us≈12
-```
-
-Use release mode for baseline collection:
-
-```bash
-cargo run --release --bin bench_tensor_quantale -- 1000
-```
-
-## Release benchmark baseline
-
-```text
-profile=release
-iterations=10
-edge_count=45
-tensor_closure     avg_us=217.630
-tensor_projection  avg_us=33.412
-tensor_decay       avg_us=12.782
-```
-
-Record hardware, CUDA version, Rust profile, iteration count, and per-kernel avg_us when capturing a new baseline.
 
 ## Non-goals
 
 Do not add or reintroduce:
 
 ```text
-scalar CUDA world
-scalar LLM plan format
-src/edge.rs
-src/search.rs
-src/ingress.rs
-src/dsl.rs
-src/paging.rs
-scalar benchmark
+scalar CUDA world or scalar LLM plan format
 CPU routing planner
+assets/patterns.json as a runtime source (deleted; generated by build-overlay)
+runtime fallback to assets/topology.json (generated or bundled only)
 side-channel policy files
 PyTorch/JAX/Triton alternate runtime
-hard-coded node ID constants in Rust (StateNode, ControlNode, EventNode, NODE_COUNT)
+hard-coded node ID constants (StateNode, ControlNode, EventNode, NODE_COUNT)
 separate kernel_fusion crate or addons/ directory
-runtime PTX stitching or FusionPlan
+runtime PTX stitching or FusionPlan types
 fake CUDA planned-success receipts
+QuantaleAction enum / selected_action()
+CUDA-specific batch branching in batch.rs
 ```
 
 ## Proof boundary
 
-Lean/cLean artifacts live under `lean/`. They name the proof boundary for tensor closure, projection, frontier, tick, and batch projection/commit behavior. They are specification artifacts unless a local Lean/cLean toolchain is installed and run.
+Lean/cLean artifacts live under `lean/`. They name the proof boundary for tensor closure, projection, frontier, tick, and batch projection/commit behavior. Specification artifacts unless a local Lean toolchain is installed.

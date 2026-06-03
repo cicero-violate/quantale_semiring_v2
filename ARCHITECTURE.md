@@ -1,6 +1,6 @@
 # Architecture
 
-`quantale_semiring_v2` is a CUDA-first tensor quantale orchestrator with a data-driven CKA structural compiler and effect-safe parallel scheduler.
+`quantale_semiring_v2` is a CUDA-first tensor quantale orchestrator with a data-driven CKA structural compiler, effect-safe parallel scheduler, and a topology DSL that compiles algebraic orchestration programs into quantale-valued tensor graphs and JIT kernel fusion regions.
 
 ## Core invariant
 
@@ -15,7 +15,7 @@ Receipts validate actual thought.
 ## Tensor substrate
 
 ```text
-T ∈ R^(3 × 60 × 60)
+T ∈ R^(3 × N × N)
 ```
 
 Layers:
@@ -29,18 +29,19 @@ Layer 2: security/safety         max-min    join=max  compose=min
 Node universe:
 
 ```text
-Current topology: 60 nodes (47 original + 13 market-trading nodes)
-Source of truth:  assets/topology.json
+Current topology: 74 nodes
+Source of truth:  assets/topology.source.json
+Generated graph:  assets/topology.generated.json  (runtime input)
 Rust constant:    TENSOR_NODE_COUNT = 60 (must match N in quantale_world.cu)
 MATRIX_LEN        = 3600
 TENSOR_LEN        = 10800
 ```
 
-No Rust code encodes the node list. `topology.rs::NodeRegistry` loads it from JSON at startup. Adding a node requires only a JSON edit (and updating `N` in the CUDA kernel and `TENSOR_NODE_COUNT` in `tensor.rs` if the count changes).
+No Rust code encodes the node list. `topology.rs::NodeRegistry` loads it from the generated JSON at startup. Adding a node requires only a topology source edit followed by `cargo run -- topology build-overlay`.
 
 ## Data-driven node registry
 
-`topology.rs::NodeRegistry` is the primary registry. Every component that needs a node ID or name goes through it:
+`topology.rs::NodeRegistry` is the primary registry:
 
 ```rust
 registry.id_of("State::Execute")   // → Option<usize>
@@ -50,50 +51,85 @@ registry.len()                      // → node count
 registry.matrix_len()               // → len * len
 ```
 
-`SystemConfig`, `ExplorationEngine`, `batch.rs`, and `egress.rs` all derive dimensions from the registry. No component holds a hard-coded `NODE_COUNT` constant. `Node(i32)` is a thin ID wrapper; the registry owns the names.
+`SystemConfig`, `ExplorationEngine`, `batch.rs`, and `egress.rs` all derive dimensions from the registry. No component holds a hard-coded `NODE_COUNT` constant.
+
+## Topology DSL pipeline
+
+Orchestration is declared in source topology, compiled into generated artifacts, and consumed exclusively by the runtime:
+
+```text
+assets/topology.source.json          (authoritative DSL source)
+  ├─ slots: declared tensor/state/config/log slots with kinds
+  ├─ resources: declared lock/gpu resources
+  ├─ quantale: layer declarations (join, compose, bottom, unit per layer)
+  ├─ nodes: 74 typed nodes (kernel|host_node|boundary_node|policy_node|event_node)
+  └─ programs: CKA expressions with quantale weights
+
+  ↓  cargo run -- topology build-overlay
+
+assets/topology.generated.json       (flat quantale-valued tensor graph)
+assets/operators.generated.json      (compiled operator registry)
+assets/patterns.source.json          (CKA tensor-weight patterns; replaces patterns.json)
+assets/topology.fusion.json          (maximal GPU-safe kernel fusion regions)
+```
+
+Validators run at every build-overlay:
+
+```text
+validate_unique_source_node_names    no duplicate node names
+validate_known_backends              runtime.backend ∈ {cuda,python,noop,patch,cargo,...}
+validate_source_node_effects         every reads/writes/locks slot/resource exists
+validate_boundary_governance         every boundary_node has a governance object
+validate_kernel_slot_purity          kernel reads/writes only tensor-kind slots
+validate_quantale_layers             algebraic laws (unit/bottom/compose/join)
+validate_par_independence            par branches are effect-independent
+compile_source_programs              CKA → flat transitions + parallel_groups
+partition_fusible_regions            Fusable(F) = B∧K∧S∧A∧R
+```
 
 ## GPU ownership
 
 CUDA owns:
 
 ```text
-tensor[3 × 60 × 60]
-scratch[3 × 60 × 60]
-witness[3 × 60 × 60]
-scratch_witness[3 × 60 × 60]
-consumed[60 × 60]
-active[60]
-next_active[60]
+tensor[3 × N × N]
+scratch[3 × N × N]
+witness[3 × N × N]
+scratch_witness[3 × N × N]
+consumed[N × N]
+active[N]
+next_active[N]
 decision[1]
-exploration_tokens[60 × 60]
-exploration_scores[60 × 60]
-exploration_parents[60 × 60]
-exploration_selected[60]
+exploration_tokens[N × N]
+exploration_scores[N × N]
+exploration_parents[N × N]
+exploration_selected[N]
 ```
 
 Rust owns:
 
 ```text
 JSON asset loading and NodeRegistry
+Topology DSL compiler (crates/topology_core)
 CKA pattern compilation
-static topology invariant checking (topology_check.rs)
-runtime decision invariant checking (runtime_check.rs)
-base_tensor CPU snapshot for hard reset (invariant 23)
-operator effect validation
-batch scheduling policy
-host-side operator execution (process and cuda_ptx backends)
-edge-delta upload
-compact report decoding
-append-only transaction logging
+FusionDispatch: fusion region loading and JitChain construction
+JitCache: NVRTC/PTX compilation and kernel caching (#[cfg(feature="cuda")])
+Static topology invariant checking
+Runtime decision invariant checking
+Base tensor CPU snapshot for hard reset
+Operator effect validation
+Batch scheduling policy
+Host-side operator execution (process and jit_cuda backends)
+Edge-delta upload
+Compact report decoding
+Append-only transaction logging
 ```
 
 Rust does not own a CPU planner or a live CPU mirror of the tensor.
-`base_tensor` is a one-time CPU snapshot taken after initial embed; it is
-read-only and used only by `restore_base_tensor()` during hard reset.
 
 ## CUDA kernel split
 
-Two distinct compilation and loading paths — both dispatch at runtime through cudarc:
+Three distinct compilation and loading paths — all dispatch through cudarc:
 
 ```text
 cuda/quantale_world.cu
@@ -110,42 +146,93 @@ cuda/trading_execution_kernels.cu
   Kernels:  fused_alpha_and_risk_kernel
             fused_orderbook_and_alpha_kernel
             fused_feed_alpha_and_risk_kernel
+
+JIT fusion kernels (src/jit_kernel_fusion/)
+  Compiled: NVRTC at runtime via JitCache::get_or_compile
+  Source:   synthesize_kernel(&JitChain, &registry) → CUDA C
+  Regions:  loaded from assets/topology.fusion.json via FusionDispatch
 ```
 
-`quantale_world.cu` uses NVRTC for rapid iteration without a build step. Operator kernels use nvcc because they need full `-O3`, specific GPU arch flags, and CUDA library access (cooperative groups, cub) that NVRTC does not expose.
+`quantale_world.cu` uses NVRTC for rapid iteration. Operator kernels use nvcc for `-O3` and cooperative group access. Fusion kernels use NVRTC to specialize at runtime once fusion regions are identified.
+
+## Fusion architecture
+
+The partition and dispatch pipeline:
+
+```text
+topology.fusion.json
+  → FusionDispatch::load(path, &operator_registry)
+      → detect_jit_chains(region.nodes, registry)    [jit_kernel_fusion::chain]
+          checks executable=jit_cuda, validates data-flow linkage
+      → JitChain { operators, inputs, outputs, internals }
+      → chain_metadata → JitChainMetadata { estimated_savings, ... }
+
+  dispatch lookup (O(1)):
+      is_fusion_entry(node)    → true if node starts a fusion region
+      get_by_entry(node)       → &FusionEntry
+      get_by_member(node)      → &FusionEntry (any node in chain)
+
+  synthesis (no device needed):
+      synthesize_all(&registry)  → CUDA C source strings (startup dry-run)
+
+  compilation (cfg(feature="cuda")):
+      JitCache::get_or_compile(device, &chain, registry)
+          → synthesize_kernel → CUDA C
+          → compile_ptx (NVRTC)
+          → load_ptx + cache by operator sequence
+          → CudaFunction
+```
+
+Current emitted region:
+
+```text
+Analysis::Return1 → Analysis::Volatility → Analysis::SignalScore
+  backend:   cuda_jit
+  fusion:    linear_chain
+  inputs:    [market.open, market.price]   (external reads)
+  outputs:   [analysis.signal_score]       (external writes)
+  internals: [analysis.return, analysis.volatility]
+```
 
 ## Data-flow architecture
 
 ```text
-assets/topology.json
+assets/topology.source.json
+  ──▶ topology build-overlay
+        ├─ topology.generated.json    (flat quantale transitions)
+        ├─ operators.generated.json   (compiled operator registry)
+        ├─ patterns.source.json       (CKA patterns from programs)
+        └─ topology.fusion.json       (fusible kernel regions)
+
+assets/topology.generated.json
   → NodeRegistry
   → TensorEdge[]
 
-assets/patterns.json
+assets/patterns.source.json
   → CkaExpr
   → CompiledCkaPattern { edges, parallel_groups }
   → TensorEdge[]
 
+assets/topology.fusion.json
+  → FusionDispatch { entries, by_entry, by_member }
+  → JitChain per region
+  → synthesize_kernel → CUDA C
+  → JitCache (NVRTC) → CudaFunction (cfg(feature="cuda"))
+
 TensorEdge[]
   → TensorQuantaleWorld
   → tensor_quantale_closure
-  → exploration scheduler attempt
-      → tensor_quantale_seed_exploration
-      → tensor_quantale_expand_tokens
-      → tensor_quantale_score_tokens
-      → tensor_quantale_select_topk_tokens
-      → tensor_quantale_commit_exploration
+  → exploration scheduler
+      → tensor_quantale_seed/expand/score/topk/commit
   → CKA scheduler fallback
       → tensor_quantale_project_batch
       → validate_parallel_group_effects
-      → prepare_parallel_batch_plan
       → tensor_quantale_commit_batch
-      → dispatch_decision_batch_blocking (all backends: process + cuda_ptx)
+      → dispatch_decision_batch_blocking
   → single-step fallback
       → tensor_quantale_frontier_step
   → ProcessReceipt
   → tensor_quantale_update_edge
-  → learned TensorEdge checkpoints
   → T := T ∨ ΔT
 ```
 
@@ -157,35 +244,21 @@ CKA is an edge-delta compiler above the tensor substrate, not a replacement runt
 CKA = { 0, 1, +, ;, *, || }
 ```
 
-Rust model:
+Rust model (CkaExpr in src/pattern.rs):
 
 ```text
-CkaExpr::Zero
-CkaExpr::One
-CkaExpr::Node(String)
-CkaExpr::Seq(Vec<CkaExpr>)
-CkaExpr::Choice(Vec<CkaExpr>)
-CkaExpr::Star { body, max_unroll }
-CkaExpr::Par(Vec<CkaExpr>)
+Zero   — produces no executable edges (bottom)
+One    — identity/skip
+Node   — atomic endpoint
+Seq    — composes adjacent endpoints
+Choice — quantale join; no cross-edges between alternatives
+Star   — bounded finite unroll only
+Par    — independent branches + parallel group metadata + effect check
 ```
 
-Node names in `CkaExpr::Node` are validated against `NodeRegistry` at compile time. The compiler never uses hard-coded IDs.
-
-Semantics:
-
-```text
-Zero   produces no executable edges
-One    identity/skip
-Node   atomic endpoint
-Seq    compiles adjacent endpoints
-Choice compiles alternatives without false sequencing
-Star   bounded finite unroll only
-Par    compiles branches and records effect-safe parallel groups
-```
+Source topology programs compile the same algebra via `crates/topology_core/src/programs.rs`. Node names are validated against the registry at compile time.
 
 ## Exploration layer
-
-Exploration is the dynamic strategy-selection layer above closed tensor geometry and below host execution.
 
 ```text
 assets/exploration.json
@@ -203,82 +276,43 @@ Scoring:
 V(H) = confidence - cost + safety + η·novelty + ρ·receipt_prior - λ·entropy
 ```
 
-Receipt feedback:
+Anti-repeat state (host-owned, uploaded per tick):
 
 ```text
-success → raises node receipt_prior
-failure/timeout/safety violation → lowers node receipt_prior
+terminal_visits[N], first_hop_visits[N]
+repeat_penalty, max_terminal_visits, max_first_hop_visits
 ```
-
-Backtracking is preserved through `ExplorationToken.parent` and surfaced by `commit_record(...).path`.
-
-Anti-repeat state is host-owned and uploaded into CUDA top-k selection each tick:
-
-```text
-terminal_visits[N]
-first_hop_visits[N]
-repeat_penalty
-max_terminal_visits
-max_first_hop_visits
-```
-
-Vector lengths are `registry.len()` — not a compile-time constant.
 
 ## Parallel scheduler
-
-The scheduler is deliberately split into projection, validation, commit, and dispatch:
 
 ```text
 project_ready_batch_plan(...)
   → TensorQuantaleWorld::project_parallel_group(...)
-  → tensor_quantale_project_batch
-  → validate_parallel_group_effects(...)
+  → tensor_quantale_project_batch          (read-only)
+  → validate_parallel_group_effects(...)   (effect safety)
   → prepare_parallel_batch_plan(...)
   → TensorQuantaleWorld::commit_decision_batch(...)
-  → tensor_quantale_commit_batch
+  → tensor_quantale_commit_batch           (mutates frontier)
   → dispatch_decision_batch_blocking(...)
 ```
 
-This prevents partial mutation. CUDA projection is read-only. CUDA commit only occurs after the whole group is runnable and effect-safe. All backends go through a single uniform dispatch path; the `egress.rs` executor routes by `executable` field, not by batch-layer branching.
+CUDA projection is read-only. Commit occurs only after whole-group validation. All backends go through a single uniform dispatch path.
 
 ## Operator dispatch
 
-`egress.rs::execute_abstract_node_blocking` routes by the `executable` field in `operators.json`:
+`egress.rs::execute_abstract_node_blocking` routes by the `executable` field in `operators.generated.json`:
 
 ```text
-executable = "cuda_ptx"   → execute_cuda_ptx_blocking (cudarc, --features cuda)
-executable = anything else → Command::new(binary)
+executable = "jit_cuda"       → jit_cuda chain (jit_kernel_fusion; NVRTC)
+executable = "cuda_ptx"       → load precompiled PTX module
+executable = anything else    → Command::new(binary)
 ```
 
-`cuda_ptx` dispatch reads `input_mapping.module_name` and `input_mapping.kernel` from JSON to select the function from the preloaded PTX module. Without `--features cuda` it returns an explicit error receipt — no process-spawn attempt.
-
-## Projection
-
-`projection.rs` exposes `DecisionReport` and a data-driven action label:
-
-```rust
-pub fn action_label(node_id: i32, registry: &NodeRegistry) -> &str
-```
-
-`action_label` reads the `"action"` field from `topology.json` (via the registry) — no hard-coded node comparisons. There is no `QuantaleAction` enum. The score blend is still:
-
-```text
-score = α·confidence - β·cost + γ·safety
-```
-
-The active frontier advances by selected first hop. The consumed mask prevents repeated first-hop execution from the same source.
+`jit_cuda` operators are chained into `JitChain`s by `FusionDispatch`. Without `--features cuda` both GPU paths return an explicit capability error — no process-spawn fallback.
 
 ## Operator coverage
 
-Every topology node has an operator contract. Symbolic Control/Event nodes default to explicit safe no-op contracts:
-
-```text
-executable = true
-locks = []
-reads/writes = symbolic metadata only
-```
-
-This keeps normal symbolic traversal from generating missing-contract process receipts while preserving real contracts for executable stateful nodes.
+Every topology node has an operator contract. Symbolic Control/Event nodes use safe `true` no-op contracts. Real operators keep concrete contracts. The `validate_known_backends` pass enforces that every declared node backend is a recognised value.
 
 ## Effect safety contract
 
@@ -290,15 +324,7 @@ safe_parallel(a,b) =
   ∧ locks(a) ∩ locks(b) = ∅
 ```
 
-Effects are data-driven through `assets/operators.json`:
-
-```text
-reads[]
-writes[]
-locks[]
-```
-
-If independence cannot be proved from metadata, `par` validation fails.
+Effects are declared in `topology.source.json` node entries and crosschecked at build-overlay time.
 
 ## CUDA kernels (quantale world)
 
@@ -322,81 +348,36 @@ tensor_quantale_update_edge
 tensor_quantale_decay
 ```
 
-Batch kernels:
-
-```text
-tensor_quantale_project_batch:
-  read tensor/witness/active/consumed
-  emit one DecisionReport per requested par-group node
-  do not mutate active or consumed
-
-tensor_quantale_commit_batch:
-  validate non-blocked decisions on host first
-  mark consumed[src, first_hop]
-  set active frontier to all committed first_hop nodes
-```
-
 ## Trace logging
 
 `tlog.rs` records append-only JSONL events:
 
 ```text
-Decision
-Receipt
-TensorEdges
-AgentStep
-ExplorationSeed
-ExplorationExpand
-ExplorationTopK
-ExplorationCommit
-ExplorationReceipt
-BatchPlan via append_batch_plan(...)
-```
-
-Compiled CKA edges are logged with:
-
-```text
-label = "pattern:cka"
-```
-
-Runtime batch plans are logged with:
-
-```text
-label = "scheduler:cka_parallel"
+Decision, Receipt, TensorEdges, AgentStep
+ExplorationSeed, ExplorationExpand, ExplorationTopK, ExplorationCommit
+ExplorationReceipt, BatchPlan
+fusion::regions_loaded, fusion::region, fusion::kernel_synthesized  (startup)
 ```
 
 ## Static topology invariant checker
 
-`src/topology_check.rs` validates `GraphTopology` before any tensor operations run.
-All passes execute so every violation is visible at once.
+`crates/topology_core/src/check.rs` validates `GraphTopology` before any tensor operations.
 
 ```text
-Phase 1 — identity and weight (check)
-  1.  unique node names               DuplicateNodeName
-  1b. unique node IDs                 DuplicateNodeId
-  2.  stable index round-trip         IndexMappingBroken
-  3.  start node has id=0             InvalidStartNode
-  4.  halt node exists, outdeg=0      NoHaltNode / HaltNodeHasSuccessors
-  5.  no duplicate edges              DuplicateEdge
-  6.  weight domain validity          WeightOutOfDomain
-  7.  zero-confidence edge warning    ZeroConfidenceEdge
-  13. deterministic tie-break         IndeterminateOrdering
-
-Structural checks (original five):
-  endpoint validity, dead-end, reachability, path-to-halt
+Phase 1 — identity and weight
+  unique node names, unique node IDs, stable index round-trip,
+  start node id=0, halt node exists+outdeg=0, no duplicate edges,
+  weight domain validity, zero-confidence edge warning,
+  deterministic tie-break
 
 Phase 2 — operator binding (check_with_operators)
-  8.  operator entry exists           MissingOperator
-  25. action/output_mode field set    UnknownActionSemantics
+  operator entry exists, action/output_mode field set
 
-Phase 3 — dominator and cycle checks (check)
-  9.  gate dominance                  DominanceViolation
-  10. receipt cutset                  ReceiptCutsetViolation
-  11. SCC progress / exit             UnsafeSCC
-  12. no zero-cost cycle              ZeroCostCycle
+Phase 3 — dominator and cycle checks
+  gate dominance, receipt cutset, SCC progress/exit, no zero-cost cycle
 ```
 
-Required dominator pairs (4 pairs enforced):
+Required dominator pairs:
 
 ```text
 State::Validate        → dominates → Control::Commit
@@ -405,59 +386,46 @@ Event::ReceiptAccepted → dominates → Event::HashNonzero
 Event::HashNonzero     → dominates → State::Validate
 ```
 
-Entry points:
-
-```rust
-topology_check::check(topology)                          // phases 1 + 3
-topology_check::check_with_operators(topology, registry) // phases 1 + 2 + 3
-```
-
 ## Runtime decision invariant checker
 
-`src/runtime_check.rs` validates each `DecisionReport` before the executor runs.
+`src/runtime_check.rs` validates each `DecisionReport` before execution:
 
 ```text
 decision_is_safe(report) → bool
-  Invariant 20: returns false when score=⊥ with blocked=0, or first_hop
-  outside [0, TENSOR_NODE_COUNT).  Call before every execute_abstract_node;
-  skip execution and increment consecutive_blocks when it returns false.
+  Invariant 20: false when score=⊥ with blocked=0, or first_hop out of range.
 
-check_decision(report, node_name) → Vec<RuntimeViolation>
+check_decision_with_policy(report, node_name, policy) → Vec<RuntimeViolation>
   Invariant 18: score=⊥  ⟹  blocked=1  ∧  first_hop < 0
   Invariant 19: score≠⊥, blocked=0  ⟹  first_hop = selected_dst
   Invariant 24: Control::Block  ⟹  blocked=1  ∨  halted=1
 ```
 
-Hard reset path uses `restore_base_tensor()` (invariant 23) rather than
-`reset() + embed_tensor_edges()`.  `restore_base_tensor` copies the CPU
-`base_tensor` snapshot back to the device, restoring a clean baseline
-without requiring the original edge list in scope.
-
 ## Legacy removals
 
-Removed or forbidden from runtime reintroduction:
+Removed and forbidden from runtime reintroduction:
 
 ```text
 scalar CUDA world
 scalar LLM plan format
 CPU routing planner
 policy side-channel files
-search/ingress demo planner
-DSL compiler
-paging registry
+assets/patterns.json             (deleted; replaced by generated patterns.source.json)
+search/ingress/dsl/paging layers
 PyTorch/JAX/Triton runtime
 hard-coded StateNode/ControlNode/EventNode constants
 NODE_COUNT / MATRIX_LEN / THREAD_COUNT in src/node.rs
 separate kernel_fusion crate or addons/ directory
-runtime PTX stitching or FusionPlan
+runtime PTX stitching or FusionPlan types
 fake CUDA planned-success receipts
 QuantaleAction enum / selected_action()
 batch_contains_cuda_ptx / CUDA-specific batch branching
+runtime fallback to assets/topology.json     (generated only)
+runtime fallback to assets/patterns.json     (source-generated only)
 ```
 
 ## Benchmark baseline
 
-Recorded on 44-node topology; recapture after upgrading to 60 nodes.
+Recorded on 44-node topology; recapture after the 74-node graph is exercise-tested.
 
 ```text
 profile=release
