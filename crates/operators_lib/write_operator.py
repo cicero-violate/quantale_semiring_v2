@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Control::WriteOperator operator: write a new Python operator file to crates/operators_lib/.
+"""Control::WriteOperator operator: stage or write a Python operator file.
 
 Receives a payload (possibly wrapped in context envelopes) containing:
   filename              — bare filename, must end in .py, no path separators
@@ -11,15 +11,19 @@ Receives a payload (possibly wrapped in context envelopes) containing:
 Output:
   {"write_operator": {"filename": "...", "node_name": "...", "bytes": N,
                        "path": "...", "contracts_updated": [...]}}
+  {"write_operator": {"staged": true, "mutation_id": "...", "queue_path": "..."}}
 """
 
 import json
 import pathlib
 import sys
 
+import mutation_policy
+
 _PROJECT_ROOT  = pathlib.Path(__file__).resolve().parent.parent.parent
 _OPERATORS_LIB = _PROJECT_ROOT / "crates" / "operators_lib"
 _OPERATORS_JSON = _PROJECT_ROOT / "assets" / "operators.json"
+_EFFECTS = ["repo_write", "operator_registry_write"]
 
 
 def _apply_contract_ops(ops: list) -> tuple[list, str | None]:
@@ -135,6 +139,35 @@ def main() -> None:
             "error": f"file already exists: {filename} — use a different name or delete first"
         }}))
         sys.exit(1)
+
+    decision = mutation_policy.decision_for_effects(_EFFECTS)
+    if decision == "deny":
+        print(json.dumps({"write_operator": {"error": "side-effect policy denied operator write"}}))
+        sys.exit(1)
+    if decision == "stage":
+        staged = mutation_policy.stage_mutation(
+            source_node="Control::WriteOperator",
+            kind="operator_write",
+            effects=_EFFECTS,
+            payload={
+                "filename": filename,
+                "source": source,
+                "node_name": node_name,
+                "operator_contract_ops": contract_ops,
+            },
+            summary={
+                "filename": filename,
+                "node_name": node_name,
+                "bytes": len(source.encode()),
+                "contracts_to_update": len(contract_ops),
+            },
+            target_paths=[
+                str(dest.relative_to(_PROJECT_ROOT)),
+                str(_OPERATORS_JSON.relative_to(_PROJECT_ROOT)),
+            ],
+        )
+        print(json.dumps({"write_operator": staged}))
+        return
 
     try:
         dest.write_text(source)

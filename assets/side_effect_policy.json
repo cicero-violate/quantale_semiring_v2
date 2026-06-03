@@ -1,0 +1,11 @@
+{
+  "default": "allow",
+  "effects": {
+    "read_state": "allow",
+    "write_state": "allow",
+    "repo_write": "stage",
+    "operator_registry_write": "stage",
+    "topology_write": "stage",
+    "pattern_write": "stage"
+  }
+}

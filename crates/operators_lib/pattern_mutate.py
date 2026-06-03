@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Control::PatternMutate operator: apply CRUD operations to assets/patterns.json.
+"""Control::PatternMutate operator: stage or apply CRUD operations to assets/patterns.json.
 
 CKA patterns define seq/par/choice/star execution structures used by the batch
 scheduler. Mutating them reshapes which execution paths are explored in parallel.
@@ -23,6 +23,8 @@ Rate limiting: skips if last mutation was within MIN_INTERVAL_S seconds.
 
 Output (success):
   {"pattern_mutate": {"applied": [...], "pattern_count": N}}
+Output (staged):
+  {"pattern_mutate": {"staged": true, "mutation_id": "...", "queue_path": "...", "summary": {...}}}
 Output (skipped):
   {"pattern_mutate": {"skipped": "rate_limited", "next_allowed_in_s": N}}
 Output (failure):
@@ -34,11 +36,14 @@ import json
 import pathlib
 import sys
 
+import mutation_policy
+
 _PROJECT_ROOT = pathlib.Path(__file__).resolve().parent.parent.parent
 PATTERNS_PATH = _PROJECT_ROOT / "assets" / "patterns.json"
 PATTERNS_BAK  = _PROJECT_ROOT / "assets" / "patterns.json.bak"
 MUTATIONS_LOG = _PROJECT_ROOT / "state" / "pattern_mutations.jsonl"
 MIN_INTERVAL_S = 30
+_EFFECTS = ["pattern_write"]
 
 
 def _load() -> dict:
@@ -175,27 +180,51 @@ def main() -> None:
         print(json.dumps({"pattern_mutate": {"applied": [], "note": "no ops provided"}}))
         return
 
-    limited, wait = _rate_limited()
-    if limited:
-        print(json.dumps({"pattern_mutate": {"skipped": "rate_limited", "next_allowed_in_s": round(wait, 1)}}))
-        return
-
     try:
         data = _load()
     except Exception as exc:
         sys.stderr.write(f"[pattern_mutate] cannot load {PATTERNS_PATH}: {exc}\n")
         sys.exit(1)
 
-    try:
-        PATTERNS_BAK.write_text(json.dumps(data, indent=2) + "\n")
-    except OSError:
-        pass
-
     applied, error = _apply_ops(data, ops)
     if error:
         _log(applied, error)
         print(json.dumps({"pattern_mutate": {"error": error}}))
         sys.exit(1)
+
+    decision = mutation_policy.decision_for_effects(_EFFECTS)
+    if decision == "deny":
+        error = "side-effect policy denied pattern mutation"
+        _log(applied, error)
+        print(json.dumps({"pattern_mutate": {"error": error}}))
+        sys.exit(1)
+    if decision == "stage":
+        staged = mutation_policy.stage_mutation(
+            source_node="Control::PatternMutate",
+            kind="pattern_patch",
+            effects=_EFFECTS,
+            payload={
+                "pattern_ops": ops,
+                "reason": payload.get("reason", ""),
+            },
+            summary={
+                "applied_if_approved": applied,
+                "pattern_count_after": len(data.get("patterns", [])),
+            },
+            target_paths=[str(PATTERNS_PATH.relative_to(_PROJECT_ROOT))],
+        )
+        print(json.dumps({"pattern_mutate": staged}))
+        return
+
+    limited, wait = _rate_limited()
+    if limited:
+        print(json.dumps({"pattern_mutate": {"skipped": "rate_limited", "next_allowed_in_s": round(wait, 1)}}))
+        return
+
+    try:
+        PATTERNS_BAK.write_text(json.dumps(data, indent=2) + "\n")
+    except OSError:
+        pass
 
     try:
         _write(data)

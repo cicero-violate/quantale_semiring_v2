@@ -68,13 +68,19 @@ Done in the first implementation slice:
 - `Control::WriteOperator` now requires `filename` and `source` payload keys and
   must follow `State::OperatorPlan`.
 - Contract failures are logged separately from operator execution failures.
+- Added `assets/side_effect_policy.json`.
+- Added `state/mutation_queue.jsonl` staging support through
+  `crates/operators_lib/mutation_policy.py`.
+- `Control::WriteOperator`, `Control::TopologyMutate`, and
+  `Control::PatternMutate` now stage validated mutations by default instead of
+  writing repo assets.
+- Added `crates/operators_lib/apply_mutations.py` as the explicit apply path for
+  pending queue records.
 
 Still pending:
 
-- Side-effect policy asset.
-- Staged mutation queue.
-- Applying topology/pattern/operator mutations through an explicit review/apply
-  path.
+- Runtime node/CLI wiring for apply/review commands.
+- Queue listing, diff preview, and selective approval ergonomics.
 - Moving retry/reset and governance thresholds out of `src`.
 
 ## Target Assets

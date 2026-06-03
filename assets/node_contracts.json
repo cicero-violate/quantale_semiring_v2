@@ -5,7 +5,7 @@
       "requires_payload": ["filename", "source"],
       "allowed_after": ["State::OperatorPlan"],
       "side_effects": ["repo_write", "operator_registry_write"],
-      "mutation_mode": "apply",
+      "mutation_mode": "staged",
       "exploration": {
         "allow_direct": false
       }
@@ -13,7 +13,7 @@
     {
       "node": "Control::TopologyMutate",
       "side_effects": ["topology_write", "operator_registry_write"],
-      "mutation_mode": "apply",
+      "mutation_mode": "staged",
       "exploration": {
         "allow_direct": false
       }
@@ -21,7 +21,7 @@
     {
       "node": "Control::PatternMutate",
       "side_effects": ["pattern_write"],
-      "mutation_mode": "apply",
+      "mutation_mode": "staged",
       "exploration": {
         "allow_direct": false
       }

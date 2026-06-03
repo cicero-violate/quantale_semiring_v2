@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Control::TopologyMutate operator: apply CRUD operations to topology nodes and edges.
+"""Control::TopologyMutate operator: stage or apply CRUD operations to topology nodes and edges.
 
 Reads a JSON payload from stdin with a list of operations, applies them to
-assets/topology.json (and assets/operators.json for new operator nodes), and
-writes the results back. The runtime fingerprint watcher detects the change on
-the next tick; follow with Control::BuildTopologyOverlay to recompile.
+assets/topology.json (and assets/operators.json for new operator nodes) only
+when side-effect policy allows direct apply. By default, mutating effects are
+queued in state/mutation_queue.jsonl for explicit review/apply.
 
 Operations (topology_ops array):
   {"op": "create_node",  "node": {"name": "...", "type": "State|Control|Event|Execution|Analysis", "action": "...", "description": "..."}}
@@ -30,6 +30,8 @@ Backup: writes assets/topology.json.bak and assets/operators.json.bak before eac
 
 Output (success):
   {"topology_mutate": {"applied": [...], "contracts_added": [...], "contracts_updated": [...], "node_count": N, "edge_count": N}}
+Output (staged):
+  {"topology_mutate": {"staged": true, "mutation_id": "...", "queue_path": "...", "summary": {...}}}
 Output (skipped — rate limited):
   {"topology_mutate": {"skipped": "rate_limited", "next_allowed_in_s": N}}
 Output (failure):
@@ -41,11 +43,14 @@ import json
 import pathlib
 import sys
 
+import mutation_policy
+
 _PROJECT_ROOT   = pathlib.Path(__file__).resolve().parent.parent.parent
 TOPOLOGY_PATH   = _PROJECT_ROOT / "assets" / "topology.json"
 OPERATORS_PATH  = _PROJECT_ROOT / "assets" / "operators.json"
 EXPLORATION_PATH = _PROJECT_ROOT / "assets" / "exploration.json"
 MUTATIONS_LOG   = _PROJECT_ROOT / "state" / "topology_mutations.jsonl"
+_EFFECTS = ["topology_write", "operator_registry_write"]
 
 _DEFAULT_NODE_FEATURES = {"novelty": 0.3, "entropy": 0.3}
 TOPOLOGY_BAK   = _PROJECT_ROOT / "assets" / "topology.json.bak"
@@ -325,23 +330,11 @@ def main() -> None:
         print(json.dumps({"topology_mutate": {"applied": [], "note": "no ops provided"}}))
         return
 
-    # rate limiting
-    limited, wait = _rate_limited()
-    if limited:
-        print(json.dumps({"topology_mutate": {"skipped": "rate_limited", "next_allowed_in_s": round(wait, 1)}}))
-        return
-
     try:
         topology = _load(TOPOLOGY_PATH)
     except Exception as exc:
         sys.stderr.write(f"[topology_mutate] cannot load {TOPOLOGY_PATH}: {exc}\n")
         sys.exit(1)
-
-    # persist backup before any write
-    try:
-        TOPOLOGY_BAK.write_text(json.dumps(topology, indent=2) + "\n")
-    except OSError:
-        pass
 
     applied, error = _apply_ops(topology, ops)
     if error:
@@ -361,10 +354,6 @@ def main() -> None:
             sys.stderr.write(f"[topology_mutate] cannot load {OPERATORS_PATH}: {exc}\n")
             sys.exit(1)
         operators_orig = json.dumps(operators, indent=2) + "\n"
-        try:
-            OPERATORS_BAK.write_text(operators_orig)
-        except OSError:
-            pass
 
         if contracts:
             contracts_added, error = _apply_contracts(operators, contracts)
@@ -380,6 +369,53 @@ def main() -> None:
                 print(json.dumps({"topology_mutate": {"error": error}}))
                 sys.exit(1)
 
+        decision = mutation_policy.decision_for_effects(_EFFECTS)
+        if decision == "deny":
+            error = "side-effect policy denied topology mutation"
+            _append_mutation_log(applied, contracts_added, contracts_updated, error)
+            print(json.dumps({"topology_mutate": {"error": error}}))
+            sys.exit(1)
+        if decision == "stage":
+            staged = mutation_policy.stage_mutation(
+                source_node="Control::TopologyMutate",
+                kind="topology_patch",
+                effects=_EFFECTS,
+                payload={
+                    "topology_ops": ops,
+                    "operator_contracts": contracts,
+                    "operator_contract_ops": contract_ops,
+                    "reason": payload.get("reason", ""),
+                },
+                summary={
+                    "applied_if_approved": applied,
+                    "contracts_added_if_approved": contracts_added,
+                    "contracts_updated_if_approved": contracts_updated,
+                    "node_count_after": len(topology.get("nodes", [])),
+                    "edge_count_after": len(topology.get("transitions", [])),
+                },
+                target_paths=[
+                    str(TOPOLOGY_PATH.relative_to(_PROJECT_ROOT)),
+                    str(OPERATORS_PATH.relative_to(_PROJECT_ROOT)),
+                    str(EXPLORATION_PATH.relative_to(_PROJECT_ROOT)),
+                ],
+            )
+            print(json.dumps({"topology_mutate": staged}))
+            return
+
+        limited, wait = _rate_limited()
+        if limited:
+            print(json.dumps({"topology_mutate": {"skipped": "rate_limited", "next_allowed_in_s": round(wait, 1)}}))
+            return
+
+        try:
+            TOPOLOGY_BAK.write_text(json.dumps(topology, indent=2) + "\n")
+        except OSError:
+            pass
+        try:
+            OPERATORS_BAK.write_text(operators_orig)
+        except OSError:
+            pass
+
         try:
             _write(OPERATORS_PATH, operators)
         except OSError as exc:
@@ -389,6 +425,49 @@ def main() -> None:
             _append_mutation_log(applied, contracts_added, contracts_updated, str(exc))
             print(json.dumps({"topology_mutate": {"error": f"operators write failed: {exc}"}}))
             sys.exit(1)
+    else:
+        decision = mutation_policy.decision_for_effects(_EFFECTS)
+        if decision == "deny":
+            error = "side-effect policy denied topology mutation"
+            _append_mutation_log(applied, contracts_added, contracts_updated, error)
+            print(json.dumps({"topology_mutate": {"error": error}}))
+            sys.exit(1)
+        if decision == "stage":
+            staged = mutation_policy.stage_mutation(
+                source_node="Control::TopologyMutate",
+                kind="topology_patch",
+                effects=_EFFECTS,
+                payload={
+                    "topology_ops": ops,
+                    "operator_contracts": contracts,
+                    "operator_contract_ops": contract_ops,
+                    "reason": payload.get("reason", ""),
+                },
+                summary={
+                    "applied_if_approved": applied,
+                    "contracts_added_if_approved": contracts_added,
+                    "contracts_updated_if_approved": contracts_updated,
+                    "node_count_after": len(topology.get("nodes", [])),
+                    "edge_count_after": len(topology.get("transitions", [])),
+                },
+                target_paths=[
+                    str(TOPOLOGY_PATH.relative_to(_PROJECT_ROOT)),
+                    str(OPERATORS_PATH.relative_to(_PROJECT_ROOT)),
+                    str(EXPLORATION_PATH.relative_to(_PROJECT_ROOT)),
+                ],
+            )
+            print(json.dumps({"topology_mutate": staged}))
+            return
+
+        limited, wait = _rate_limited()
+        if limited:
+            print(json.dumps({"topology_mutate": {"skipped": "rate_limited", "next_allowed_in_s": round(wait, 1)}}))
+            return
+
+        try:
+            TOPOLOGY_BAK.write_text(json.dumps(topology, indent=2) + "\n")
+        except OSError:
+            pass
 
     try:
         _write(TOPOLOGY_PATH, topology)
