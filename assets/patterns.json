@@ -11,7 +11,7 @@
       },
       "confidence": 0.95,
       "cost": 1.0,
-      "safety": 0.90
+      "safety": 0.9
     },
     {
       "name": "choose_repair_or_retry",
@@ -31,7 +31,7 @@
           }
         ]
       },
-      "confidence": 0.80,
+      "confidence": 0.8,
       "cost": 2.0,
       "safety": 0.85
     },
@@ -49,9 +49,9 @@
           "max_unroll": 3
         }
       },
-      "confidence": 0.70,
+      "confidence": 0.7,
       "cost": 1.0,
-      "safety": 0.90
+      "safety": 0.9
     },
     {
       "name": "parallel_prepare",
@@ -93,6 +93,90 @@
       "confidence": 0.0,
       "cost": 0.0,
       "safety": 0.0
+    },
+    {
+      "name": "market_analysis_trade_seq",
+      "expr": {
+        "seq": [
+          "State::Input",
+          "State::MarketFeed",
+          "Event::MarketFeedUpdated",
+          "State::AnalysisPlan",
+          "Event::AnalysisPlanReady",
+          "Analysis::Return1",
+          "Analysis::Volatility",
+          "Analysis::SignalScore",
+          "Event::AnalysisFinished",
+          "State::Plan",
+          "State::TradePlan",
+          "Event::TradeDecisionReady",
+          "State::PaperTrade"
+        ]
+      },
+      "confidence": 0.91,
+      "cost": 1.0,
+      "safety": 0.9
+    },
+    {
+      "name": "paper_trade_retry_bounded",
+      "expr": {
+        "star": {
+          "body": {
+            "seq": [
+              "State::PaperTrade",
+              "Event::PaperTradeRejected",
+              "Control::Repair",
+              "Control::Retry"
+            ]
+          },
+          "max_unroll": 3
+        }
+      },
+      "confidence": 0.72,
+      "cost": 1.0,
+      "safety": 0.86
+    },
+    {
+      "name": "market_analysis_loop_seq",
+      "expr": {
+        "seq": [
+          "State::Input",
+          "State::MarketFeed",
+          "Event::MarketFeedUpdated",
+          "State::AnalysisPlan",
+          "Event::AnalysisPlanReady",
+          "Analysis::Return1",
+          "Analysis::Volatility",
+          "Analysis::SignalScore",
+          "Event::AnalysisFinished",
+          "State::Plan",
+          "State::TradePlan",
+          "Event::TradeDecisionReady",
+          "State::PaperTrade"
+        ]
+      },
+      "confidence": 0.91,
+      "cost": 1.0,
+      "safety": 0.9
+    },
+    {
+      "name": "paper_trade_repair_retry_star",
+      "expr": {
+        "star": {
+          "body": {
+            "seq": [
+              "Event::PaperTradeRejected",
+              "Control::Repair",
+              "Control::Retry",
+              "State::PaperTrade"
+            ]
+          },
+          "max_unroll": 3
+        }
+      },
+      "confidence": 0.74,
+      "cost": 1.0,
+      "safety": 0.86
     }
   ]
 }

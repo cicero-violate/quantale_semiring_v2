@@ -15,8 +15,8 @@ use crate::config::DEFAULT_BLOCK_SIZE;
 use crate::error::CudaError;
 use crate::exploration::{ExplorationCandidate, ExplorationEngine, ExplorationToken};
 use crate::graph::{DecisionReport, Node, reconstruct_path_from_witness_matrix};
-use crate::types::ProcessReceipt;
 use crate::topology::{GraphTopology, NodeRegistry};
+use crate::types::ProcessReceipt;
 
 pub const TENSOR_LAYER_COUNT: usize = 3;
 include!(concat!(env!("OUT_DIR"), "/topology_constants.rs"));
@@ -593,13 +593,8 @@ impl TensorQuantaleWorld {
             .dev
             .get_func(MODULE_NAME, DRAIN_KERNEL)
             .ok_or(CudaError::missing_function(DRAIN_KERNEL))?;
-        unsafe {
-            kernel.launch(
-                kernel_config(),
-                (&mut self.tensor, &receipt_buf, count),
-            )
-        }
-        .map_err(|error| CudaError::new("tensor_quantale_drain_queue", error))
+        unsafe { kernel.launch(kernel_config(), (&mut self.tensor, &receipt_buf, count)) }
+            .map_err(|error| CudaError::new("tensor_quantale_drain_queue", error))
     }
 
     pub fn decay(&mut self, factor: f32) -> Result<(), CudaError> {

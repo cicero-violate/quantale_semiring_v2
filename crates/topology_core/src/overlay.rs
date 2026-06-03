@@ -57,8 +57,8 @@ pub fn build_overlay_assets(root: impl AsRef<Path>) -> Result<(), String> {
 }
 
 fn read_json(path: PathBuf) -> Result<Value, String> {
-    let input = fs::read_to_string(&path)
-        .map_err(|error| format!("read '{}': {error}", path.display()))?;
+    let input =
+        fs::read_to_string(&path).map_err(|error| format!("read '{}': {error}", path.display()))?;
     serde_json::from_str(&input).map_err(|error| format!("parse '{}': {error}", path.display()))
 }
 
@@ -69,8 +69,7 @@ fn write_json(path: PathBuf, value: &Value) -> Result<(), String> {
     if fs::read_to_string(&path).ok().as_deref() == Some(output.as_str()) {
         return Ok(());
     }
-    fs::write(&path, output)
-        .map_err(|error| format!("write '{}': {error}", path.display()))
+    fs::write(&path, output).map_err(|error| format!("write '{}': {error}", path.display()))
 }
 
 fn read_overlay_dir(path: PathBuf) -> Result<Vec<Value>, String> {
@@ -138,7 +137,10 @@ fn reject_duplicate_transitions(transitions: &[Value]) -> Result<(), String> {
     Ok(())
 }
 
-fn reject_unknown_transition_endpoints(nodes: &[Value], transitions: &[Value]) -> Result<(), String> {
+fn reject_unknown_transition_endpoints(
+    nodes: &[Value],
+    transitions: &[Value],
+) -> Result<(), String> {
     let names = nodes
         .iter()
         .map(|node| string_field(node, "name", "node").map(str::to_string))
@@ -167,7 +169,10 @@ fn reject_duplicate_operator_contracts(operators: &[Value]) -> Result<(), String
     Ok(())
 }
 
-fn reject_operator_nodes_without_contracts(nodes: &[Value], operators: &[Value]) -> Result<(), String> {
+fn reject_operator_nodes_without_contracts(
+    nodes: &[Value],
+    operators: &[Value],
+) -> Result<(), String> {
     let contracted = operators
         .iter()
         .map(|operator| string_field(operator, "node_name", "operator").map(str::to_string))

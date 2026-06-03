@@ -3,10 +3,10 @@
 use cudarc::driver::DeviceRepr;
 use serde::Serialize;
 
-use crate::types::{BOTTOM, Q_UNIT};
 use crate::error::CudaError;
 use crate::tensor::{MATRIX_LEN, TENSOR_NODE_COUNT};
 use crate::topology::NodeRegistry;
+use crate::types::{BOTTOM, Q_UNIT};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Node(pub i32);

@@ -1,4 +1,84 @@
-# Problems Fixed — Session 2026-06-02 (continued)
+# Problems Fixed — Session 2026-06-02 / 2026-06-03
+
+## Current Check — 2026-06-03
+
+**Status: partially done.**
+
+`State::Introspect` is no longer blocked by the old tensor node-count bug. The
+runtime now reaches:
+
+```text
+State::Learn -> State::Introspect -> State::TopologyPlan -> Control::TopologyMutate
+```
+
+Validation run:
+
+```bash
+cargo run -- --check-topology
+```
+
+Result:
+
+```text
+topology OK (72 nodes, 88 transitions, 5 known warnings)
+```
+
+The 88 transitions are from live runtime mutations after the fix. The current
+worktree has uncommitted runtime edits in:
+
+```text
+assets/patterns.json
+assets/topology.json
+assets/topology.generated.json
+```
+
+**Done**
+- `State::Introspect` is addressable by the tensor after deriving tensor size
+  from topology assets.
+- The CUDA tensor no longer hard-codes `N = 62`; `build.rs` derives the topology
+  node count and injects the same value into Rust and CUDA.
+- The source topology now includes explicit ids for the dev-chain nodes
+  `62..71`.
+- `cargo test` passed after the tensor-size fix: `101 passed (8 suites)`.
+- `--check-topology` exits 0 with the expected ConsumedBlockPoint warnings.
+
+**Not done**
+- Runtime exploration can still jump directly to side-effecting nodes such as
+  `Control::WriteOperator` without the required producer payload from
+  `State::OperatorPlan`.
+- `Control::PatternMutate` and `Control::TopologyMutate` can permanently mutate
+  repo assets during normal runs. This is intentional machinery, but it needs
+  gating or an explicit review/apply phase before it is safe.
+- The CKA pattern path can still feed sequence-shaped output into code that
+  expects tensor-plan edge objects, producing warnings like:
+
+```text
+Exploration tensor plan invalid ... string "Analysis::Return1", expected struct TensorPlanEdge
+```
+
+**Assessment**
+
+This is a real self-modifying neuro-symbolic runtime now: tensor routing,
+learned edges, LLM topology planning, topology mutation, pattern mutation, and
+operator-file writing are all connected. It is not yet a reliable autonomous
+agent. The main weakness is control: the system allows exploratory execution of
+nodes whose preconditions are payload-dependent or side-effecting. The result is
+that the LLM reacts to failures created by permissive routing, instead of
+solving only genuine topology defects.
+
+Practical rating:
+
+```text
+Research prototype: 8/10
+Autonomous production agent: 3/10
+Debuggability: 6/10
+Safety / change control: 2/10
+Core architecture potential: 8/10
+```
+
+The core idea is strong. The next engineering step is not more topology. It is
+execution governance: typed payload contracts, side-effect gates, dry-run mode,
+and a review queue for file mutations.
 
 This document records what was fixed in this session and what to validate next.
 The previous `problem.md` covered issues 1–4. This session fixed issues 5–11.

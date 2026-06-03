@@ -10,8 +10,8 @@ use serde_json::json;
 use crate::batch::BatchPlan;
 use crate::exploration::ExplorationCommitRecord;
 use crate::graph::DecisionReport;
-use crate::types::ProcessReceipt;
 use crate::tensor::TensorEdge;
+use crate::types::ProcessReceipt;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TlogRecordKind {

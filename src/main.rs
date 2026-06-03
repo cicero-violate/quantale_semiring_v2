@@ -2,17 +2,16 @@ use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::time::SystemTime;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use quantale_semiring_v2::{
-    action_label, compile_pattern, compile_tensor_plan, dispatch_decision_batch_blocking,
-    format_quantale_value, load_default_patterns,
-    load_learned_tensor_edges, project_ready_batch_plan, runtime_check,
-    check, check_with_operators, format_violations, ViolationKind,
-    CompiledCkaPattern, ExecutionOutcome, ExplorationConfig, ExplorationEngine, GraphTopology,
-    LearningPolicy, Node, ProjectionBias, SystemConfig, TensorQuantaleWorld, TlogWriter,
-    TopologyInvariants, TopologyRuntime,
-    UniversalExecutor, LAYER_CONFIDENCE,
+    CompiledCkaPattern, ContractContext, ContractViolation, ExecutionOutcome, ExplorationConfig,
+    ExplorationEngine, GraphTopology, LAYER_CONFIDENCE, LearningPolicy, Node, NodeContracts,
+    ProcessReceipt, ProjectionBias, SystemConfig, TensorQuantaleWorld, TlogWriter,
+    TopologyInvariants, TopologyRuntime, UniversalExecutor, ViolationKind, action_label, check,
+    check_with_operators, compile_pattern, compile_tensor_plan, dispatch_decision_batch_blocking,
+    format_quantale_value, format_violations, load_default_patterns, load_learned_tensor_edges,
+    project_ready_batch_plan, runtime_check,
 };
 
 use topology_core::build_overlay_assets;
@@ -27,6 +26,7 @@ struct RuntimeEpoch {
     fingerprint: AssetFingerprint,
     topology: TopologyRuntime,
     executor: UniversalExecutor,
+    contracts: NodeContracts,
     /// Accumulates static topology edges plus every LLM-proposed edge so that
     /// hard reset re-embeds the full learned set, not just the static baseline.
     accumulated_edges: Vec<quantale_semiring_v2::TensorEdge>,
@@ -113,6 +113,7 @@ fn main() {
     let sleep_dur =
         (config.tick_sleep_ms > 0).then(|| std::time::Duration::from_millis(config.tick_sleep_ms));
     let mut current_payload = json!({ "context": "market_analysis_loop" });
+    let mut current_payload_origin: Option<String> = None;
     let mut tick: usize = 0;
     let mut consecutive_blocks: usize = 0;
 
@@ -133,6 +134,7 @@ fn main() {
                     );
                     epoch = next_epoch;
                     current_payload = json!({ "context": "market_analysis_loop" });
+                    current_payload_origin = None;
                     consecutive_blocks = 0;
                 }
                 Err(error) => {
@@ -150,7 +152,10 @@ fn main() {
             std::process::exit(1);
         }
 
-        let exploration_candidates = match epoch.world.expand_exploration(&mut epoch.exploration_engine) {
+        let exploration_candidates = match epoch
+            .world
+            .expand_exploration(&mut epoch.exploration_engine)
+        {
             Ok(candidates) => candidates,
             Err(error) => {
                 eprintln!("[WARN] exploration unavailable; falling back to CKA/frontier: {error}");
@@ -189,7 +194,9 @@ fn main() {
                 eprintln!("{error}");
                 std::process::exit(1);
             }
-            epoch.exploration_engine.mark_candidate_committed(&candidate);
+            epoch
+                .exploration_engine
+                .mark_candidate_committed(&candidate);
             println!(
                 "exploration projection=({}->{}) first_hop={} score={} path={:?}",
                 node_name(decision.selected_src, epoch.topology.registry()),
@@ -201,7 +208,8 @@ fn main() {
             if decision.blocked != 0 {
                 continue;
             }
-            let Some(active_node) = Node::decode(decision.first_hop, epoch.topology.registry()) else {
+            let Some(active_node) = Node::decode(decision.first_hop, epoch.topology.registry())
+            else {
                 eprintln!(
                     "Invalid exploration first_hop index: {}",
                     decision.first_hop
@@ -215,11 +223,63 @@ fn main() {
                 );
                 break;
             };
-            let process_receipt =
-                epoch.executor.execute_abstract_node_blocking(active_node_name, &current_payload);
+            if let Err(violation) = epoch.contracts.validate(
+                active_node_name,
+                &current_payload,
+                current_payload_origin.as_deref(),
+                ContractContext::Exploration,
+            ) {
+                eprintln!("[contract] {violation}; skipping exploration executor call");
+                let process_receipt = contract_violation_receipt(active_node_name, &violation);
+                epoch.world.queue_lattice_update(
+                    decision.selected_src,
+                    decision.first_hop,
+                    ExecutionOutcome::Failure,
+                );
+                epoch
+                    .exploration_engine
+                    .update_receipt_prior(decision.first_hop, &process_receipt);
+                if let Err(error) = tlog.append_exploration_receipt(&json!({
+                    "node": active_node_name,
+                    "exit_code": process_receipt.exit_code,
+                    "contract_violation": violation.reason,
+                    "prior": epoch.exploration_engine.receipt_prior_for(decision.first_hop),
+                })) {
+                    eprintln!("{error}");
+                    std::process::exit(1);
+                }
+                if let Err(error) = epoch.world.drain_lattice_queue() {
+                    eprintln!("{error}");
+                    std::process::exit(1);
+                }
+                if let Err(error) = tlog.log_step(&process_receipt, &decision) {
+                    eprintln!("{error}");
+                    std::process::exit(1);
+                }
+                consecutive_blocks += 1;
+                maybe_hard_reset_after_blocks(
+                    &mut consecutive_blocks,
+                    &mut epoch.world,
+                    &epoch.accumulated_edges,
+                    &mut current_payload,
+                    std::time::Duration::from_millis(config.hard_reset_sleep_ms),
+                    projection_bias,
+                );
+                if consecutive_blocks == 0 {
+                    current_payload_origin = None;
+                }
+                continue;
+            }
+            let process_receipt = epoch
+                .executor
+                .execute_abstract_node_blocking(active_node_name, &current_payload);
             let outcome = ExecutionOutcome::from(&process_receipt);
-            epoch.world.queue_lattice_update(decision.selected_src, decision.first_hop, outcome);
-            epoch.exploration_engine.update_receipt_prior(decision.first_hop, &process_receipt);
+            epoch
+                .world
+                .queue_lattice_update(decision.selected_src, decision.first_hop, outcome);
+            epoch
+                .exploration_engine
+                .update_receipt_prior(decision.first_hop, &process_receipt);
             if let Err(error) = tlog.append_exploration_receipt(&json!({
                 "node": active_node_name,
                 "exit_code": process_receipt.exit_code,
@@ -233,8 +293,10 @@ fn main() {
                 if epoch.executor.output_mode(active_node_name) == Some("tensor_plan") {
                     match compile_tensor_plan(&process_receipt.stdout_payload) {
                         Ok(plan_edges) => {
-                            let plan_edges =
-                                filter_static_topology_edges(plan_edges, epoch.topology.tensor_edges());
+                            let plan_edges = filter_static_topology_edges(
+                                plan_edges,
+                                epoch.topology.tensor_edges(),
+                            );
                             if !plan_edges.is_empty() {
                                 if let Err(error) = epoch.world.embed_tensor_edges(&plan_edges) {
                                     eprintln!("{error}");
@@ -266,6 +328,7 @@ fn main() {
                     }
                 } else {
                     current_payload = json!({ "context": process_receipt.stdout_payload });
+                    current_payload_origin = Some(active_node_name.to_string());
                 }
             }
             if let Err(error) = epoch.world.drain_lattice_queue() {
@@ -289,6 +352,9 @@ fn main() {
                     std::time::Duration::from_millis(config.hard_reset_sleep_ms),
                     projection_bias,
                 );
+                if consecutive_blocks == 0 {
+                    current_payload_origin = None;
+                }
                 continue;
             }
             consecutive_blocks = 0;
@@ -362,7 +428,8 @@ fn main() {
                             outcome,
                         );
 
-                        epoch.exploration_engine
+                        epoch
+                            .exploration_engine
                             .update_receipt_prior(scheduled.decision.first_hop, &scheduled.receipt);
                         if let Err(error) = tlog.append_exploration_receipt(&json!({
                             "node": active_node_name,
@@ -376,7 +443,8 @@ fn main() {
                         if scheduled.receipt.exit_code == 0
                             && !scheduled.receipt.stdout_payload.is_empty()
                         {
-                            if epoch.executor.output_mode(&active_node_name) == Some("tensor_plan") {
+                            if epoch.executor.output_mode(&active_node_name) == Some("tensor_plan")
+                            {
                                 match compile_tensor_plan(&scheduled.receipt.stdout_payload) {
                                     Ok(plan_edges) => {
                                         let plan_edges = filter_static_topology_edges(
@@ -419,7 +487,8 @@ fn main() {
                             // Only pass non-tensor-plan stdout forward as
                             // context — tensor plan edges are already in the
                             // GPU world and would create nested JSON if recycled.
-                            if epoch.executor.output_mode(&active_node_name) != Some("tensor_plan") {
+                            if epoch.executor.output_mode(&active_node_name) != Some("tensor_plan")
+                            {
                                 batch_stdout.push(json!({
                                     "node": active_node_name,
                                     "stdout": scheduled.receipt.stdout_payload,
@@ -456,18 +525,24 @@ fn main() {
                         std::time::Duration::from_millis(config.hard_reset_sleep_ms),
                         projection_bias,
                     );
+                    if consecutive_blocks == 0 {
+                        current_payload_origin = None;
+                    }
                     continue 'ticks;
                 }
                 consecutive_blocks = 0;
                 if !plan_stdout.is_empty() {
                     current_payload = json!({ "context": plan_stdout });
+                    current_payload_origin = Some("scheduler:cka_parallel".to_string());
                 }
 
                 if let Err(error) = epoch.world.decay(config.decay_normal) {
                     eprintln!("{error}");
                     std::process::exit(1);
                 }
-                let _ = epoch.world.reconstruct_projected_tensor_path(LAYER_CONFIDENCE);
+                let _ = epoch
+                    .world
+                    .reconstruct_projected_tensor_path(LAYER_CONFIDENCE);
                 continue;
             }
             Ok(None) => {}
@@ -513,6 +588,7 @@ fn main() {
                 let _ = epoch.world.drain_lattice_queue();
                 let _ = epoch.world.decay(config.decay_blocked);
                 current_payload = json!({ "context": "market_analysis_loop" });
+                current_payload_origin = None;
                 if let Some(dur) = sleep_dur {
                     std::thread::sleep(dur);
                 }
@@ -533,6 +609,9 @@ fn main() {
                     std::time::Duration::from_millis(config.hard_reset_sleep_ms),
                     projection_bias,
                 );
+                if consecutive_blocks == 0 {
+                    current_payload_origin = None;
+                }
             }
             continue;
         }
@@ -567,8 +646,57 @@ fn main() {
 
         println!("[STEP] Tensor frontier advanced to node: {active_node_name}");
 
-        let process_receipt =
-            epoch.executor.execute_abstract_node_blocking(active_node_name, &current_payload);
+        if let Err(violation) = epoch.contracts.validate(
+            active_node_name,
+            &current_payload,
+            current_payload_origin.as_deref(),
+            ContractContext::Frontier,
+        ) {
+            eprintln!("[contract] {violation}; skipping executor call");
+            let process_receipt = contract_violation_receipt(active_node_name, &violation);
+            epoch.world.queue_lattice_update(
+                decision.selected_src,
+                decision.first_hop,
+                ExecutionOutcome::Failure,
+            );
+            epoch
+                .exploration_engine
+                .update_receipt_prior(decision.first_hop, &process_receipt);
+            if let Err(error) = tlog.append_exploration_receipt(&json!({
+                "node": active_node_name,
+                "exit_code": process_receipt.exit_code,
+                "contract_violation": violation.reason,
+                "prior": epoch.exploration_engine.receipt_prior_for(decision.first_hop),
+            })) {
+                eprintln!("{error}");
+                std::process::exit(1);
+            }
+            if let Err(error) = epoch.world.drain_lattice_queue() {
+                eprintln!("{error}");
+                std::process::exit(1);
+            }
+            if let Err(error) = tlog.log_step(&process_receipt, &decision) {
+                eprintln!("{error}");
+                std::process::exit(1);
+            }
+            consecutive_blocks += 1;
+            maybe_hard_reset_after_blocks(
+                &mut consecutive_blocks,
+                &mut epoch.world,
+                &epoch.accumulated_edges,
+                &mut current_payload,
+                std::time::Duration::from_millis(config.hard_reset_sleep_ms),
+                projection_bias,
+            );
+            if consecutive_blocks == 0 {
+                current_payload_origin = None;
+            }
+            continue;
+        }
+
+        let process_receipt = epoch
+            .executor
+            .execute_abstract_node_blocking(active_node_name, &current_payload);
         let outcome = ExecutionOutcome::from(&process_receipt);
 
         println!(
@@ -590,8 +718,12 @@ fn main() {
             }
         }
 
-        epoch.world.queue_lattice_update(decision.selected_src, decision.first_hop, outcome);
-        epoch.exploration_engine.update_receipt_prior(decision.first_hop, &process_receipt);
+        epoch
+            .world
+            .queue_lattice_update(decision.selected_src, decision.first_hop, outcome);
+        epoch
+            .exploration_engine
+            .update_receipt_prior(decision.first_hop, &process_receipt);
         if let Err(error) = tlog.append_exploration_receipt(&json!({
             "node": active_node_name,
             "exit_code": process_receipt.exit_code,
@@ -642,6 +774,7 @@ fn main() {
                 }
             } else {
                 current_payload = json!({ "context": process_receipt.stdout_payload });
+                current_payload_origin = Some(active_node_name.to_string());
             }
         }
 
@@ -670,11 +803,16 @@ fn main() {
                 std::time::Duration::from_millis(config.hard_reset_sleep_ms),
                 projection_bias,
             );
+            if consecutive_blocks == 0 {
+                current_payload_origin = None;
+            }
             continue;
         }
         consecutive_blocks = 0;
 
-        let _ = epoch.world.reconstruct_projected_tensor_path(LAYER_CONFIDENCE);
+        let _ = epoch
+            .world
+            .reconstruct_projected_tensor_path(LAYER_CONFIDENCE);
         if let Some(dur) = sleep_dur {
             std::thread::sleep(dur);
         }
@@ -735,6 +873,7 @@ fn build_runtime_epoch(
         config.operator_registry.clone(),
         topology.registry().clone(),
     );
+    let contracts = NodeContracts::default_asset();
 
     let mut tensor_edges = topology.tensor_edges().to_vec();
     tlog.append_tensor_edges(&format!("topology:tensor:epoch:{id}"), &tensor_edges)
@@ -764,10 +903,11 @@ fn build_runtime_epoch(
         compiled_patterns.push(compiled);
     }
 
-    let world = TensorQuantaleWorld::from_tensor_edges(&tensor_edges)
-        .map_err(|error| error.to_string())?;
+    let world =
+        TensorQuantaleWorld::from_tensor_edges(&tensor_edges).map_err(|error| error.to_string())?;
 
-    let exploration_config = ExplorationConfig::default_asset().map_err(|error| error.to_string())?;
+    let exploration_config =
+        ExplorationConfig::default_asset().map_err(|error| error.to_string())?;
     let exploration_engine = ExplorationEngine::new(
         exploration_config,
         &topology.document,
@@ -780,6 +920,7 @@ fn build_runtime_epoch(
         fingerprint: current_asset_fingerprint(),
         topology,
         executor,
+        contracts,
         accumulated_edges: tensor_edges,
         compiled_patterns,
         world,
@@ -816,6 +957,7 @@ fn watched_asset_paths() -> Vec<PathBuf> {
         "assets/topology.json",
         "assets/operators.generated.json",
         "assets/operators.json",
+        "assets/node_contracts.json",
         "assets/patterns.json",
     ]
     .into_iter()
@@ -867,5 +1009,14 @@ fn maybe_hard_reset_after_blocks(
                 post_reset.first_hop
             );
         }
+    }
+}
+
+fn contract_violation_receipt(node_name: &str, violation: &ContractViolation) -> ProcessReceipt {
+    ProcessReceipt {
+        node_name: node_name.to_string(),
+        exit_code: 125,
+        stdout_payload: String::new(),
+        stderr_payload: format!("contract violation: {}", violation.reason),
     }
 }

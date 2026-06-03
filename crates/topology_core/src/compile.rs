@@ -11,8 +11,8 @@ impl GraphTopology {
     }
 
     pub fn from_json_file(path: impl AsRef<Path>) -> Result<Self, TopologyError> {
-        let input =
-            fs::read_to_string(path).map_err(|error| TopologyError::invalid_input(error.to_string()))?;
+        let input = fs::read_to_string(path)
+            .map_err(|error| TopologyError::invalid_input(error.to_string()))?;
         Self::from_json_str(&input)
     }
 

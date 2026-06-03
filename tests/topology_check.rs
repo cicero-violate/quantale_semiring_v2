@@ -1,5 +1,5 @@
 use quantale_semiring_v2::{
-    GraphTopology, TopologyInvariants, TENSOR_NODE_COUNT, ViolationKind, check,
+    GraphTopology, TENSOR_NODE_COUNT, TopologyInvariants, ViolationKind, check,
 };
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -53,7 +53,8 @@ fn check_passes_on_valid_topology() {
 
 #[test]
 fn check_rejects_unknown_source_endpoint() {
-    let topo = parse(r#"{
+    let topo = parse(
+        r#"{
         "matrix_name":"t","nodes":[
             {"id":0,"name":"State::A","type":"State"},
             {"id":1,"name":"Control::Halt","type":"Control","action":"halt"}
@@ -61,13 +62,19 @@ fn check_rejects_unknown_source_endpoint() {
         "transitions":[
             {"from":"State::Ghost","to":"Control::Halt","default_weight":0.9},
             {"from":"State::A","to":"Control::Halt","default_weight":0.8}
-        ],"pages":[]}"#);
-    assert!(has_violation(&topo, ViolationKind::UnknownEndpoint, "State::Ghost"));
+        ],"pages":[]}"#,
+    );
+    assert!(has_violation(
+        &topo,
+        ViolationKind::UnknownEndpoint,
+        "State::Ghost"
+    ));
 }
 
 #[test]
 fn check_rejects_unknown_destination_endpoint() {
-    let topo = parse(r#"{
+    let topo = parse(
+        r#"{
         "matrix_name":"t","nodes":[
             {"id":0,"name":"State::A","type":"State"},
             {"id":1,"name":"Control::Halt","type":"Control","action":"halt"}
@@ -75,8 +82,13 @@ fn check_rejects_unknown_destination_endpoint() {
         "transitions":[
             {"from":"State::A","to":"State::Missing","default_weight":0.9},
             {"from":"State::A","to":"Control::Halt","default_weight":0.8}
-        ],"pages":[]}"#);
-    assert!(has_violation(&topo, ViolationKind::UnknownEndpoint, "State::Missing"));
+        ],"pages":[]}"#,
+    );
+    assert!(has_violation(
+        &topo,
+        ViolationKind::UnknownEndpoint,
+        "State::Missing"
+    ));
 }
 
 // ── 3. non-terminal closure (dead-end) ───────────────────────────────────────
@@ -84,7 +96,8 @@ fn check_rejects_unknown_destination_endpoint() {
 #[test]
 fn check_rejects_dead_end_non_halt_node() {
     // State::Dead is reachable from start but has no outgoing transitions.
-    let topo = parse(r#"{
+    let topo = parse(
+        r#"{
         "matrix_name":"t","nodes":[
             {"id":0,"name":"State::Start","type":"State"},
             {"id":1,"name":"State::Dead", "type":"State"},
@@ -93,23 +106,30 @@ fn check_rejects_dead_end_non_halt_node() {
         "transitions":[
             {"from":"State::Start","to":"State::Dead",  "default_weight":0.9},
             {"from":"State::Start","to":"Control::Halt","default_weight":0.5}
-        ],"pages":[]}"#);
-    assert!(has_violation(&topo, ViolationKind::DeadEnd, "State::Dead"),
-        "State::Dead should be flagged as a dead end");
+        ],"pages":[]}"#,
+    );
+    assert!(
+        has_violation(&topo, ViolationKind::DeadEnd, "State::Dead"),
+        "State::Dead should be flagged as a dead end"
+    );
 }
 
 #[test]
 fn halt_node_is_not_flagged_as_dead_end() {
     let topo = parse(minimal_valid());
     let dead_ends = violations_of_kind(&topo, ViolationKind::DeadEnd);
-    assert!(dead_ends.is_empty(), "halt node must not be a dead-end violation");
+    assert!(
+        dead_ends.is_empty(),
+        "halt node must not be a dead-end violation"
+    );
 }
 
 #[test]
 fn unreachable_dead_end_is_not_flagged() {
     // State::Orphan has no outgoing edges AND is unreachable — should not be
     // reported as DeadEnd (it cannot cause a runtime failure).
-    let topo = parse(r#"{
+    let topo = parse(
+        r#"{
         "matrix_name":"t","nodes":[
             {"id":0,"name":"State::Start", "type":"State"},
             {"id":1,"name":"State::Orphan","type":"State"},
@@ -117,17 +137,21 @@ fn unreachable_dead_end_is_not_flagged() {
         ],
         "transitions":[
             {"from":"State::Start","to":"Control::Halt","default_weight":0.9}
-        ],"pages":[]}"#);
+        ],"pages":[]}"#,
+    );
     let dead_ends = violations_of_kind(&topo, ViolationKind::DeadEnd);
-    assert!(!dead_ends.contains(&"State::Orphan".to_string()),
-        "unreachable node must not be reported as a dead end");
+    assert!(
+        !dead_ends.contains(&"State::Orphan".to_string()),
+        "unreachable node must not be reported as a dead end"
+    );
 }
 
 // ── 4. reachability ───────────────────────────────────────────────────────────
 
 #[test]
 fn check_rejects_unreachable_page_node() {
-    let topo = parse(r#"{
+    let topo = parse(
+        r#"{
         "matrix_name":"t","nodes":[
             {"id":0,"name":"State::Start",     "type":"State"},
             {"id":1,"name":"State::Unreachable","type":"State"},
@@ -138,14 +162,20 @@ fn check_rejects_unreachable_page_node() {
             {"from":"State::Unreachable","to":"Control::Halt","default_weight":0.8}
         ],
         "pages":[{"name":"main","node_names":["State::Start","State::Unreachable","Control::Halt"]}]
-    }"#);
-    assert!(has_violation(&topo, ViolationKind::Unreachable, "State::Unreachable"));
+    }"#,
+    );
+    assert!(has_violation(
+        &topo,
+        ViolationKind::Unreachable,
+        "State::Unreachable"
+    ));
 }
 
 #[test]
 fn node_not_in_pages_is_not_flagged_unreachable() {
     // An orphan node that is NOT in pages should not produce an Unreachable violation.
-    let topo = parse(r#"{
+    let topo = parse(
+        r#"{
         "matrix_name":"t","nodes":[
             {"id":0,"name":"State::Start", "type":"State"},
             {"id":1,"name":"State::Orphan","type":"State"},
@@ -155,7 +185,8 @@ fn node_not_in_pages_is_not_flagged_unreachable() {
             {"from":"State::Start","to":"Control::Halt","default_weight":0.9}
         ],
         "pages":[{"name":"main","node_names":["State::Start","Control::Halt"]}]
-    }"#);
+    }"#,
+    );
     let unreachable = violations_of_kind(&topo, ViolationKind::Unreachable);
     assert!(!unreachable.contains(&"State::Orphan".to_string()));
 }
@@ -165,7 +196,8 @@ fn node_not_in_pages_is_not_flagged_unreachable() {
 #[test]
 fn check_rejects_node_with_no_path_to_halt() {
     // State::Loop only connects back to itself — no path to Control::Halt.
-    let topo = parse(r#"{
+    let topo = parse(
+        r#"{
         "matrix_name":"t","nodes":[
             {"id":0,"name":"State::Start","type":"State"},
             {"id":1,"name":"State::Loop", "type":"State"},
@@ -175,14 +207,20 @@ fn check_rejects_node_with_no_path_to_halt() {
             {"from":"State::Start","to":"State::Loop", "default_weight":0.9},
             {"from":"State::Loop", "to":"State::Loop", "default_weight":0.7},
             {"from":"State::Start","to":"Control::Halt","default_weight":0.5}
-        ],"pages":[]}"#);
-    assert!(has_violation(&topo, ViolationKind::CannotReachHalt, "State::Loop"));
+        ],"pages":[]}"#,
+    );
+    assert!(has_violation(
+        &topo,
+        ViolationKind::CannotReachHalt,
+        "State::Loop"
+    ));
 }
 
 #[test]
 fn indirect_path_to_halt_is_accepted() {
     // State::A -> State::B -> Control::Halt (two hops, should pass).
-    let topo = parse(r#"{
+    let topo = parse(
+        r#"{
         "matrix_name":"t","nodes":[
             {"id":0,"name":"State::A","type":"State"},
             {"id":1,"name":"State::B","type":"State"},
@@ -191,7 +229,8 @@ fn indirect_path_to_halt_is_accepted() {
         "transitions":[
             {"from":"State::A","to":"State::B",      "default_weight":0.9},
             {"from":"State::B","to":"Control::Halt", "default_weight":0.8}
-        ],"pages":[]}"#);
+        ],"pages":[]}"#,
+    );
     assert!(check(&topo, &TopologyInvariants::default()).is_empty());
 }
 
@@ -200,7 +239,8 @@ fn indirect_path_to_halt_is_accepted() {
 #[test]
 fn check_reports_all_violations_not_just_first() {
     // Three independent dead-end nodes — all three must be reported.
-    let topo = parse(r#"{
+    let topo = parse(
+        r#"{
         "matrix_name":"t","nodes":[
             {"id":0,"name":"State::Start","type":"State"},
             {"id":1,"name":"State::DeadA","type":"State"},
@@ -213,7 +253,8 @@ fn check_reports_all_violations_not_just_first() {
             {"from":"State::Start","to":"State::DeadB","default_weight":0.8},
             {"from":"State::Start","to":"State::DeadC","default_weight":0.7},
             {"from":"State::Start","to":"Control::Halt","default_weight":0.5}
-        ],"pages":[]}"#);
+        ],"pages":[]}"#,
+    );
     let dead = violations_of_kind(&topo, ViolationKind::DeadEnd);
     assert!(dead.contains(&"State::DeadA".to_string()));
     assert!(dead.contains(&"State::DeadB".to_string()));
@@ -293,7 +334,8 @@ fn current_topology_fits_tensor_universe() {
 
 #[test]
 fn check_rejects_duplicate_node_names() {
-    let topo = parse(r#"{
+    let topo = parse(
+        r#"{
         "matrix_name":"t","nodes":[
             {"id":0,"name":"State::A","type":"State"},
             {"id":1,"name":"State::A","type":"State"},
@@ -301,8 +343,13 @@ fn check_rejects_duplicate_node_names() {
         ],
         "transitions":[
             {"from":"State::A","to":"Control::Halt","default_weight":0.9}
-        ],"pages":[]}"#);
-    assert!(has_violation(&topo, ViolationKind::DuplicateNodeName, "State::A"));
+        ],"pages":[]}"#,
+    );
+    assert!(has_violation(
+        &topo,
+        ViolationKind::DuplicateNodeName,
+        "State::A"
+    ));
 }
 
 #[test]
@@ -317,7 +364,8 @@ fn check_passes_with_unique_node_names() {
 #[test]
 fn check_rejects_duplicate_node_ids() {
     // Both nodes use id=1; serde happily parses this, check() must catch it.
-    let topo = parse(r#"{
+    let topo = parse(
+        r#"{
         "matrix_name":"t","nodes":[
             {"id":0,"name":"State::Start","type":"State"},
             {"id":1,"name":"State::A","type":"State"},
@@ -327,7 +375,8 @@ fn check_rejects_duplicate_node_ids() {
         "transitions":[
             {"from":"State::Start","to":"State::A","default_weight":0.9},
             {"from":"State::A","to":"Control::Halt","default_weight":0.8}
-        ],"pages":[]}"#);
+        ],"pages":[]}"#,
+    );
     let dup_ids = violations_of_kind(&topo, ViolationKind::DuplicateNodeId);
     assert!(!dup_ids.is_empty(), "duplicate id=1 must be reported");
 }
@@ -337,15 +386,21 @@ fn check_rejects_duplicate_node_ids() {
 #[test]
 fn check_rejects_start_node_with_wrong_id() {
     // nodes[0] has id=1 instead of id=0
-    let topo = parse(r#"{
+    let topo = parse(
+        r#"{
         "matrix_name":"t","nodes":[
             {"id":1,"name":"State::Start","type":"State"},
             {"id":0,"name":"Control::Halt","type":"Control","action":"halt"}
         ],
         "transitions":[
             {"from":"State::Start","to":"Control::Halt","default_weight":0.9}
-        ],"pages":[]}"#);
-    assert!(has_violation(&topo, ViolationKind::InvalidStartNode, "State::Start"));
+        ],"pages":[]}"#,
+    );
+    assert!(has_violation(
+        &topo,
+        ViolationKind::InvalidStartNode,
+        "State::Start"
+    ));
 }
 
 #[test]
@@ -359,7 +414,8 @@ fn check_passes_when_start_node_has_id_zero() {
 
 #[test]
 fn check_rejects_topology_with_no_halt_node() {
-    let topo = parse(r#"{
+    let topo = parse(
+        r#"{
         "matrix_name":"t","nodes":[
             {"id":0,"name":"State::Start","type":"State"},
             {"id":1,"name":"State::End","type":"State"}
@@ -367,13 +423,19 @@ fn check_rejects_topology_with_no_halt_node() {
         "transitions":[
             {"from":"State::Start","to":"State::End","default_weight":0.9},
             {"from":"State::End","to":"State::Start","default_weight":0.8}
-        ],"pages":[]}"#);
-    assert!(has_violation(&topo, ViolationKind::NoHaltNode, "(topology)"));
+        ],"pages":[]}"#,
+    );
+    assert!(has_violation(
+        &topo,
+        ViolationKind::NoHaltNode,
+        "(topology)"
+    ));
 }
 
 #[test]
 fn check_rejects_halt_node_with_outgoing_edge() {
-    let topo = parse(r#"{
+    let topo = parse(
+        r#"{
         "matrix_name":"t","nodes":[
             {"id":0,"name":"State::Start","type":"State"},
             {"id":1,"name":"Control::Halt","type":"Control","action":"halt"}
@@ -381,8 +443,13 @@ fn check_rejects_halt_node_with_outgoing_edge() {
         "transitions":[
             {"from":"State::Start","to":"Control::Halt","default_weight":0.9},
             {"from":"Control::Halt","to":"State::Start","default_weight":0.5}
-        ],"pages":[]}"#);
-    assert!(has_violation(&topo, ViolationKind::HaltNodeHasSuccessors, "Control::Halt"));
+        ],"pages":[]}"#,
+    );
+    assert!(has_violation(
+        &topo,
+        ViolationKind::HaltNodeHasSuccessors,
+        "Control::Halt"
+    ));
 }
 
 #[test]
@@ -396,7 +463,8 @@ fn check_passes_when_halt_has_no_successors() {
 
 #[test]
 fn check_rejects_duplicate_edge() {
-    let topo = parse(r#"{
+    let topo = parse(
+        r#"{
         "matrix_name":"t","nodes":[
             {"id":0,"name":"State::Start","type":"State"},
             {"id":1,"name":"Control::Halt","type":"Control","action":"halt"}
@@ -404,8 +472,13 @@ fn check_rejects_duplicate_edge() {
         "transitions":[
             {"from":"State::Start","to":"Control::Halt","default_weight":0.9},
             {"from":"State::Start","to":"Control::Halt","default_weight":0.8}
-        ],"pages":[]}"#);
-    assert!(has_violation(&topo, ViolationKind::DuplicateEdge, "State::Start"));
+        ],"pages":[]}"#,
+    );
+    assert!(has_violation(
+        &topo,
+        ViolationKind::DuplicateEdge,
+        "State::Start"
+    ));
 }
 
 #[test]
@@ -419,7 +492,8 @@ fn check_passes_with_unique_edges() {
 
 #[test]
 fn check_rejects_confidence_above_one() {
-    let topo = parse(r#"{
+    let topo = parse(
+        r#"{
         "matrix_name":"t","nodes":[
             {"id":0,"name":"State::Start","type":"State"},
             {"id":1,"name":"Control::Halt","type":"Control","action":"halt"}
@@ -427,14 +501,18 @@ fn check_rejects_confidence_above_one() {
         "transitions":[
             {"from":"State::Start","to":"Control::Halt","default_weight":0.9,
              "confidence":1.5}
-        ],"pages":[]}"#);
-    assert!(has_violation(&topo, ViolationKind::WeightOutOfDomain, "State::Start"),
-        "confidence=1.5 must be rejected");
+        ],"pages":[]}"#,
+    );
+    assert!(
+        has_violation(&topo, ViolationKind::WeightOutOfDomain, "State::Start"),
+        "confidence=1.5 must be rejected"
+    );
 }
 
 #[test]
 fn check_rejects_negative_cost() {
-    let topo = parse(r#"{
+    let topo = parse(
+        r#"{
         "matrix_name":"t","nodes":[
             {"id":0,"name":"State::Start","type":"State"},
             {"id":1,"name":"Control::Halt","type":"Control","action":"halt"}
@@ -442,9 +520,12 @@ fn check_rejects_negative_cost() {
         "transitions":[
             {"from":"State::Start","to":"Control::Halt","default_weight":0.9,
              "cost":-0.1}
-        ],"pages":[]}"#);
-    assert!(has_violation(&topo, ViolationKind::WeightOutOfDomain, "State::Start"),
-        "cost=-0.1 must be rejected");
+        ],"pages":[]}"#,
+    );
+    assert!(
+        has_violation(&topo, ViolationKind::WeightOutOfDomain, "State::Start"),
+        "cost=-0.1 must be rejected"
+    );
 }
 
 #[test]
@@ -458,7 +539,8 @@ fn check_passes_with_valid_weights() {
 
 #[test]
 fn check_warns_on_zero_confidence_edge() {
-    let topo = parse(r#"{
+    let topo = parse(
+        r#"{
         "matrix_name":"t","nodes":[
             {"id":0,"name":"State::Start","type":"State"},
             {"id":1,"name":"Control::Halt","type":"Control","action":"halt"}
@@ -467,9 +549,14 @@ fn check_warns_on_zero_confidence_edge() {
             {"from":"State::Start","to":"Control::Halt","default_weight":0.9},
             {"from":"State::Start","to":"Control::Halt","default_weight":0.0,
              "confidence":0.0}
-        ],"pages":[]}"#);
+        ],"pages":[]}"#,
+    );
     // DuplicateEdge is also expected here; just confirm ZeroConfidenceEdge fires
-    assert!(has_violation(&topo, ViolationKind::ZeroConfidenceEdge, "State::Start"));
+    assert!(has_violation(
+        &topo,
+        ViolationKind::ZeroConfidenceEdge,
+        "State::Start"
+    ));
 }
 
 // ── deterministic ordering ────────────────────────────────────────────────────
@@ -479,7 +566,8 @@ fn check_rejects_indeterminate_ordering() {
     // Two edges from State::Start to the same destination with identical
     // (default_weight, safety, cost, to) tuple — the full sort key is
     // identical so tie-break is impossible.
-    let topo = parse(r#"{
+    let topo = parse(
+        r#"{
         "matrix_name":"t","nodes":[
             {"id":0,"name":"State::Start","type":"State"},
             {"id":1,"name":"State::A",    "type":"State"},
@@ -491,13 +579,19 @@ fn check_rejects_indeterminate_ordering() {
             {"from":"State::Start","to":"State::A","default_weight":0.8,
              "safety":0.8,"cost":0.2},
             {"from":"State::A","to":"Control::Halt","default_weight":0.9}
-        ],"pages":[]}"#);
-    assert!(has_violation(&topo, ViolationKind::IndeterminateOrdering, "State::Start"));
+        ],"pages":[]}"#,
+    );
+    assert!(has_violation(
+        &topo,
+        ViolationKind::IndeterminateOrdering,
+        "State::Start"
+    ));
 }
 
 #[test]
 fn check_passes_with_distinct_edge_tuples() {
-    let topo = parse(r#"{
+    let topo = parse(
+        r#"{
         "matrix_name":"t","nodes":[
             {"id":0,"name":"State::Start","type":"State"},
             {"id":1,"name":"State::A",    "type":"State"},
@@ -509,9 +603,13 @@ fn check_passes_with_distinct_edge_tuples() {
             {"from":"State::Start","to":"State::B","default_weight":0.7},
             {"from":"State::A","to":"Control::Halt","default_weight":0.9},
             {"from":"State::B","to":"Control::Halt","default_weight":0.9}
-        ],"pages":[]}"#);
+        ],"pages":[]}"#,
+    );
     let vs = violations_of_kind(&topo, ViolationKind::IndeterminateOrdering);
-    assert!(vs.is_empty(), "distinct weights must not trigger IndeterminateOrdering");
+    assert!(
+        vs.is_empty(),
+        "distinct weights must not trigger IndeterminateOrdering"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -552,7 +650,8 @@ fn check_rejects_bypass_of_required_gate() {
 #[test]
 fn check_passes_when_gate_properly_dominates() {
     // Remove the bypass edge — now every path to Commit goes through Validate
-    let topo = parse(r#"{
+    let topo = parse(
+        r#"{
         "matrix_name":"t","nodes":[
             {"id":0,"name":"State::Start",   "type":"State"},
             {"id":1,"name":"State::Validate","type":"State"},
@@ -565,9 +664,13 @@ fn check_passes_when_gate_properly_dominates() {
             {"from":"State::Validate","to":"Control::Commit","default_weight":0.8},
             {"from":"Control::Commit","to":"State::Memory",  "default_weight":0.8},
             {"from":"State::Memory",  "to":"Control::Halt",  "default_weight":0.9}
-        ],"pages":[]}"#);
+        ],"pages":[]}"#,
+    );
     let vs = violations_of_kind(&topo, ViolationKind::DominanceViolation);
-    assert!(vs.is_empty(), "clean chain must not trigger DominanceViolation: {vs:?}");
+    assert!(
+        vs.is_empty(),
+        "clean chain must not trigger DominanceViolation: {vs:?}"
+    );
 }
 
 // ── SCC progress ──────────────────────────────────────────────────────────────
@@ -575,7 +678,8 @@ fn check_passes_when_gate_properly_dominates() {
 #[test]
 fn check_rejects_scc_with_no_exit_edge() {
     // State::A ↔ State::B form a cycle with no exit
-    let topo = parse(r#"{
+    let topo = parse(
+        r#"{
         "matrix_name":"t","nodes":[
             {"id":0,"name":"State::Start","type":"State"},
             {"id":1,"name":"State::A",    "type":"State"},
@@ -587,15 +691,20 @@ fn check_rejects_scc_with_no_exit_edge() {
             {"from":"State::Start","to":"Control::Halt","default_weight":0.5},
             {"from":"State::A",    "to":"State::B",    "default_weight":0.8},
             {"from":"State::B",    "to":"State::A",    "default_weight":0.8}
-        ],"pages":[]}"#);
+        ],"pages":[]}"#,
+    );
     let vs = violations_of_kind(&topo, ViolationKind::UnsafeSCC);
-    assert!(!vs.is_empty(), "trapped cycle must be reported as UnsafeSCC");
+    assert!(
+        !vs.is_empty(),
+        "trapped cycle must be reported as UnsafeSCC"
+    );
 }
 
 #[test]
 fn check_passes_scc_with_exit_edge() {
     // State::A ↔ State::B cycle but with an exit to Control::Halt
-    let topo = parse(r#"{
+    let topo = parse(
+        r#"{
         "matrix_name":"t","nodes":[
             {"id":0,"name":"State::Start","type":"State"},
             {"id":1,"name":"State::A",    "type":"State"},
@@ -607,7 +716,8 @@ fn check_passes_scc_with_exit_edge() {
             {"from":"State::A",    "to":"State::B",    "default_weight":0.8},
             {"from":"State::B",    "to":"State::A",    "default_weight":0.8},
             {"from":"State::A",    "to":"Control::Halt","default_weight":0.5}
-        ],"pages":[]}"#);
+        ],"pages":[]}"#,
+    );
     let vs = violations_of_kind(&topo, ViolationKind::UnsafeSCC);
     assert!(vs.is_empty(), "SCC with exit must not be flagged: {vs:?}");
 }
@@ -617,7 +727,8 @@ fn check_passes_scc_with_exit_edge() {
 #[test]
 fn check_rejects_zero_cost_infinite_cycle() {
     // A ↔ B with cost=0 on both edges — planner prefers this forever
-    let topo = parse(r#"{
+    let topo = parse(
+        r#"{
         "matrix_name":"t","nodes":[
             {"id":0,"name":"State::Start","type":"State"},
             {"id":1,"name":"State::A",    "type":"State"},
@@ -629,14 +740,19 @@ fn check_rejects_zero_cost_infinite_cycle() {
             {"from":"State::A",    "to":"State::B",    "default_weight":0.8,"cost":0.0},
             {"from":"State::B",    "to":"State::A",    "default_weight":0.8,"cost":0.0},
             {"from":"State::A",    "to":"Control::Halt","default_weight":0.5}
-        ],"pages":[]}"#);
+        ],"pages":[]}"#,
+    );
     let vs = violations_of_kind(&topo, ViolationKind::ZeroCostCycle);
-    assert!(!vs.is_empty(), "zero-cost cycle must be reported as ZeroCostCycle");
+    assert!(
+        !vs.is_empty(),
+        "zero-cost cycle must be reported as ZeroCostCycle"
+    );
 }
 
 #[test]
 fn check_passes_cycle_with_nonzero_cost() {
-    let topo = parse(r#"{
+    let topo = parse(
+        r#"{
         "matrix_name":"t","nodes":[
             {"id":0,"name":"State::Start","type":"State"},
             {"id":1,"name":"State::A",    "type":"State"},
@@ -648,9 +764,13 @@ fn check_passes_cycle_with_nonzero_cost() {
             {"from":"State::A",    "to":"State::B",    "default_weight":0.8,"cost":1.0},
             {"from":"State::B",    "to":"State::A",    "default_weight":0.8,"cost":1.0},
             {"from":"State::A",    "to":"Control::Halt","default_weight":0.5}
-        ],"pages":[]}"#);
+        ],"pages":[]}"#,
+    );
     let vs = violations_of_kind(&topo, ViolationKind::ZeroCostCycle);
-    assert!(vs.is_empty(), "non-zero-cost cycle must not be flagged: {vs:?}");
+    assert!(
+        vs.is_empty(),
+        "non-zero-cost cycle must not be flagged: {vs:?}"
+    );
 }
 
 // ── 14. Consumed block point ──────────────────────────────────────────────────
@@ -660,7 +780,8 @@ fn check_flags_consumed_block_point() {
     // State::Funnel has 1 outgoing edge (→State::B) but 2 incoming edges.
     // After the first traversal consumes State::Funnel→State::B, re-entry
     // from State::A produces Unknown(-1) blocked.
-    let topo = parse(r#"{
+    let topo = parse(
+        r#"{
         "matrix_name":"t","nodes":[
             {"id":0,"name":"State::Start", "type":"State"},
             {"id":1,"name":"State::A",     "type":"State"},
@@ -674,7 +795,8 @@ fn check_flags_consumed_block_point() {
             {"from":"State::A",     "to":"State::Funnel","default_weight":0.7},
             {"from":"State::Funnel","to":"State::B",     "default_weight":0.9},
             {"from":"State::B",     "to":"Control::Halt","default_weight":0.9}
-        ],"pages":[]}"#);
+        ],"pages":[]}"#,
+    );
     assert!(
         has_violation(&topo, ViolationKind::ConsumedBlockPoint, "State::Funnel"),
         "single-exit multi-entry node must be flagged as ConsumedBlockPoint"
@@ -685,7 +807,8 @@ fn check_flags_consumed_block_point() {
 fn check_passes_multi_exit_node() {
     // State::Hub has 2 outgoing edges — not a block point even with multiple
     // predecessors.
-    let topo = parse(r#"{
+    let topo = parse(
+        r#"{
         "matrix_name":"t","nodes":[
             {"id":0,"name":"State::Start","type":"State"},
             {"id":1,"name":"State::A",    "type":"State"},
@@ -700,7 +823,8 @@ fn check_passes_multi_exit_node() {
             {"from":"State::Hub",  "to":"State::B",      "default_weight":0.9},
             {"from":"State::Hub",  "to":"Control::Halt", "default_weight":0.5},
             {"from":"State::B",    "to":"Control::Halt", "default_weight":0.9}
-        ],"pages":[]}"#);
+        ],"pages":[]}"#,
+    );
     let vs = violations_of_kind(&topo, ViolationKind::ConsumedBlockPoint);
     assert!(vs.is_empty(), "multi-exit node must not be flagged: {vs:?}");
 }

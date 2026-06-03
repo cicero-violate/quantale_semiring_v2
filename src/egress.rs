@@ -11,8 +11,8 @@ use serde_json::Value;
 use crate::config::SystemConfig;
 #[cfg(feature = "cuda")]
 use crate::jit_kernel_fusion::{JitCache, SlotBuffers};
-use crate::types::ProcessReceipt;
 use crate::topology::{GraphTopology, NodeRegistry};
+use crate::types::ProcessReceipt;
 
 pub struct UniversalExecutor {
     /// Mapping of Node Names to their generic CLI schemas loaded from operators.json.

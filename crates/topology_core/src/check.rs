@@ -47,8 +47,7 @@ use crate::{GraphTopology, TopologyTransition};
 
 // ── Gate dominance configuration ──────────────────────────────────────────────
 
-const DEFAULT_TOPOLOGY_INVARIANTS_JSON: &str =
-    include_str!("../assets/topology_invariants.json");
+const DEFAULT_TOPOLOGY_INVARIANTS_JSON: &str = include_str!("../assets/topology_invariants.json");
 
 pub type OperatorRegistry = HashMap<String, Value>;
 
@@ -267,8 +266,11 @@ fn check_phase1(violations: &mut Vec<TopologyViolation>, topology: &GraphTopolog
         .iter()
         .map(|n| (n.name.as_str(), n.id))
         .collect();
-    let id_to_name: HashMap<usize, &str> =
-        topology.nodes.iter().map(|n| (n.id, n.name.as_str())).collect();
+    let id_to_name: HashMap<usize, &str> = topology
+        .nodes
+        .iter()
+        .map(|n| (n.id, n.name.as_str()))
+        .collect();
     for node in &topology.nodes {
         // name → id → name must round-trip
         if let Some(&mapped_id) = name_to_id.get(node.name.as_str()) {
@@ -383,14 +385,8 @@ fn check_phase1(violations: &mut Vec<TopologyViolation>, topology: &GraphTopolog
         let mut seen_tuples: HashSet<(u32, u32, u32, &str)> = HashSet::new();
         for t in edges {
             let dw = t.default_weight.to_bits();
-            let safety = t
-                .safety
-                .unwrap_or(t.default_weight)
-                .to_bits();
-            let cost = t
-                .cost
-                .unwrap_or_else(|| 1.0 - t.default_weight)
-                .to_bits();
+            let safety = t.safety.unwrap_or(t.default_weight).to_bits();
+            let cost = t.cost.unwrap_or_else(|| 1.0 - t.default_weight).to_bits();
             let key = (dw, safety, cost, t.to.as_str());
             if !seen_tuples.insert(key) {
                 violations.push(TopologyViolation {
@@ -426,9 +422,7 @@ fn check_edge_weights(violations: &mut Vec<TopologyViolation>, t: &TopologyTrans
         violations.push(TopologyViolation {
             kind: ViolationKind::WeightOutOfDomain,
             node: t.from.clone(),
-            detail: format!(
-                "{label}: effective safety={eff_safety} not in [0,1] or non-finite"
-            ),
+            detail: format!("{label}: effective safety={eff_safety} not in [0,1] or non-finite"),
         });
     }
     if !valid_cost(eff_cost) {
@@ -474,8 +468,11 @@ fn check_structural(violations: &mut Vec<TopologyViolation>, topology: &GraphTop
         .filter(|n| n.action.as_deref() == Some("halt"))
         .map(|n| n.id)
         .collect();
-    let id_to_name: HashMap<usize, &str> =
-        topology.nodes.iter().map(|n| (n.id, n.name.as_str())).collect();
+    let id_to_name: HashMap<usize, &str> = topology
+        .nodes
+        .iter()
+        .map(|n| (n.id, n.name.as_str()))
+        .collect();
 
     let mut forward: HashMap<usize, Vec<usize>> =
         topology.nodes.iter().map(|n| (n.id, Vec::new())).collect();
@@ -563,10 +560,7 @@ fn check_structural(violations: &mut Vec<TopologyViolation>, topology: &GraphTop
             violations.push(TopologyViolation {
                 kind: ViolationKind::CannotReachHalt,
                 node: name.to_string(),
-                detail: format!(
-                    "'{}' is reachable but has no path to any halt node",
-                    name
-                ),
+                detail: format!("'{}' is reachable but has no path to any halt node", name),
             });
         }
     }
@@ -607,8 +601,7 @@ fn check_phase2(
 ) {
     for node in &topology.nodes {
         // Only check State and Control nodes; skip Event nodes and halt nodes
-        let is_state_or_control =
-            node.node_type == "State" || node.node_type == "Control";
+        let is_state_or_control = node.node_type == "State" || node.node_type == "Control";
         if !is_state_or_control {
             continue;
         }
@@ -677,8 +670,11 @@ fn check_phase3(
         .filter(|n| n.action.as_deref() == Some("halt"))
         .map(|n| n.id)
         .collect();
-    let id_to_name: HashMap<usize, &str> =
-        topology.nodes.iter().map(|n| (n.id, n.name.as_str())).collect();
+    let id_to_name: HashMap<usize, &str> = topology
+        .nodes
+        .iter()
+        .map(|n| (n.id, n.name.as_str()))
+        .collect();
 
     // Build adjacency (skip unknown endpoints — already reported in structural pass)
     let mut forward: HashMap<usize, Vec<usize>> =
@@ -686,10 +682,8 @@ fn check_phase3(
     let mut reverse: HashMap<usize, Vec<usize>> =
         topology.nodes.iter().map(|n| (n.id, Vec::new())).collect();
     for t in &topology.transitions {
-        let (Some(&s), Some(&d)) = (
-            node_ids.get(t.from.as_str()),
-            node_ids.get(t.to.as_str()),
-        ) else {
+        let (Some(&s), Some(&d)) = (node_ids.get(t.from.as_str()), node_ids.get(t.to.as_str()))
+        else {
             continue;
         };
         forward.entry(s).or_default().push(d);
@@ -705,10 +699,9 @@ fn check_phase3(
     // Invariant 9: required gate dominance pairs
     for pair in &invariants.required_dominators {
         let (gate_name, protected_name) = (pair.gate.as_str(), pair.protected.as_str());
-        let (Some(&gate_id), Some(&protected_id)) = (
-            node_ids.get(gate_name),
-            node_ids.get(protected_name),
-        ) else {
+        let (Some(&gate_id), Some(&protected_id)) =
+            (node_ids.get(gate_name), node_ids.get(protected_name))
+        else {
             continue;
         };
         if !reachable.contains(&protected_id) {
@@ -982,12 +975,7 @@ fn compute_dominators(
             if v == start {
                 continue;
             }
-            let preds: Vec<usize> = reverse
-                .get(&v)
-                .into_iter()
-                .flatten()
-                .copied()
-                .collect();
+            let preds: Vec<usize> = reverse.get(&v).into_iter().flatten().copied().collect();
             if preds.is_empty() {
                 continue;
             }
@@ -997,9 +985,8 @@ fn compute_dominators(
                     Some(s) => s.clone(),
                     None => continue,
                 };
-                let mut inter: HashSet<usize> = it.fold(first, |acc, pd| {
-                    acc.intersection(pd).copied().collect()
-                });
+                let mut inter: HashSet<usize> =
+                    it.fold(first, |acc, pd| acc.intersection(pd).copied().collect());
                 inter.insert(v);
                 inter
             };

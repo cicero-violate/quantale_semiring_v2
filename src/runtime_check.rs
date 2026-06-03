@@ -11,9 +11,9 @@
 //!  20. s=⊥ with blocked=0  →  skip executor call    (enforced by decision_is_safe)
 //!  24. Control::Block executing  ⟹  blocked=1 ∨ halted=1  (BlockNodeNotBlocked)
 
-use crate::types::BOTTOM;
 use crate::graph::DecisionReport;
 use crate::tensor::TENSOR_NODE_COUNT;
+use crate::types::BOTTOM;
 
 /// A runtime tensor invariant violation.
 #[derive(Clone, Debug)]
@@ -103,10 +103,7 @@ pub fn check_decision(report: &DecisionReport, executing_node_name: &str) -> Vec
     }
 
     // Invariant 24: Control::Block executing  ⟹  blocked = 1  ∨  halted = 1
-    if executing_node_name.contains("Control::Block")
-        && report.blocked == 0
-        && report.halted == 0
-    {
+    if executing_node_name.contains("Control::Block") && report.blocked == 0 && report.halted == 0 {
         violations.push(RuntimeViolation {
             kind: RuntimeViolationKind::BlockNodeNotBlocked,
             detail: format!(
@@ -124,7 +121,13 @@ pub fn check_decision(report: &DecisionReport, executing_node_name: &str) -> Vec
 mod tests {
     use super::*;
 
-    fn report(selected_value: f32, blocked: i32, halted: i32, first_hop: i32, selected_dst: i32) -> DecisionReport {
+    fn report(
+        selected_value: f32,
+        blocked: i32,
+        halted: i32,
+        first_hop: i32,
+        selected_dst: i32,
+    ) -> DecisionReport {
         DecisionReport {
             step: 0,
             selected_src: 0,
@@ -164,7 +167,10 @@ mod tests {
     fn check_decision_inv18_fires_when_bottom_and_not_blocked() {
         let r = report(BOTTOM, 0, 0, 3, 3);
         let vs = check_decision(&r, "State::Validate");
-        assert!(vs.iter().any(|v| v.kind == RuntimeViolationKind::ScoreBottomNotBlocked));
+        assert!(
+            vs.iter()
+                .any(|v| v.kind == RuntimeViolationKind::ScoreBottomNotBlocked)
+        );
     }
 
     #[test]
@@ -172,41 +178,59 @@ mod tests {
         // blocked=1 but first_hop >= 0 — both conditions must hold
         let r = report(BOTTOM, 1, 0, 3, 3);
         let vs = check_decision(&r, "State::Validate");
-        assert!(vs.iter().any(|v| v.kind == RuntimeViolationKind::ScoreBottomNotBlocked));
+        assert!(
+            vs.iter()
+                .any(|v| v.kind == RuntimeViolationKind::ScoreBottomNotBlocked)
+        );
     }
 
     #[test]
     fn check_decision_inv18_passes_when_bottom_blocked_and_negative_hop() {
         let r = report(BOTTOM, 1, 0, -1, -1);
         let vs = check_decision(&r, "State::Validate");
-        assert!(!vs.iter().any(|v| v.kind == RuntimeViolationKind::ScoreBottomNotBlocked));
+        assert!(
+            !vs.iter()
+                .any(|v| v.kind == RuntimeViolationKind::ScoreBottomNotBlocked)
+        );
     }
 
     #[test]
     fn check_decision_inv19_fires_on_hop_dst_mismatch() {
         let r = report(0.8, 0, 0, 2, 5);
         let vs = check_decision(&r, "State::Validate");
-        assert!(vs.iter().any(|v| v.kind == RuntimeViolationKind::ProjectionFirstHopMismatch));
+        assert!(
+            vs.iter()
+                .any(|v| v.kind == RuntimeViolationKind::ProjectionFirstHopMismatch)
+        );
     }
 
     #[test]
     fn check_decision_inv19_passes_when_hop_matches_dst() {
         let r = report(0.8, 0, 0, 5, 5);
         let vs = check_decision(&r, "State::Validate");
-        assert!(!vs.iter().any(|v| v.kind == RuntimeViolationKind::ProjectionFirstHopMismatch));
+        assert!(
+            !vs.iter()
+                .any(|v| v.kind == RuntimeViolationKind::ProjectionFirstHopMismatch)
+        );
     }
 
     #[test]
     fn check_decision_inv24_fires_for_block_node_not_blocked() {
         let r = report(BOTTOM, 0, 0, 3, 3);
         let vs = check_decision(&r, "Control::Block");
-        assert!(vs.iter().any(|v| v.kind == RuntimeViolationKind::BlockNodeNotBlocked));
+        assert!(
+            vs.iter()
+                .any(|v| v.kind == RuntimeViolationKind::BlockNodeNotBlocked)
+        );
     }
 
     #[test]
     fn check_decision_inv24_passes_when_block_node_sets_blocked() {
         let r = report(BOTTOM, 1, 0, -1, -1);
         let vs = check_decision(&r, "Control::Block");
-        assert!(!vs.iter().any(|v| v.kind == RuntimeViolationKind::BlockNodeNotBlocked));
+        assert!(
+            !vs.iter()
+                .any(|v| v.kind == RuntimeViolationKind::BlockNodeNotBlocked)
+        );
     }
 }

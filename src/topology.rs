@@ -1,17 +1,19 @@
 //! Topology facade: re-exports, runtime loader, and tensor edge adapter.
 
 use crate::error::CudaError;
-use crate::tensor::{TensorEdge, TENSOR_NODE_COUNT};
+use crate::tensor::{TENSOR_NODE_COUNT, TensorEdge};
 
 pub use topology_core::{
-    CompiledTopology, CompiledTransition, GraphTopology, NodeRegistry, TopologyError, TopologyNode,
-    TopologyOverlay, TopologyPage, TopologyTransition,
-    DominatorPair, TopologyInvariants, TopologyViolation, ViolationKind,
-    check, check_with_operators, format_violations,
+    CompiledTopology, CompiledTransition, DominatorPair, GraphTopology, NodeRegistry,
+    TopologyError, TopologyInvariants, TopologyNode, TopologyOverlay, TopologyPage,
+    TopologyTransition, TopologyViolation, ViolationKind, check, check_with_operators,
+    format_violations,
 };
 
 pub fn load_default_tensor_topology_edges() -> Result<Vec<TensorEdge>, CudaError> {
-    Ok(TopologyRuntime::load_checked_default()?.tensor_edges().to_vec())
+    Ok(TopologyRuntime::load_checked_default()?
+        .tensor_edges()
+        .to_vec())
 }
 
 pub fn full_tensor_transition_edges() -> Vec<TensorEdge> {
@@ -57,8 +59,7 @@ impl TopologyRuntime {
         if compiled.node_count > TENSOR_NODE_COUNT {
             return Err(CudaError::invalid_input(format!(
                 "topology has {} nodes but generated tensor capacity is {}; rebuild after updating topology assets",
-                compiled.node_count,
-                TENSOR_NODE_COUNT
+                compiled.node_count, TENSOR_NODE_COUNT
             )));
         }
         let tensor_edges = compiled

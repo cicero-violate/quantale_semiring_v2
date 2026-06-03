@@ -13,15 +13,14 @@ use cudarc::driver::DeviceRepr;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-
 use crate::config::OperatorRegistry;
 use crate::error::CudaError;
 use crate::graph::Node;
-use crate::types::ProcessReceipt;
 use crate::tensor::{
     COST_INFINITY, LAYER_CONFIDENCE, LAYER_COST, LAYER_SAFETY, ProjectionBias, tensor_idx,
 };
 use crate::topology::{GraphTopology, NodeRegistry};
+use crate::types::ProcessReceipt;
 
 pub const DEFAULT_EXPLORATION_JSON: &str = include_str!("../assets/exploration.json");
 

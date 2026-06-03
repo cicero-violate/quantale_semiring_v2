@@ -56,8 +56,9 @@ fn tensor_mul(a: &[f32], b: &[f32]) -> Vec<f32> {
             // confidence: max-times  (join = max, compose = multiply)
             let mut conf = 0.0f32;
             for k in 0..N {
-                conf = conf
-                    .max(a[tensor_idx(LAYER_CONFIDENCE, i, k)] * b[tensor_idx(LAYER_CONFIDENCE, k, j)]);
+                conf = conf.max(
+                    a[tensor_idx(LAYER_CONFIDENCE, i, k)] * b[tensor_idx(LAYER_CONFIDENCE, k, j)],
+                );
             }
             c[tensor_idx(LAYER_CONFIDENCE, i, j)] = conf;
 
@@ -78,9 +79,8 @@ fn tensor_mul(a: &[f32], b: &[f32]) -> Vec<f32> {
             // safety: max-min  (join = max, compose = min)
             let mut safety = 0.0f32;
             for k in 0..N {
-                safety = safety.max(
-                    a[tensor_idx(LAYER_SAFETY, i, k)].min(b[tensor_idx(LAYER_SAFETY, k, j)]),
-                );
+                safety = safety
+                    .max(a[tensor_idx(LAYER_SAFETY, i, k)].min(b[tensor_idx(LAYER_SAFETY, k, j)]));
             }
             c[tensor_idx(LAYER_SAFETY, i, j)] = safety;
         }
@@ -221,14 +221,14 @@ fn semiring_bottom_join_identity() {
     for i in 0..N {
         for j in 0..N {
             // confidence: max
-            result[tensor_idx(LAYER_CONFIDENCE, i, j)] = w[tensor_idx(LAYER_CONFIDENCE, i, j)]
-                .max(bot[tensor_idx(LAYER_CONFIDENCE, i, j)]);
+            result[tensor_idx(LAYER_CONFIDENCE, i, j)] =
+                w[tensor_idx(LAYER_CONFIDENCE, i, j)].max(bot[tensor_idx(LAYER_CONFIDENCE, i, j)]);
             // cost: min (⊕ for min-plus is min)
-            result[tensor_idx(LAYER_COST, i, j)] = w[tensor_idx(LAYER_COST, i, j)]
-                .min(bot[tensor_idx(LAYER_COST, i, j)]);
+            result[tensor_idx(LAYER_COST, i, j)] =
+                w[tensor_idx(LAYER_COST, i, j)].min(bot[tensor_idx(LAYER_COST, i, j)]);
             // safety: max
-            result[tensor_idx(LAYER_SAFETY, i, j)] = w[tensor_idx(LAYER_SAFETY, i, j)]
-                .max(bot[tensor_idx(LAYER_SAFETY, i, j)]);
+            result[tensor_idx(LAYER_SAFETY, i, j)] =
+                w[tensor_idx(LAYER_SAFETY, i, j)].max(bot[tensor_idx(LAYER_SAFETY, i, j)]);
         }
     }
     assert!(

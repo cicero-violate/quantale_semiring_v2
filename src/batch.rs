@@ -11,9 +11,9 @@ use crate::egress::UniversalExecutor;
 use crate::error::CudaError;
 use crate::graph::{DecisionReport, Node};
 use crate::pattern::{CompiledCkaPattern, operator_effects_for_node, safe_parallel};
-use crate::types::ProcessReceipt;
 use crate::tensor::{ProjectionBias, TensorQuantaleWorld};
 use crate::topology::{GraphTopology, NodeRegistry};
+use crate::types::ProcessReceipt;
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct DecisionBatch {

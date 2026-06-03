@@ -1146,6 +1146,22 @@
       "cost": 0.5,
       "safety": 0.95,
       "policy_effect": "IntrospectBypass"
+    },
+    {
+      "from": "Control::WriteOperator",
+      "to": "Control::Repair",
+      "default_weight": 0.62,
+      "confidence": 0.62,
+      "cost": 0.38,
+      "safety": 0.9
+    },
+    {
+      "from": "Control::PatternMutate",
+      "to": "Control::Repair",
+      "default_weight": 0.62,
+      "confidence": 0.62,
+      "cost": 0.38,
+      "safety": 0.9
     }
   ],
   "pages": [

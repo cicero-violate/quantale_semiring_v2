@@ -30,7 +30,9 @@ pub struct LearningPolicy {
 }
 
 impl LearningPolicy {
-    fn default_max_confidence_above_base() -> f32 { 0.15 }
+    fn default_max_confidence_above_base() -> f32 {
+        0.15
+    }
 }
 
 impl Default for LearningPolicy {
@@ -121,8 +123,8 @@ pub fn load_learned_tensor_edges(
             continue;
         }
         let base_conf = base_confidence.get(&(src, dst)).copied().unwrap_or(0.0);
-        let conf_cap = (base_conf + policy.max_confidence_above_base)
-            .min(policy.confidence_clamp[1]);
+        let conf_cap =
+            (base_conf + policy.max_confidence_above_base).min(policy.confidence_clamp[1]);
         deduped.insert(
             (src, dst),
             TensorEdge::new(
@@ -130,7 +132,8 @@ pub fn load_learned_tensor_edges(
                 dst,
                 edge.confidence.clamp(policy.confidence_clamp[0], conf_cap),
                 edge.cost.max(policy.learned_edge_cost_floor),
-                edge.safety.clamp(policy.safety_clamp[0], policy.safety_clamp[1]),
+                edge.safety
+                    .clamp(policy.safety_clamp[0], policy.safety_clamp[1]),
             ),
         );
     }
@@ -177,8 +180,12 @@ mod tests {
     #[test]
     fn load_learned_edges_dedupes_latest_and_clamps_cost_floor() {
         let topology = compile_two_node(0.9);
-        let static_edges: Vec<TensorEdge> =
-            topology.transitions.iter().copied().map(TensorEdge::from).collect();
+        let static_edges: Vec<TensorEdge> = topology
+            .transitions
+            .iter()
+            .copied()
+            .map(TensorEdge::from)
+            .collect();
         let path = make_temp_jsonl(concat!(
             r#"{"from":"State::A","to":"State::B","confidence":0.2,"cost":0.7,"safety":0.4}"#,
             "\n",
@@ -186,8 +193,8 @@ mod tests {
             "\n"
         ));
         let policy = LearningPolicy::default();
-        let edges = load_learned_tensor_edges(&path, &topology.registry, &static_edges, &policy)
-            .unwrap();
+        let edges =
+            load_learned_tensor_edges(&path, &topology.registry, &static_edges, &policy).unwrap();
         let _ = std::fs::remove_file(&path);
 
         assert_eq!(edges.len(), 1);
@@ -202,19 +209,26 @@ mod tests {
         // base=0.6, delta=0.15 → cap = min(0.75, 0.85) = 0.75
         // learned confidence 1.0 should be clamped to 0.75
         let topology = compile_two_node(0.6);
-        let static_edges: Vec<TensorEdge> =
-            topology.transitions.iter().copied().map(TensorEdge::from).collect();
+        let static_edges: Vec<TensorEdge> = topology
+            .transitions
+            .iter()
+            .copied()
+            .map(TensorEdge::from)
+            .collect();
         let path = make_temp_jsonl(
             r#"{"from":"State::A","to":"State::B","confidence":1.0,"cost":0.1,"safety":0.9}"#,
         );
         let policy = LearningPolicy::default();
-        let edges = load_learned_tensor_edges(&path, &topology.registry, &static_edges, &policy)
-            .unwrap();
+        let edges =
+            load_learned_tensor_edges(&path, &topology.registry, &static_edges, &policy).unwrap();
         let _ = std::fs::remove_file(&path);
 
         assert_eq!(edges.len(), 1);
-        assert!((edges[0].confidence - 0.75).abs() < 1e-5,
-            "expected 0.75, got {}", edges[0].confidence);
+        assert!(
+            (edges[0].confidence - 0.75).abs() < 1e-5,
+            "expected 0.75, got {}",
+            edges[0].confidence
+        );
     }
 
     #[test]
@@ -222,18 +236,25 @@ mod tests {
         // base=0.95, delta=0.15 → base+delta=1.10, ceiling=0.85 → cap=0.85
         // learned confidence 1.0 should be clamped to 0.85
         let topology = compile_two_node(0.95);
-        let static_edges: Vec<TensorEdge> =
-            topology.transitions.iter().copied().map(TensorEdge::from).collect();
+        let static_edges: Vec<TensorEdge> = topology
+            .transitions
+            .iter()
+            .copied()
+            .map(TensorEdge::from)
+            .collect();
         let path = make_temp_jsonl(
             r#"{"from":"State::A","to":"State::B","confidence":1.0,"cost":0.05,"safety":0.95}"#,
         );
         let policy = LearningPolicy::default();
-        let edges = load_learned_tensor_edges(&path, &topology.registry, &static_edges, &policy)
-            .unwrap();
+        let edges =
+            load_learned_tensor_edges(&path, &topology.registry, &static_edges, &policy).unwrap();
         let _ = std::fs::remove_file(&path);
 
         assert_eq!(edges.len(), 1);
-        assert!((edges[0].confidence - 0.85).abs() < 1e-5,
-            "expected 0.85, got {}", edges[0].confidence);
+        assert!(
+            (edges[0].confidence - 0.85).abs() < 1e-5,
+            "expected 0.85, got {}",
+            edges[0].confidence
+        );
     }
 }

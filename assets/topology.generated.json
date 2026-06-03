@@ -1212,6 +1212,22 @@
       "policy_effect": "IntrospectBypass",
       "safety": 0.95,
       "to": "Event::LearnUpdated"
+    },
+    {
+      "confidence": 0.62,
+      "cost": 0.38,
+      "default_weight": 0.62,
+      "from": "Control::WriteOperator",
+      "safety": 0.9,
+      "to": "Control::Repair"
+    },
+    {
+      "confidence": 0.62,
+      "cost": 0.38,
+      "default_weight": 0.62,
+      "from": "Control::PatternMutate",
+      "safety": 0.9,
+      "to": "Control::Repair"
     }
   ]
 }

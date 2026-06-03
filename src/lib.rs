@@ -1,6 +1,6 @@
 pub mod batch;
-pub mod runtime_check;
 pub mod config;
+pub mod contracts;
 pub mod egress;
 pub mod error;
 pub mod exploration;
@@ -9,6 +9,7 @@ pub mod jit_kernel_fusion;
 pub mod learning;
 pub mod pattern;
 pub mod plan;
+pub mod runtime_check;
 pub mod tensor;
 pub mod tlog;
 pub mod topology;
@@ -16,6 +17,7 @@ pub mod types;
 
 pub use batch::*;
 pub use config::*;
+pub use contracts::*;
 pub use egress::*;
 pub use error::*;
 pub use exploration::*;
