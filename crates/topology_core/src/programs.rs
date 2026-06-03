@@ -64,7 +64,14 @@ pub fn build_effects_map(operator_contracts: &[Value], source_nodes: &[Value]) -
         let writes = str_set(node.get("writes"));
         let locks = str_set(node.get("locks"));
         if !reads.is_empty() || !writes.is_empty() || !locks.is_empty() {
-            map.insert(name.to_string(), NodeEffects { reads, writes, locks });
+            map.insert(
+                name.to_string(),
+                NodeEffects {
+                    reads,
+                    writes,
+                    locks,
+                },
+            );
         }
     }
 
@@ -74,7 +81,12 @@ pub fn build_effects_map(operator_contracts: &[Value], source_nodes: &[Value]) -
 fn str_set(value: Option<&Value>) -> BTreeSet<String> {
     value
         .and_then(Value::as_array)
-        .map(|arr| arr.iter().filter_map(Value::as_str).map(str::to_string).collect())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -334,9 +346,7 @@ fn compile_expr(
         Expr::Zero | Expr::One => Ok(Endpoints::default()),
         Expr::Node(name) => {
             if !known.contains(name.as_str()) {
-                return Err(format!(
-                    "program '{program_name}': unknown node '{name}'"
-                ));
+                return Err(format!("program '{program_name}': unknown node '{name}'"));
             }
             Ok(Endpoints::from_node(name.clone()))
         }
@@ -414,19 +424,40 @@ fn compile_seq(
         return Ok(Endpoints::default());
     };
     let mut aggregate = compile_expr(
-        first, program_name, confidence, cost, safety,
-        transitions, parallel_groups, known, effects,
+        first,
+        program_name,
+        confidence,
+        cost,
+        safety,
+        transitions,
+        parallel_groups,
+        known,
+        effects,
     )?;
     let mut prev_ends = aggregate.ends.clone();
 
     for item in iter {
         let ep = compile_expr(
-            item, program_name, confidence, cost, safety,
-            transitions, parallel_groups, known, effects,
+            item,
+            program_name,
+            confidence,
+            cost,
+            safety,
+            transitions,
+            parallel_groups,
+            known,
+            effects,
         )?;
         for from in &prev_ends {
             for to in &ep.starts {
-                transitions.push(make_transition(from, to, confidence, cost, safety, program_name));
+                transitions.push(make_transition(
+                    from,
+                    to,
+                    confidence,
+                    cost,
+                    safety,
+                    program_name,
+                ));
             }
         }
         if aggregate.starts.is_empty() {
@@ -457,15 +488,29 @@ fn compile_star(
 
     for idx in 0..max_unroll {
         let ep = compile_expr(
-            body, program_name, confidence, cost, safety,
-            transitions, parallel_groups, known, effects,
+            body,
+            program_name,
+            confidence,
+            cost,
+            safety,
+            transitions,
+            parallel_groups,
+            known,
+            effects,
         )?;
         if idx == 0 {
             first = ep.clone();
         } else {
             for from in &prev_ends {
                 for to in &ep.starts {
-                    transitions.push(make_transition(from, to, confidence, cost, safety, program_name));
+                    transitions.push(make_transition(
+                        from,
+                        to,
+                        confidence,
+                        cost,
+                        safety,
+                        program_name,
+                    ));
                 }
             }
         }
@@ -475,7 +520,10 @@ fn compile_star(
     if first.is_empty() {
         Ok(Endpoints::default())
     } else {
-        Ok(Endpoints { starts: first.starts, ends: prev_ends })
+        Ok(Endpoints {
+            starts: first.starts,
+            ends: prev_ends,
+        })
     }
 }
 
@@ -500,8 +548,15 @@ fn compile_par(
 
     for branch in branches {
         let ep = compile_expr(
-            branch, program_name, confidence, cost, safety,
-            transitions, parallel_groups, known, effects,
+            branch,
+            program_name,
+            confidence,
+            cost,
+            safety,
+            transitions,
+            parallel_groups,
+            known,
+            effects,
         )?;
         group.extend(ep.starts.iter().cloned());
         aggregate.starts.extend(ep.starts);
@@ -557,9 +612,7 @@ fn accumulate_effects(
         Expr::Zero | Expr::One => Ok(()),
         Expr::Node(name) => {
             let node_effects = effects.get(name.as_str()).ok_or_else(|| {
-                format!(
-                    "program '{program_name}': operator effects missing for par node '{name}'"
-                )
+                format!("program '{program_name}': operator effects missing for par node '{name}'")
             })?;
             out.reads.extend(node_effects.reads.iter().cloned());
             out.writes.extend(node_effects.writes.iter().cloned());
@@ -645,7 +698,11 @@ pub fn validate_source_node_effects(source: &Value) -> Vec<String> {
     let mut violations: Vec<String> = Vec::new();
 
     for node in nodes {
-        let name = match node.get("name").and_then(Value::as_str).filter(|s| !s.is_empty()) {
+        let name = match node
+            .get("name")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+        {
             Some(n) => n,
             None => {
                 violations.push("source node missing non-empty 'name' field".to_string());
@@ -657,12 +714,10 @@ pub fn validate_source_node_effects(source: &Value) -> Vec<String> {
             if let Some(Value::Array(items)) = node.get(*field) {
                 for item in items {
                     match item.as_str() {
-                        None => violations.push(format!(
-                            "node '{name}': '{field}' entries must be strings"
-                        )),
-                        Some(slot) if !slots.contains(slot) => violations.push(format!(
-                            "node '{name}': undeclared {field} slot '{slot}'"
-                        )),
+                        None => violations
+                            .push(format!("node '{name}': '{field}' entries must be strings")),
+                        Some(slot) if !slots.contains(slot) => violations
+                            .push(format!("node '{name}': undeclared {field} slot '{slot}'")),
                         _ => {}
                     }
                 }
@@ -672,11 +727,12 @@ pub fn validate_source_node_effects(source: &Value) -> Vec<String> {
         if let Some(Value::Array(locks)) = node.get("locks") {
             for lock in locks {
                 match lock.as_str() {
-                    None => violations
-                        .push(format!("node '{name}': 'locks' entries must be strings")),
-                    Some(r) if !resources.contains(r) => violations.push(format!(
-                        "node '{name}': undeclared lock resource '{r}'"
-                    )),
+                    None => {
+                        violations.push(format!("node '{name}': 'locks' entries must be strings"))
+                    }
+                    Some(r) if !resources.contains(r) => {
+                        violations.push(format!("node '{name}': undeclared lock resource '{r}'"))
+                    }
                     _ => {}
                 }
             }
@@ -735,12 +791,20 @@ fn parse_layer_def(layer: &Value, idx: usize) -> Result<LayerDef, String> {
     let bottom = layer
         .get("bottom")
         .and_then(|v| parse_bottom_value(v))
-        .ok_or_else(|| format!("{ctx} '{name}': missing or invalid 'bottom' (use a number or \"inf\")"))?;
+        .ok_or_else(|| {
+            format!("{ctx} '{name}': missing or invalid 'bottom' (use a number or \"inf\")")
+        })?;
     let unit = layer
         .get("unit")
         .and_then(Value::as_f64)
         .ok_or_else(|| format!("{ctx} '{name}': missing numeric 'unit'"))?;
-    Ok(LayerDef { name, join, compose, bottom, unit })
+    Ok(LayerDef {
+        name,
+        join,
+        compose,
+        bottom,
+        unit,
+    })
 }
 
 fn validate_layer_laws(def: &LayerDef) -> Vec<String> {
@@ -899,7 +963,13 @@ pub fn validate_unique_source_node_names(source: &Value) -> Vec<String> {
 ///   resident_worker— long-running Rust worker (JSONL protocol)
 pub fn validate_known_backends(source: &Value) -> Vec<String> {
     const KNOWN: &[&str] = &[
-        "cuda", "python", "noop", "patch", "cargo", "rust_host", "resident_worker",
+        "cuda",
+        "python",
+        "noop",
+        "patch",
+        "cargo",
+        "rust_host",
+        "resident_worker",
     ];
     let nodes = match source.get("nodes").and_then(Value::as_array) {
         Some(n) => n,
@@ -988,8 +1058,7 @@ pub fn validate_kernel_slot_purity(source: &Value) -> Vec<String> {
                 for item in items {
                     let slot_name = item.as_str().unwrap_or("");
                     if let Some(slot_def) = slots.get(slot_name) {
-                        let slot_kind =
-                            slot_def.get("kind").and_then(Value::as_str).unwrap_or("");
+                        let slot_kind = slot_def.get("kind").and_then(Value::as_str).unwrap_or("");
                         if slot_kind != "tensor" {
                             violations.push(format!(
                                 "kernel node '{name}': {field} slot '{slot_name}' has kind '{slot_kind}', expected 'tensor'"
@@ -1016,8 +1085,8 @@ pub fn validate_quantale_layers(source: &Value) -> Vec<String> {
     let quantale = match source.get("quantale") {
         None => {
             return vec![
-                "topology.source.json missing top-level 'quantale' declaration".to_string()
-            ]
+                "topology.source.json missing top-level 'quantale' declaration".to_string(),
+            ];
         }
         Some(q) => q,
     };
@@ -1025,7 +1094,7 @@ pub fn validate_quantale_layers(source: &Value) -> Vec<String> {
     let layers_arr = match quantale.get("layers").and_then(Value::as_array) {
         None => return vec!["quantale.layers must be a non-empty array".to_string()],
         Some(arr) if arr.is_empty() => {
-            return vec!["quantale.layers must not be empty".to_string()]
+            return vec!["quantale.layers must not be empty".to_string()];
         }
         Some(arr) => arr,
     };
@@ -1227,11 +1296,19 @@ mod tests {
         let mut emap = EffectsMap::new();
         emap.insert(
             "A".to_string(),
-            NodeEffects { reads: BTreeSet::new(), writes: ["slot_a".to_string()].into(), locks: BTreeSet::new() },
+            NodeEffects {
+                reads: BTreeSet::new(),
+                writes: ["slot_a".to_string()].into(),
+                locks: BTreeSet::new(),
+            },
         );
         emap.insert(
             "C".to_string(),
-            NodeEffects { reads: BTreeSet::new(), writes: ["slot_c".to_string()].into(), locks: BTreeSet::new() },
+            NodeEffects {
+                reads: BTreeSet::new(),
+                writes: ["slot_c".to_string()].into(),
+                locks: BTreeSet::new(),
+            },
         );
         let ex: BTreeSet<(String, String)> = BTreeSet::new();
         let result = compile_source_programs(
@@ -1253,11 +1330,19 @@ mod tests {
         let mut emap = EffectsMap::new();
         emap.insert(
             "A".to_string(),
-            NodeEffects { reads: BTreeSet::new(), writes: ["shared".to_string()].into(), locks: BTreeSet::new() },
+            NodeEffects {
+                reads: BTreeSet::new(),
+                writes: ["shared".to_string()].into(),
+                locks: BTreeSet::new(),
+            },
         );
         emap.insert(
             "C".to_string(),
-            NodeEffects { reads: ["shared".to_string()].into(), writes: BTreeSet::new(), locks: BTreeSet::new() },
+            NodeEffects {
+                reads: ["shared".to_string()].into(),
+                writes: BTreeSet::new(),
+                locks: BTreeSet::new(),
+            },
         );
         let ex: BTreeSet<(String, String)> = BTreeSet::new();
         let result = compile_source_programs(
@@ -1287,7 +1372,11 @@ mod tests {
 
     // ── validate_source_node_effects ─────────────────────────────────────────
 
-    fn source_with_nodes(slots: serde_json::Value, resources: serde_json::Value, nodes: serde_json::Value) -> Value {
+    fn source_with_nodes(
+        slots: serde_json::Value,
+        resources: serde_json::Value,
+        nodes: serde_json::Value,
+    ) -> Value {
         json!({ "slots": slots, "resources": resources, "nodes": nodes })
     }
 
@@ -1310,7 +1399,11 @@ mod tests {
         );
         let v = validate_source_node_effects(&src);
         assert_eq!(v.len(), 1);
-        assert!(v[0].contains("undeclared reads slot 'missing.slot'"), "{:?}", v);
+        assert!(
+            v[0].contains("undeclared reads slot 'missing.slot'"),
+            "{:?}",
+            v
+        );
     }
 
     #[test]
@@ -1381,8 +1474,7 @@ mod tests {
     #[test]
     fn missing_programs_field_is_ok() {
         let src = json!({ "matrix_name": "test" });
-        let (ts, groups) =
-            compile_source_programs(&src, &BTreeSet::new(), &nodes(), None).unwrap();
+        let (ts, groups) = compile_source_programs(&src, &BTreeSet::new(), &nodes(), None).unwrap();
         assert!(ts.is_empty());
         assert!(groups.is_empty());
     }
@@ -1400,7 +1492,10 @@ mod tests {
             &[],
         );
         assert_eq!(ts.len(), 1);
-        assert!(ts[0].get("default_weight").is_none(), "default_weight must not appear in compiled transitions");
+        assert!(
+            ts[0].get("default_weight").is_none(),
+            "default_weight must not appear in compiled transitions"
+        );
         assert!((ts[0]["confidence"].as_f64().unwrap() - 0.9).abs() < 1e-6);
         assert!((ts[0]["cost"].as_f64().unwrap() - 1.5).abs() < 1e-6);
         assert!((ts[0]["safety"].as_f64().unwrap() - 0.8).abs() < 1e-6);
@@ -1428,7 +1523,11 @@ mod tests {
                 "confidence": 0.9, "cost": 1.0, "safety": 0.9
             }]
         });
-        assert!(validate_quantale_layers(&src).is_empty(), "{:?}", validate_quantale_layers(&src));
+        assert!(
+            validate_quantale_layers(&src).is_empty(),
+            "{:?}",
+            validate_quantale_layers(&src)
+        );
     }
 
     #[test]
@@ -1655,11 +1754,22 @@ mod tests {
 
     #[test]
     fn all_declared_backends_pass() {
-        for backend in &["cuda", "python", "noop", "patch", "cargo", "rust_host", "resident_worker"] {
+        for backend in &[
+            "cuda",
+            "python",
+            "noop",
+            "patch",
+            "cargo",
+            "rust_host",
+            "resident_worker",
+        ] {
             let src = json!({ "nodes": [
                 { "name": "N", "kind": "kernel", "runtime": { "backend": backend } }
             ]});
-            assert!(validate_known_backends(&src).is_empty(), "backend '{backend}' should be known");
+            assert!(
+                validate_known_backends(&src).is_empty(),
+                "backend '{backend}' should be known"
+            );
         }
     }
 

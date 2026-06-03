@@ -2,13 +2,13 @@
 """Control::TopologyMutate operator: stage or apply CRUD operations to topology nodes and edges.
 
 Reads a JSON payload from stdin with a list of operations, applies them to
-assets/topology.json (and assets/operators.json for new operator nodes) only
+assets/topology.source.json (and assets/operators.json for new operator nodes) only
 when side-effect policy allows direct apply. By default, mutating effects are
 queued in state/mutation_queue.jsonl for explicit review/apply.
 
 Operations (topology_ops array):
   {"op": "create_node",  "node": {"name": "...", "type": "State|Control|Event|Execution|Analysis", "action": "...", "description": "..."}}
-  {"op": "create_edge",  "from": "...", "to": "...", "default_weight": 0.5, "confidence": 0.9, "cost": 0.1, "safety": 0.9}
+  {"op": "create_edge",  "from": "...", "to": "...", "confidence": 0.9, "cost": 0.1, "safety": 0.9}
   {"op": "update_node",  "name": "...", "patch": {"action": "..."}}
   {"op": "update_edge",  "from": "...", "to": "...", "patch": {"confidence": 0.8}}
   {"op": "replace_node", "name": "...", "node": {...}}
@@ -26,7 +26,7 @@ Operator contract ops — update/replace existing (operator_contract_ops array):
   {"op": "replace", "contract": {"node_name": "...", "executable": "python3", ...}}
 
 Rate limiting: skips if last mutation was within MIN_MUTATION_INTERVAL_S seconds.
-Backup: writes assets/topology.json.bak and assets/operators.json.bak before each mutation.
+Backup: writes assets/topology.source.json.bak and assets/operators.json.bak before each mutation.
 
 Output (success):
   {"topology_mutate": {"applied": [...], "contracts_added": [...], "contracts_updated": [...], "node_count": N, "edge_count": N}}
@@ -46,14 +46,14 @@ import sys
 import mutation_policy
 
 _PROJECT_ROOT   = pathlib.Path(__file__).resolve().parent.parent.parent
-TOPOLOGY_PATH   = _PROJECT_ROOT / "assets" / "topology.json"
+TOPOLOGY_PATH   = _PROJECT_ROOT / "assets" / "topology.source.json"
 OPERATORS_PATH  = _PROJECT_ROOT / "assets" / "operators.json"
 EXPLORATION_PATH = _PROJECT_ROOT / "assets" / "exploration.json"
 MUTATIONS_LOG   = _PROJECT_ROOT / "state" / "topology_mutations.jsonl"
 _EFFECTS = ["topology_write", "operator_registry_write"]
 
 _DEFAULT_NODE_FEATURES = {"novelty": 0.3, "entropy": 0.3}
-TOPOLOGY_BAK   = _PROJECT_ROOT / "assets" / "topology.json.bak"
+TOPOLOGY_BAK   = _PROJECT_ROOT / "assets" / "topology.source.json.bak"
 OPERATORS_BAK  = _PROJECT_ROOT / "assets" / "operators.json.bak"
 MIN_MUTATION_INTERVAL_S = 30
 
@@ -195,14 +195,12 @@ def _apply_ops(topology: dict, ops: list) -> tuple[list, str | None]:
                 return applied, f"create_edge: unknown destination: {dst}"
             if any(_edge_key(e) == (src, dst) for e in transitions):
                 return applied, f"create_edge: edge already exists: {src} -> {dst}"
-            dw = op.get("default_weight", 0.5)
             edge: dict = {
                 "from": src,
                 "to": dst,
-                "default_weight": dw,
-                "confidence": op.get("confidence", dw),
-                "cost": op.get("cost", round(1.0 - dw, 4)),
-                "safety": op.get("safety", dw),
+                "confidence": op.get("confidence", 0.5),
+                "cost": op.get("cost", 0.5),
+                "safety": op.get("safety", 0.5),
             }
             if op.get("policy_effect"):
                 edge["policy_effect"] = op["policy_effect"]

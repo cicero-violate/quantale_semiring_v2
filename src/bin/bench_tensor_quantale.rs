@@ -72,17 +72,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("edge_count={}", tensor_edges.len());
     println!("layers=3 confidence=max-times cost=min-plus safety=max-min");
 
+    let setup_start = Instant::now();
     let mut warmup = TensorQuantaleWorld::from_tensor_edges(&tensor_edges)?;
+    let setup = setup_start.elapsed();
     warmup.close()?;
     warmup.project(bias)?;
     warmup.synchronize()?;
+    println!("setup_ms={:.3}", setup.as_secs_f64() * 1_000.0);
 
+    let mut closure_world = TensorQuantaleWorld::from_tensor_edges(&tensor_edges)?;
     let closure = bench(iterations, || {
-        let mut world = TensorQuantaleWorld::from_tensor_edges(&tensor_edges)?;
-        world.synchronize()?;
+        closure_world.restore_base_tensor()?;
+        closure_world.synchronize()?;
         timed(|| {
-            world.close()?;
-            world.synchronize()?;
+            closure_world.close()?;
+            closure_world.synchronize()?;
             Ok(())
         })
     })?;

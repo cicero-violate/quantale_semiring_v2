@@ -2,7 +2,7 @@
 """State::Introspect operator: produce a structured diagnostic report for State::TopologyPlan.
 
 Reads state/quantale.tlog, state/learned_edges.jsonl, state/topology_mutations.jsonl,
-and assets/operators.json to report on node health, stubs, weight trends, recent
+and assets/operators.generated.json to report on node health, stubs, weight trends, recent
 mutations, and goal metrics. Output becomes the context fed into State::TopologyPlan.
 
 Output:
@@ -30,8 +30,8 @@ TLOG_PATH       = _STATE_DIR / "quantale.tlog"
 EDGES_PATH      = _STATE_DIR / "learned_edges.jsonl"
 MUTATIONS_PATH  = _STATE_DIR / "topology_mutations.jsonl"
 FILLS_PATH      = _STATE_DIR / "paper_fills.jsonl"
-OPERATORS_PATH  = _ASSET_DIR / "operators.json"
-TOPOLOGY_PATH   = _ASSET_DIR / "topology.json"
+OPERATORS_PATH  = _ASSET_DIR / "operators.generated.json"
+TOPOLOGY_PATH   = _ASSET_DIR / "topology.generated.json"
 
 TLOG_WINDOW      = 300
 EDGES_WINDOW     = 60

@@ -2,13 +2,13 @@ use std::{env, fs, path::Path};
 
 fn main() {
     println!("cargo:rerun-if-changed=assets/operators.json");
-    println!("cargo:rerun-if-changed=assets/topology.json");
+    println!("cargo:rerun-if-changed=assets/topology.source.json");
     println!("cargo:rerun-if-changed=assets/topology.generated.json");
 
     let topology_path = if Path::new("assets/topology.generated.json").exists() {
         "assets/topology.generated.json"
     } else {
-        "assets/topology.json"
+        "assets/topology.source.json"
     };
     let topology = fs::read_to_string(topology_path).expect("read topology asset");
     let node_count = derive_node_count(&topology)

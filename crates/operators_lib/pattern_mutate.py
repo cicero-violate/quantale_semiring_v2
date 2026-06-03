@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Control::PatternMutate operator: stage or apply CRUD operations to assets/patterns.json.
+"""Control::PatternMutate operator: stage or apply CRUD operations to topology.source.json programs.
 
-CKA patterns define seq/par/choice/star execution structures used by the batch
-scheduler. Mutating them reshapes which execution paths are explored in parallel.
+CKA programs define seq/par/choice/star execution structures used by the source
+topology compiler. Mutating them reshapes generated topology and generated
+patterns without writing the deleted legacy pattern asset.
 
 Operations (pattern_ops array):
   {"op": "create",  "pattern": {"name": "...", "expr": {...}, "confidence": 0.95, "cost": 1.0, "safety": 0.9}}
@@ -39,19 +40,19 @@ import sys
 import mutation_policy
 
 _PROJECT_ROOT = pathlib.Path(__file__).resolve().parent.parent.parent
-PATTERNS_PATH = _PROJECT_ROOT / "assets" / "patterns.json"
-PATTERNS_BAK  = _PROJECT_ROOT / "assets" / "patterns.json.bak"
+SOURCE_TOPOLOGY_PATH = _PROJECT_ROOT / "assets" / "topology.source.json"
+SOURCE_TOPOLOGY_BAK  = _PROJECT_ROOT / "assets" / "topology.source.json.bak"
 MUTATIONS_LOG = _PROJECT_ROOT / "state" / "pattern_mutations.jsonl"
 MIN_INTERVAL_S = 30
 _EFFECTS = ["pattern_write"]
 
 
 def _load() -> dict:
-    return json.loads(PATTERNS_PATH.read_text())
+    return json.loads(SOURCE_TOPOLOGY_PATH.read_text())
 
 
 def _write(data: dict) -> None:
-    PATTERNS_PATH.write_text(json.dumps(data, indent=2) + "\n")
+    SOURCE_TOPOLOGY_PATH.write_text(json.dumps(data, indent=2) + "\n")
 
 
 def _unwrap(payload: dict) -> dict:
@@ -96,7 +97,7 @@ def _rate_limited() -> tuple[bool, float]:
 
 
 def _apply_ops(data: dict, ops: list) -> tuple[list, str | None]:
-    patterns: list = data.get("patterns", [])
+    programs: list = data.get("programs", [])
     applied = []
 
     for op in ops:
@@ -107,44 +108,44 @@ def _apply_ops(data: dict, ops: list) -> tuple[list, str | None]:
             name = pat.get("name", "")
             if not name:
                 return applied, f"create: missing name in {op}"
-            if any(p.get("name") == name for p in patterns):
+            if any(p.get("name") == name for p in programs):
                 return applied, f"create: pattern already exists: {name}"
             if "expr" not in pat:
                 return applied, f"create: missing expr in {op}"
-            patterns.append(pat)
+            programs.append(pat)
             applied.append({"op": "create", "name": name})
 
         elif kind == "update":
             name = op.get("name", "")
             patch = op.get("patch", {})
-            idx = next((i for i, p in enumerate(patterns) if p.get("name") == name), None)
+            idx = next((i for i, p in enumerate(programs) if p.get("name") == name), None)
             if idx is None:
                 return applied, f"update: not found: {name}"
-            patterns[idx].update({k: v for k, v in patch.items() if k != "name"})
+            programs[idx].update({k: v for k, v in patch.items() if k != "name"})
             applied.append({"op": "update", "name": name})
 
         elif kind == "replace":
             name = op.get("name", "")
             replacement = dict(op.get("pattern", {}))
-            idx = next((i for i, p in enumerate(patterns) if p.get("name") == name), None)
+            idx = next((i for i, p in enumerate(programs) if p.get("name") == name), None)
             if idx is None:
                 return applied, f"replace: not found: {name}"
             replacement["name"] = name
-            patterns[idx] = replacement
+            programs[idx] = replacement
             applied.append({"op": "replace", "name": name})
 
         elif kind == "delete":
             name = op.get("name", "")
-            before = len(patterns)
-            patterns = [p for p in patterns if p.get("name") != name]
-            if len(patterns) == before:
+            before = len(programs)
+            programs = [p for p in programs if p.get("name") != name]
+            if len(programs) == before:
                 return applied, f"delete: not found: {name}"
             applied.append({"op": "delete", "name": name})
 
         else:
             return applied, f"unknown op: {kind!r}"
 
-    data["patterns"] = patterns
+    data["programs"] = programs
     return applied, None
 
 
@@ -183,7 +184,7 @@ def main() -> None:
     try:
         data = _load()
     except Exception as exc:
-        sys.stderr.write(f"[pattern_mutate] cannot load {PATTERNS_PATH}: {exc}\n")
+        sys.stderr.write(f"[pattern_mutate] cannot load {SOURCE_TOPOLOGY_PATH}: {exc}\n")
         sys.exit(1)
 
     applied, error = _apply_ops(data, ops)
@@ -209,9 +210,9 @@ def main() -> None:
             },
             summary={
                 "applied_if_approved": applied,
-                "pattern_count_after": len(data.get("patterns", [])),
+                "program_count_after": len(data.get("programs", [])),
             },
-            target_paths=[str(PATTERNS_PATH.relative_to(_PROJECT_ROOT))],
+            target_paths=[str(SOURCE_TOPOLOGY_PATH.relative_to(_PROJECT_ROOT))],
         )
         print(json.dumps({"pattern_mutate": staged}))
         return
@@ -222,7 +223,7 @@ def main() -> None:
         return
 
     try:
-        PATTERNS_BAK.write_text(json.dumps(data, indent=2) + "\n")
+        SOURCE_TOPOLOGY_BAK.write_text(json.dumps(data, indent=2) + "\n")
     except OSError:
         pass
 
@@ -237,7 +238,7 @@ def main() -> None:
     print(json.dumps({
         "pattern_mutate": {
             "applied": applied,
-            "pattern_count": len(data.get("patterns", [])),
+            "program_count": len(data.get("programs", [])),
         }
     }))
 

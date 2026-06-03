@@ -1255,7 +1255,7 @@
       },
       "effects": {
         "reads": [
-          "assets/topology.json",
+          "assets/topology.source.json",
           "assets/operators.json",
           "overlays/topology",
           "overlays/operators"
@@ -1301,11 +1301,11 @@
       },
       "effects": {
         "reads": [
-          "topology.json",
+          "topology.source.json",
           "operators.json"
         ],
         "writes": [
-          "topology.json",
+          "topology.source.json",
           "operators.json"
         ],
         "locks": [
@@ -1345,7 +1345,7 @@
       },
       "effects": {
         "reads": [
-          "topology.json",
+          "topology.generated.json",
           "state/quantale.tlog"
         ],
         "writes": [
@@ -1368,7 +1368,8 @@
           "state/quantale.tlog",
           "state/learned_edges.jsonl",
           "state/topology_mutations.jsonl",
-          "assets/operators.json"
+          "assets/operators.generated.json",
+          "assets/topology.generated.json"
         ],
         "writes": [],
         "locks": []
@@ -1442,10 +1443,10 @@
       "input_mapping": {
         "stdin_mode": "json"
       },
-      "description": "LLM proposes CKA pattern mutations based on execution metrics",
+      "description": "LLM proposes topology.source.json CKA program mutations based on execution metrics",
       "effects": {
         "reads": [
-          "assets/patterns.json",
+          "assets/topology.source.json",
           "state/quantale.tlog"
         ],
         "writes": [],
@@ -1461,13 +1462,13 @@
       "input_mapping": {
         "stdin_mode": "json"
       },
-      "description": "Apply CRUD operations to assets/patterns.json",
+      "description": "Apply CRUD operations to topology.source.json programs",
       "effects": {
         "reads": [
-          "assets/patterns.json"
+          "assets/topology.source.json"
         ],
         "writes": [
-          "assets/patterns.json"
+          "assets/topology.source.json"
         ],
         "locks": [
           "patterns"
@@ -1485,7 +1486,7 @@
       "input_mapping": {
         "stdin_mode": "json"
       },
-      "description": "Signals that assets/patterns.json was successfully updated",
+      "description": "Signals that topology.source.json programs were successfully updated",
       "effects": {
         "reads": [],
         "writes": [
@@ -1510,9 +1511,8 @@
           "state/mutation_queue.jsonl",
           "assets/mutation_review_policy.json",
           "assets/governance_policy.json",
-          "assets/topology.json",
-          "assets/operators.json",
-          "assets/patterns.json"
+          "assets/topology.source.json",
+          "assets/operators.json"
         ],
         "writes": [],
         "locks": []

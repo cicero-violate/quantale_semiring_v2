@@ -1105,11 +1105,17 @@ fn build_runtime_epoch(
                     ("chain_len", entry.metadata.chain_len.to_string()),
                     ("inputs", entry.chain.inputs.len().to_string()),
                     ("outputs", entry.chain.outputs.len().to_string()),
-                    ("estimated_savings", format!("{:.1}", entry.metadata.estimated_savings)),
+                    (
+                        "estimated_savings",
+                        format!("{:.1}", entry.metadata.estimated_savings),
+                    ),
                 ],
             );
         }
-        for kernel in config.fusion_dispatch.synthesize_all(&config.operator_registry) {
+        for kernel in config
+            .fusion_dispatch
+            .synthesize_all(&config.operator_registry)
+        {
             console::info(
                 "fusion",
                 "kernel_synthesized",

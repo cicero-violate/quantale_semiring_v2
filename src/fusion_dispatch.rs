@@ -35,14 +35,14 @@ use crate::jit_kernel_fusion::{
 /// A single fusible region with its compiled JIT chain and slot metadata.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FusionEntry {
-    pub region:   String,
-    pub nodes:    Vec<String>,
-    pub chain:    JitChain,
+    pub region: String,
+    pub nodes: Vec<String>,
+    pub chain: JitChain,
     pub metadata: JitChainMetadata,
     /// External input slots (reads not produced within the region).
-    pub reads:    Vec<String>,
+    pub reads: Vec<String>,
     /// External output slots (writes not consumed within the region).
-    pub writes:   Vec<String>,
+    pub writes: Vec<String>,
 }
 
 /// A synthesized (but not yet compiled) CUDA C kernel source for one region.
@@ -58,7 +58,7 @@ pub struct SynthesizedKernel {
 /// member node.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct FusionDispatch {
-    by_entry:  HashMap<String, usize>,
+    by_entry: HashMap<String, usize>,
     by_member: HashMap<String, usize>,
     pub entries: Vec<FusionEntry>,
 }
@@ -80,8 +80,8 @@ impl FusionDispatch {
         if !path.exists() {
             return Ok(Self::default());
         }
-        let raw = fs::read_to_string(path)
-            .map_err(|e| format!("read '{}': {e}", path.display()))?;
+        let raw =
+            fs::read_to_string(path).map_err(|e| format!("read '{}': {e}", path.display()))?;
         Self::from_json_str(&raw, registry)
     }
 
@@ -107,7 +107,7 @@ impl FusionDispatch {
                 .unwrap_or("?");
 
             let nodes: Vec<String> = str_vec(region_val.get("nodes"));
-            let reads:  Vec<String> = str_vec(region_val.get("reads"));
+            let reads: Vec<String> = str_vec(region_val.get("reads"));
             let writes: Vec<String> = str_vec(region_val.get("writes"));
 
             if nodes.len() < 2 {
@@ -209,10 +209,7 @@ impl FusionDispatch {
                     source,
                 }),
                 Err(err) => {
-                    eprintln!(
-                        "[fusion_dispatch] synthesize '{}': {err}",
-                        e.region
-                    );
+                    eprintln!("[fusion_dispatch] synthesize '{}': {err}", e.region);
                     None
                 }
             })
@@ -224,7 +221,12 @@ impl FusionDispatch {
 
 fn str_vec(v: Option<&Value>) -> Vec<String> {
     v.and_then(Value::as_array)
-        .map(|arr| arr.iter().filter_map(Value::as_str).map(str::to_string).collect())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -300,8 +302,8 @@ mod tests {
 
     #[test]
     fn empty_json_produces_empty_dispatch() {
-        let dispatch = FusionDispatch::from_json_str(r#"{"regions":[]}"#, &OperatorRegistry::new())
-            .unwrap();
+        let dispatch =
+            FusionDispatch::from_json_str(r#"{"regions":[]}"#, &OperatorRegistry::new()).unwrap();
         assert!(dispatch.is_empty());
     }
 
@@ -322,7 +324,9 @@ mod tests {
     fn entry_node_lookup_finds_return1() {
         let reg = analysis_registry();
         let dispatch = FusionDispatch::from_json_str(&analysis_fusion_json(), &reg).unwrap();
-        let entry = dispatch.get_by_entry("Analysis::Return1").expect("entry not found");
+        let entry = dispatch
+            .get_by_entry("Analysis::Return1")
+            .expect("entry not found");
         assert_eq!(entry.nodes.len(), 3);
         assert_eq!(entry.nodes[0], "Analysis::Return1");
     }
@@ -354,12 +358,40 @@ mod tests {
         let entry = dispatch.get_by_entry("Analysis::Return1").unwrap();
         // market.price and market.open are external inputs (not produced inside).
         // analysis.return and analysis.volatility are internal (produced + consumed).
-        assert!(entry.chain.inputs.contains(&"market.price".to_string()), "inputs={:?}", entry.chain.inputs);
-        assert!(entry.chain.inputs.contains(&"market.open".to_string()),  "inputs={:?}", entry.chain.inputs);
-        assert!(!entry.chain.inputs.contains(&"analysis.return".to_string()), "internal slot must not be input");
-        assert_eq!(entry.chain.outputs, vec!["analysis.signal_score".to_string()]);
-        assert!(entry.chain.internals.contains(&"analysis.return".to_string()),    "internals={:?}", entry.chain.internals);
-        assert!(entry.chain.internals.contains(&"analysis.volatility".to_string()),"internals={:?}", entry.chain.internals);
+        assert!(
+            entry.chain.inputs.contains(&"market.price".to_string()),
+            "inputs={:?}",
+            entry.chain.inputs
+        );
+        assert!(
+            entry.chain.inputs.contains(&"market.open".to_string()),
+            "inputs={:?}",
+            entry.chain.inputs
+        );
+        assert!(
+            !entry.chain.inputs.contains(&"analysis.return".to_string()),
+            "internal slot must not be input"
+        );
+        assert_eq!(
+            entry.chain.outputs,
+            vec!["analysis.signal_score".to_string()]
+        );
+        assert!(
+            entry
+                .chain
+                .internals
+                .contains(&"analysis.return".to_string()),
+            "internals={:?}",
+            entry.chain.internals
+        );
+        assert!(
+            entry
+                .chain
+                .internals
+                .contains(&"analysis.volatility".to_string()),
+            "internals={:?}",
+            entry.chain.internals
+        );
     }
 
     #[test]
@@ -367,7 +399,11 @@ mod tests {
         let reg = analysis_registry();
         let dispatch = FusionDispatch::from_json_str(&analysis_fusion_json(), &reg).unwrap();
         let meta = &dispatch.entries[0].metadata;
-        assert!(meta.estimated_savings > 0.0, "savings={}", meta.estimated_savings);
+        assert!(
+            meta.estimated_savings > 0.0,
+            "savings={}",
+            meta.estimated_savings
+        );
         assert_eq!(meta.chain_len, 3);
     }
 
@@ -379,9 +415,9 @@ mod tests {
         assert_eq!(kernels.len(), 1);
         let src = &kernels[0].source;
         assert!(src.contains("__global__ void"), "src={src}");
-        assert!(src.contains("jit_fused"),       "src={src}");
-        assert!(src.contains("in0[i]"),          "src={src}");
-        assert!(src.contains("out0[i]"),         "src={src}");
+        assert!(src.contains("jit_fused"), "src={src}");
+        assert!(src.contains("in0[i]"), "src={src}");
+        assert!(src.contains("out0[i]"), "src={src}");
     }
 
     #[test]
@@ -424,8 +460,9 @@ mod tests {
         let reg = analysis_registry();
         let dispatch = FusionDispatch::from_json_str(&analysis_fusion_json(), &reg).unwrap();
         let entry = &dispatch.entries[0];
-        let reads: std::collections::BTreeSet<&str> = entry.reads.iter().map(String::as_str).collect();
-        assert!(reads.contains("market.open"),  "reads={:?}", entry.reads);
+        let reads: std::collections::BTreeSet<&str> =
+            entry.reads.iter().map(String::as_str).collect();
+        assert!(reads.contains("market.open"), "reads={:?}", entry.reads);
         assert!(reads.contains("market.price"), "reads={:?}", entry.reads);
         assert_eq!(entry.writes, vec!["analysis.signal_score"]);
     }

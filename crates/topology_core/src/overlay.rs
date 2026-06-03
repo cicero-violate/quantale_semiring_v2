@@ -1,14 +1,13 @@
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Map, Value};
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::fusion::{FusionRegion, partition_fusible_regions};
 use crate::programs::{
-    build_effects_map, compile_source_programs, emit_patterns_compat,
-    validate_boundary_governance, validate_kernel_slot_purity,
-    validate_known_backends, validate_quantale_layers,
+    build_effects_map, compile_source_programs, emit_patterns_compat, validate_boundary_governance,
+    validate_kernel_slot_purity, validate_known_backends, validate_quantale_layers,
     validate_source_node_effects, validate_unique_source_node_names,
 };
 use crate::{TopologyNode, TopologyTransition};
@@ -29,11 +28,14 @@ pub struct OperatorOverlay {
 
 pub fn build_overlay_assets(root: impl AsRef<Path>) -> Result<(), String> {
     let root = root.as_ref();
-    let mut topology = read_json(root.join("assets/topology.json"))?;
+    let source = read_json(root.join("assets/topology.source.json"))?;
     let mut operators = read_json(root.join("assets/operators.json"))?;
 
+    validate_source_topology(&source)?;
+
+    let mut topology = runtime_topology_from_source(&source)?;
     let mut nodes = take_array(&mut topology, "nodes")?;
-    let mut transitions = take_array(&mut topology, "transitions")?;
+    let mut transitions = take_array_default(&mut topology, "transitions")?;
     let mut operator_contracts = take_array(&mut operators, "operators")?;
 
     for overlay in read_overlay_dir(root.join("overlays/topology"))? {
@@ -51,11 +53,10 @@ pub fn build_overlay_assets(root: impl AsRef<Path>) -> Result<(), String> {
     assign_dense_ids(&mut nodes)?;
 
     // ── Source topology programs ──────────────────────────────────────────────
-    // If assets/topology.source.json exists, compile its programs into
-    // additional flat transitions and parallel group metadata.
-    // Transitions that already exist in the flat baseline are skipped.
+    // Compile topology.source.json programs into the complete runtime transition
+    // set.  Legacy assets/topology.json is not used as an orchestration baseline.
     let parallel_groups =
-        extend_from_source_topology(root, &nodes, &mut transitions, &operator_contracts)?;
+        extend_from_source_topology(root, &source, &nodes, &mut transitions, &operator_contracts)?;
 
     reject_duplicate_transitions(&transitions)?;
     reject_unknown_transition_endpoints(&nodes, &transitions)?;
@@ -64,15 +65,7 @@ pub fn build_overlay_assets(root: impl AsRef<Path>) -> Result<(), String> {
 
     // Phase 6: partition fusible regions from the complete merged transition set
     // before transitions are moved into the topology Value.
-    let fusion_regions: Vec<FusionRegion> = {
-        let source_path = root.join("assets/topology.source.json");
-        if source_path.exists() {
-            let source = read_json(source_path)?;
-            partition_fusible_regions(&source, &transitions)
-        } else {
-            vec![]
-        }
-    };
+    let fusion_regions: Vec<FusionRegion> = { partition_fusible_regions(&source, &transitions) };
 
     topology["nodes"] = Value::Array(nodes);
     topology["transitions"] = Value::Array(transitions);
@@ -80,9 +73,7 @@ pub fn build_overlay_assets(root: impl AsRef<Path>) -> Result<(), String> {
         topology["parallel_groups"] = Value::Array(
             parallel_groups
                 .into_iter()
-                .map(|group| {
-                    Value::Array(group.into_iter().map(Value::String).collect())
-                })
+                .map(|group| Value::Array(group.into_iter().map(Value::String).collect()))
                 .collect(),
         );
     }
@@ -112,17 +103,48 @@ pub fn build_overlay_assets(root: impl AsRef<Path>) -> Result<(), String> {
 /// Returns the collected parallel group node-name lists.
 fn extend_from_source_topology(
     root: &Path,
+    source: &Value,
     nodes: &[Value],
     transitions: &mut Vec<Value>,
     operator_contracts: &[Value],
 ) -> Result<Vec<Vec<String>>, String> {
-    let source_path = root.join("assets/topology.source.json");
-    if !source_path.exists() {
-        return Ok(Vec::new());
-    }
+    let existing: BTreeSet<(String, String)> = transitions
+        .iter()
+        .filter_map(|t| {
+            let from = t.get("from")?.as_str()?.to_string();
+            let to = t.get("to")?.as_str()?.to_string();
+            Some((from, to))
+        })
+        .collect();
 
-    let source = read_json(source_path)?;
+    let known: BTreeSet<String> = nodes
+        .iter()
+        .filter_map(|n| n.get("name")?.as_str().map(str::to_string))
+        .collect();
 
+    // Phase 3: build the effects map and pass it for par independence checking.
+    let source_nodes = source
+        .get("nodes")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    let effects_map = build_effects_map(operator_contracts, source_nodes);
+
+    let (new_transitions, parallel_groups) =
+        compile_source_programs(source, &existing, &known, Some(&effects_map))?;
+
+    transitions.extend(new_transitions);
+
+    // Phase 3: emit patterns.source.json (patterns.json-compatible, generated
+    // from topology.source.json programs).  This proves patterns.json can be
+    // derived from the source topology rather than hand-authored.
+    let patterns_compat = emit_patterns_compat(source);
+    write_json(root.join("assets/patterns.source.json"), &patterns_compat)?;
+
+    Ok(parallel_groups)
+}
+
+fn validate_source_topology(source: &Value) -> Result<(), String> {
     // Phase 6: validate source node uniqueness and known backends.
     let name_violations = validate_unique_source_node_names(&source);
     if !name_violations.is_empty() {
@@ -179,40 +201,112 @@ fn extend_from_source_topology(
         ));
     }
 
-    let existing: BTreeSet<(String, String)> = transitions
-        .iter()
-        .filter_map(|t| {
-            let from = t.get("from")?.as_str()?.to_string();
-            let to = t.get("to")?.as_str()?.to_string();
-            Some((from, to))
-        })
-        .collect();
+    Ok(())
+}
 
-    let known: BTreeSet<String> = nodes
-        .iter()
-        .filter_map(|n| n.get("name")?.as_str().map(str::to_string))
-        .collect();
+fn runtime_topology_from_source(source: &Value) -> Result<Value, String> {
+    let mut object = Map::new();
+    object.insert(
+        "matrix_name".to_string(),
+        source
+            .get("matrix_name")
+            .cloned()
+            .unwrap_or_else(|| Value::String("quantale_semiring_v2".to_string())),
+    );
 
-    // Phase 3: build the effects map and pass it for par independence checking.
+    if let Some(version) = source.get("version") {
+        object.insert("version".to_string(), version.clone());
+    }
+    if let Some(slots) = source.get("slots") {
+        object.insert("slots".to_string(), slots.clone());
+    }
+    if let Some(resources) = source.get("resources") {
+        object.insert("resources".to_string(), resources.clone());
+    }
+    if let Some(quantale) = source.get("quantale") {
+        object.insert("quantale".to_string(), quantale.clone());
+    }
+
     let source_nodes = source
         .get("nodes")
         .and_then(Value::as_array)
-        .map(Vec::as_slice)
-        .unwrap_or(&[]);
-    let effects_map = build_effects_map(operator_contracts, source_nodes);
+        .ok_or_else(|| "topology.source.json missing array field 'nodes'".to_string())?;
+    let nodes = source_nodes
+        .iter()
+        .map(runtime_node_from_source)
+        .collect::<Result<Vec<_>, _>>()?;
+    object.insert("nodes".to_string(), Value::Array(nodes));
 
-    let (new_transitions, parallel_groups) =
-        compile_source_programs(&source, &existing, &known, Some(&effects_map))?;
+    if let Some(transitions) = source.get("transitions") {
+        let transitions = transitions.as_array().ok_or_else(|| {
+            "topology.source.json field 'transitions' must be an array".to_string()
+        })?;
+        object.insert(
+            "transitions".to_string(),
+            Value::Array(transitions.iter().map(strip_default_weight).collect()),
+        );
+    }
+    if let Some(pages) = source.get("pages") {
+        object.insert("pages".to_string(), pages.clone());
+    } else {
+        object.insert("pages".to_string(), default_pages(source_nodes));
+    }
 
-    transitions.extend(new_transitions);
+    Ok(Value::Object(object))
+}
 
-    // Phase 3: emit patterns.source.json (patterns.json-compatible, generated
-    // from topology.source.json programs).  This proves patterns.json can be
-    // derived from the source topology rather than hand-authored.
-    let patterns_compat = emit_patterns_compat(&source);
-    write_json(root.join("assets/patterns.source.json"), &patterns_compat)?;
+fn runtime_node_from_source(node: &Value) -> Result<Value, String> {
+    let name = string_field(node, "name", "source node")?;
+    let mut object = Map::new();
+    object.insert("id".to_string(), Value::from(0));
+    object.insert("name".to_string(), Value::String(name.to_string()));
+    object.insert(
+        "type".to_string(),
+        Value::String(node_type_from_name(name).to_string()),
+    );
+    if let Some(action) = action_from_name(name) {
+        object.insert("action".to_string(), Value::String(action.to_string()));
+    }
+    Ok(Value::Object(object))
+}
 
-    Ok(parallel_groups)
+fn strip_default_weight(value: &Value) -> Value {
+    let mut value = value.clone();
+    if let Some(object) = value.as_object_mut() {
+        object.remove("default_weight");
+    }
+    value
+}
+
+fn node_type_from_name(name: &str) -> &str {
+    name.split_once("::")
+        .map(|(prefix, _)| prefix)
+        .unwrap_or("State")
+}
+
+fn action_from_name(name: &str) -> Option<&'static str> {
+    match name {
+        "State::Execute" => Some("execute"),
+        "Control::Retry" => Some("retry"),
+        "Control::Repair" => Some("repair"),
+        "Control::Commit" => Some("commit"),
+        "Control::Rollback" => Some("rollback"),
+        "Control::Halt" => Some("halt"),
+        _ => None,
+    }
+}
+
+fn default_pages(source_nodes: &[Value]) -> Value {
+    let node_names = source_nodes
+        .iter()
+        .filter_map(|node| node.get("name").and_then(Value::as_str))
+        .filter(|name| !name.starts_with("Analysis::") && !name.starts_with("Execution::"))
+        .map(|name| Value::String(name.to_string()))
+        .collect::<Vec<_>>();
+    Value::Array(vec![serde_json::json!({
+        "name": "main",
+        "node_names": node_names
+    })])
 }
 
 fn read_json(path: PathBuf) -> Result<Value, String> {

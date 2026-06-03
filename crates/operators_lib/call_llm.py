@@ -16,8 +16,8 @@ Configuration (all via environment variables):
                                  requests are sent to that group chat room via the
                                  /actions/group-chat endpoint.  The group chat URL
                                  overrides model, provider, and target_url.
-  QUANTALE_TOPOLOGY             path to topology.json, default assets/topology.json
-  QUANTALE_OPERATORS            path to operators.json, default assets/operators.json
+  QUANTALE_TOPOLOGY             path to runtime topology, default assets/topology.generated.json
+  QUANTALE_OPERATORS            path to runtime operators, default assets/operators.generated.json
   QUANTALE_TEMPLATES            path to call_llm_templates.json, default assets/call_llm_templates.json
 """
 
@@ -46,8 +46,8 @@ def asset_path(env_name: str, filename: str) -> pathlib.Path:
     return pathlib.Path(configured) if configured else ASSET_DIR / filename
 
 
-TOPOLOGY_PATH     = asset_path("QUANTALE_TOPOLOGY", "topology.json")
-OPERATORS_PATH    = asset_path("QUANTALE_OPERATORS", "operators.json")
+TOPOLOGY_PATH     = asset_path("QUANTALE_TOPOLOGY", "topology.generated.json")
+OPERATORS_PATH    = asset_path("QUANTALE_OPERATORS", "operators.generated.json")
 TEMPLATES_PATH    = asset_path("QUANTALE_TEMPLATES", "call_llm_templates.json")
 
 _EDGE_SCHEMA = """\
@@ -65,7 +65,7 @@ Valid node names:
 Valid topology transitions:
 {transitions}
 
-Available JIT execution operators, loaded from operators.json:
+Available JIT execution operators, loaded from operators.generated.json:
 {jit_operators}
 
 Example output:
@@ -150,7 +150,7 @@ _BUILTIN_TEMPLATES = {
         'If rollback_recommended=true in the diagnostic, emit delete ops to revert the bad change.\n'
         '\n'
         'NODE TYPES: State, Control, Event, Execution, Analysis\n'
-        'EDGE WEIGHTS: default_weight, confidence, cost, safety — floats [0,1]; cost = 1-confidence baseline.\n'
+        'EDGE WEIGHTS: confidence, cost, safety — floats [0,1]; cost = 1-confidence baseline.\n'
         '\n'
         'CREATING OPERATOR NODES — choose one executable type:\n'
         '  python3   : static_args=["crates/operators_lib/script.py"], must include description\n'
@@ -164,7 +164,7 @@ _BUILTIN_TEMPLATES = {
         'If no mutation is justified, emit an empty topology_ops array.\n'
         '\n'
         'Output ONLY a JSON object — no prose, no markdown fences:\n'
-        '{{{{"topology_ops":[{{{{"op":"create_node","node":{{{{"name":"NS::Name","type":"State","description":"..."}}}}}}}},{{{{"op":"create_edge","from":"A","to":"B","default_weight":0.5,"confidence":0.5,"cost":0.5,"safety":0.9}}}},{{{{"op":"update_edge","from":"A","to":"B","patch":{{{{"confidence":0.8,"cost":0.2}}}}}}}},{{{{"op":"delete_edge","from":"A","to":"B"}}}}],"operator_contracts":[{{{{"node_name":"NS::Name","executable":"python3","static_args":["crates/operators_lib/x.py"],"description":"what it does","input_mapping":{{{{"stdin_mode":"json"}}}},"effects":{{{{"reads":[],"writes":[],"locks":[]}}}}}}}}],"operator_contract_ops":[{{{{"op":"update","node_name":"NS::Name","patch":{{{{"executable":"python3","static_args":["crates/operators_lib/x.py"]}}}}}}}}],"reason":"one sentence"}}}}\n'
+        '{{{{"topology_ops":[{{{{"op":"create_node","node":{{{{"name":"NS::Name","type":"State","description":"..."}}}}}}}},{{{{"op":"create_edge","from":"A","to":"B","confidence":0.5,"cost":0.5,"safety":0.9}}}},{{{{"op":"update_edge","from":"A","to":"B","patch":{{{{"confidence":0.8,"cost":0.2}}}}}}}},{{{{"op":"delete_edge","from":"A","to":"B"}}}}],"operator_contracts":[{{{{"node_name":"NS::Name","executable":"python3","static_args":["crates/operators_lib/x.py"],"description":"what it does","input_mapping":{{{{"stdin_mode":"json"}}}},"effects":{{{{"reads":[],"writes":[],"locks":[]}}}}}}}}],"operator_contract_ops":[{{{{"op":"update","node_name":"NS::Name","patch":{{{{"executable":"python3","static_args":["crates/operators_lib/x.py"]}}}}}}}}],"reason":"one sentence"}}}}\n'
     ),
     "operator_write": (
         'You are a neuro-symbolic operator developer. Write a complete Python operator file.\n'
@@ -236,12 +236,12 @@ _EDGE_SCHEMA_TEMPLATES: frozenset[str] = frozenset({"plan", "repair"})
 
 
 def load_topology() -> dict:
-    """Load topology.json from the configured asset path."""
+    """Load runtime topology from the configured asset path."""
     return json.loads(TOPOLOGY_PATH.read_text())
 
 
 def load_valid_nodes() -> tuple[str, ...]:
-    """Load node names from assets/topology.json at runtime."""
+    """Load node names from runtime topology at runtime."""
     try:
         data = load_topology()
         return tuple(n["name"] for n in data.get("nodes", []))
@@ -271,7 +271,7 @@ def load_transition_summary() -> str:
 
 
 def load_jit_operator_summary(valid_nodes: tuple[str, ...]) -> str:
-    """Load JIT operator data-flow declarations from assets/operators.json."""
+    """Load JIT operator data-flow declarations from the runtime registry."""
     try:
         data = json.loads(OPERATORS_PATH.read_text())
         valid_node_set = set(valid_nodes)
@@ -490,7 +490,7 @@ def load_system_context() -> str:
 
 
 def load_jit_analysis_operator_summary(valid_nodes: tuple[str, ...]) -> str:
-    """Load JIT analysis operators (Analysis:: prefix) from assets/operators.json."""
+    """Load JIT analysis operators (Analysis:: prefix) from the runtime registry."""
     try:
         data = json.loads(OPERATORS_PATH.read_text())
         valid_node_set = set(valid_nodes)

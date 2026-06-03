@@ -1,5 +1,5 @@
 {
-  "matrix_name": "neurosymbolic_orchestrator_v2",
+  "matrix_name": "quantale_semiring_v2",
   "nodes": [
     {
       "id": 0,
@@ -295,20 +295,19 @@
     {
       "id": 57,
       "name": "Analysis::Return1",
-      "type": "Execution"
+      "type": "Analysis"
     },
     {
       "id": 58,
       "name": "Analysis::Volatility",
-      "type": "Execution"
+      "type": "Analysis"
     },
     {
       "id": 59,
       "name": "Analysis::SignalScore",
-      "type": "Execution"
+      "type": "Analysis"
     },
     {
-      "action": "build_topology_overlay",
       "id": 60,
       "name": "Control::BuildTopologyOverlay",
       "type": "Control"
@@ -319,7 +318,6 @@
       "type": "Event"
     },
     {
-      "action": "topology_mutate",
       "id": 62,
       "name": "Control::TopologyMutate",
       "type": "Control"
@@ -345,7 +343,6 @@
       "type": "State"
     },
     {
-      "action": "write_operator",
       "id": 67,
       "name": "Control::WriteOperator",
       "type": "Control"
@@ -361,7 +358,6 @@
       "type": "State"
     },
     {
-      "action": "pattern_mutate",
       "id": 70,
       "name": "Control::PatternMutate",
       "type": "Control"
@@ -454,11 +450,291 @@
       "State::Parse"
     ]
   ],
+  "quantale": {
+    "layers": [
+      {
+        "bottom": 0.0,
+        "compose": "times",
+        "join": "max",
+        "name": "confidence",
+        "unit": 1.0
+      },
+      {
+        "bottom": "inf",
+        "compose": "plus",
+        "join": "min",
+        "name": "cost",
+        "unit": 0.0
+      },
+      {
+        "bottom": 0.0,
+        "compose": "min",
+        "join": "max",
+        "name": "safety",
+        "unit": 1.0
+      }
+    ]
+  },
+  "resources": {
+    "commit": {
+      "capacity": 1,
+      "kind": "lock"
+    },
+    "cuda": {
+      "capacity": 1,
+      "kind": "gpu"
+    },
+    "executor": {
+      "capacity": 1,
+      "kind": "lock"
+    },
+    "learning": {
+      "capacity": 1,
+      "kind": "lock"
+    },
+    "memory": {
+      "capacity": 1,
+      "kind": "lock"
+    },
+    "operators_lib": {
+      "capacity": 1,
+      "kind": "lock"
+    },
+    "paper_broker": {
+      "capacity": 1,
+      "kind": "lock"
+    },
+    "patterns": {
+      "capacity": 1,
+      "kind": "lock"
+    },
+    "topology": {
+      "capacity": 1,
+      "kind": "lock"
+    },
+    "topology_assets": {
+      "capacity": 1,
+      "kind": "lock"
+    },
+    "workspace": {
+      "capacity": 1,
+      "kind": "lock"
+    }
+  },
+  "slots": {
+    "analysis.config": {
+      "kind": "config",
+      "type": "json"
+    },
+    "analysis.plan": {
+      "kind": "state",
+      "type": "json"
+    },
+    "analysis.return": {
+      "kind": "tensor",
+      "type": "f32[]"
+    },
+    "analysis.signal_score": {
+      "kind": "tensor",
+      "type": "f32[]"
+    },
+    "analysis.volatility": {
+      "kind": "tensor",
+      "type": "f32[]"
+    },
+    "commit.record": {
+      "kind": "state",
+      "type": "json"
+    },
+    "env.task": {
+      "kind": "input",
+      "type": "json"
+    },
+    "execution.gpu.results": {
+      "kind": "tensor",
+      "type": "f32[]"
+    },
+    "execution.report": {
+      "kind": "state",
+      "type": "json"
+    },
+    "introspect.report": {
+      "kind": "state",
+      "type": "json"
+    },
+    "learning.tensor": {
+      "kind": "state",
+      "type": "json"
+    },
+    "map.candidates": {
+      "kind": "state",
+      "type": "json"
+    },
+    "market.config": {
+      "kind": "config",
+      "type": "json"
+    },
+    "market.feed": {
+      "kind": "state",
+      "type": "json"
+    },
+    "market.open": {
+      "kind": "tensor",
+      "type": "f32[]"
+    },
+    "market.price": {
+      "kind": "tensor",
+      "type": "f32[]"
+    },
+    "math.a": {
+      "kind": "tensor",
+      "type": "f32[]"
+    },
+    "math.add_out": {
+      "kind": "tensor",
+      "type": "f32[]"
+    },
+    "math.b": {
+      "kind": "tensor",
+      "type": "f32[]"
+    },
+    "math.out": {
+      "kind": "tensor",
+      "type": "f32[]"
+    },
+    "math.scale": {
+      "kind": "tensor",
+      "type": "f32[]"
+    },
+    "memory.store": {
+      "kind": "state",
+      "type": "json"
+    },
+    "mutation.review": {
+      "kind": "state",
+      "type": "json"
+    },
+    "operator.plan": {
+      "kind": "state",
+      "type": "json"
+    },
+    "optimized.tensor": {
+      "kind": "state",
+      "type": "json"
+    },
+    "parse.tree": {
+      "kind": "state",
+      "type": "json"
+    },
+    "pattern.plan": {
+      "kind": "state",
+      "type": "json"
+    },
+    "plan.tensor": {
+      "kind": "state",
+      "type": "json"
+    },
+    "portfolio.state": {
+      "kind": "state",
+      "type": "json"
+    },
+    "receipt.report": {
+      "kind": "receipt",
+      "type": "json"
+    },
+    "repair.intent": {
+      "kind": "state",
+      "type": "json"
+    },
+    "retry.intent": {
+      "kind": "state",
+      "type": "json"
+    },
+    "rollback.record": {
+      "kind": "state",
+      "type": "json"
+    },
+    "score.report": {
+      "kind": "state",
+      "type": "json"
+    },
+    "search.results": {
+      "kind": "state",
+      "type": "json"
+    },
+    "select.result": {
+      "kind": "state",
+      "type": "json"
+    },
+    "state/learned_edges.jsonl": {
+      "kind": "log",
+      "type": "jsonl"
+    },
+    "state/market_feed.jsonl": {
+      "kind": "log",
+      "type": "jsonl"
+    },
+    "state/mutation_queue.jsonl": {
+      "kind": "log",
+      "type": "jsonl"
+    },
+    "state/paper_orders.jsonl": {
+      "kind": "log",
+      "type": "jsonl"
+    },
+    "state/paper_positions.json": {
+      "kind": "state",
+      "type": "json"
+    },
+    "state/quantale.tlog": {
+      "kind": "log",
+      "type": "jsonl"
+    },
+    "state/topology_mutations.jsonl": {
+      "kind": "log",
+      "type": "jsonl"
+    },
+    "task.context": {
+      "kind": "state",
+      "type": "json"
+    },
+    "topology.plan": {
+      "kind": "state",
+      "type": "json"
+    },
+    "trade.decision": {
+      "kind": "state",
+      "type": "json"
+    },
+    "trade.receipt": {
+      "kind": "receipt",
+      "type": "json"
+    },
+    "trading.policy": {
+      "kind": "config",
+      "type": "json"
+    },
+    "trading.signals": {
+      "kind": "tensor",
+      "type": "f32[]"
+    },
+    "validation.report": {
+      "kind": "state",
+      "type": "json"
+    },
+    "workspace.diff": {
+      "kind": "state",
+      "type": "bytes"
+    },
+    "workspace.files": {
+      "kind": "state",
+      "type": "bytes"
+    }
+  },
   "transitions": [
     {
       "confidence": 0.99,
       "cost": 0.01,
-      "default_weight": 0.99,
       "from": "State::Goal",
       "policy_effect": "TriggerGateInput",
       "safety": 0.99,
@@ -467,7 +743,6 @@
     {
       "confidence": 0.98,
       "cost": 0.02,
-      "default_weight": 0.98,
       "from": "Control::GateInput",
       "policy_effect": "AwaitFact",
       "safety": 0.98,
@@ -476,7 +751,6 @@
     {
       "confidence": 0.97,
       "cost": 0.03,
-      "default_weight": 0.97,
       "from": "Event::FactArrived",
       "policy_effect": "AcceptInput",
       "safety": 0.97,
@@ -485,7 +759,6 @@
     {
       "confidence": 0.95,
       "cost": 0.05,
-      "default_weight": 0.95,
       "from": "Event::InputAccepted",
       "policy_effect": "ParseInput",
       "safety": 0.95,
@@ -494,7 +767,6 @@
     {
       "confidence": 0.92,
       "cost": 0.08,
-      "default_weight": 0.92,
       "from": "State::Parse",
       "policy_effect": "ParseOk",
       "safety": 0.92,
@@ -503,7 +775,6 @@
     {
       "confidence": 0.1,
       "cost": 0.9,
-      "default_weight": 0.1,
       "from": "State::Parse",
       "policy_effect": "ParseErr",
       "safety": 0.1,
@@ -512,7 +783,6 @@
     {
       "confidence": 0.9,
       "cost": 0.1,
-      "default_weight": 0.9,
       "from": "Event::ParseOk",
       "policy_effect": "MapInput",
       "safety": 0.9,
@@ -521,7 +791,6 @@
     {
       "confidence": 0.6,
       "cost": 0.4,
-      "default_weight": 0.6,
       "from": "Event::ParseErr",
       "policy_effect": "RepairParse",
       "safety": 0.6,
@@ -530,7 +799,6 @@
     {
       "confidence": 0.55,
       "cost": 0.45,
-      "default_weight": 0.55,
       "from": "Control::Repair",
       "policy_effect": "RetryParse",
       "safety": 0.55,
@@ -539,7 +807,6 @@
     {
       "confidence": 0.93,
       "cost": 0.07,
-      "default_weight": 0.93,
       "from": "State::Map",
       "policy_effect": "MapReady",
       "safety": 0.93,
@@ -548,7 +815,6 @@
     {
       "confidence": 0.92,
       "cost": 0.08,
-      "default_weight": 0.92,
       "from": "Event::MapReady",
       "policy_effect": "Search",
       "safety": 0.92,
@@ -557,16 +823,22 @@
     {
       "confidence": 0.91,
       "cost": 0.09,
-      "default_weight": 0.91,
       "from": "State::Search",
       "policy_effect": "CandidateFound",
       "safety": 0.91,
       "to": "Event::CandidateFound"
     },
     {
+      "confidence": 0.54,
+      "cost": 0.46,
+      "from": "State::Search",
+      "policy_effect": "SearchDirectScoreFallback",
+      "safety": 0.84,
+      "to": "State::Score"
+    },
+    {
       "confidence": 0.92,
       "cost": 0.08,
-      "default_weight": 0.92,
       "from": "Event::CandidateFound",
       "policy_effect": "Score",
       "safety": 0.92,
@@ -575,16 +847,22 @@
     {
       "confidence": 0.94,
       "cost": 0.06,
-      "default_weight": 0.94,
       "from": "State::Score",
       "policy_effect": "ScoreReady",
       "safety": 0.94,
       "to": "Event::ScoreReady"
     },
     {
+      "confidence": 0.53,
+      "cost": 0.47,
+      "from": "State::Score",
+      "policy_effect": "ScoreDirectSelectFallback",
+      "safety": 0.84,
+      "to": "State::Select"
+    },
+    {
       "confidence": 0.95,
       "cost": 0.05,
-      "default_weight": 0.95,
       "from": "Event::ScoreReady",
       "policy_effect": "Select",
       "safety": 0.95,
@@ -593,16 +871,22 @@
     {
       "confidence": 0.94,
       "cost": 0.06,
-      "default_weight": 0.94,
       "from": "State::Select",
       "policy_effect": "TopKSelected",
       "safety": 0.94,
       "to": "Event::TopKSelected"
     },
     {
+      "confidence": 0.52,
+      "cost": 0.48,
+      "from": "State::Select",
+      "policy_effect": "SelectDirectPlanFallback",
+      "safety": 0.84,
+      "to": "State::Plan"
+    },
+    {
       "confidence": 0.93,
       "cost": 0.07,
-      "default_weight": 0.93,
       "from": "Event::TopKSelected",
       "policy_effect": "Plan",
       "safety": 0.93,
@@ -611,7 +895,6 @@
     {
       "confidence": 0.92,
       "cost": 0.08,
-      "default_weight": 0.92,
       "from": "State::Plan",
       "policy_effect": "PlanReady",
       "safety": 0.92,
@@ -620,7 +903,6 @@
     {
       "confidence": 0.96,
       "cost": 0.04,
-      "default_weight": 0.96,
       "from": "Event::PlanReady",
       "policy_effect": "ChooseBest",
       "safety": 0.96,
@@ -629,7 +911,6 @@
     {
       "confidence": 0.88,
       "cost": 0.12,
-      "default_weight": 0.88,
       "from": "Control::ChooseBest",
       "policy_effect": "Execute",
       "safety": 0.88,
@@ -638,7 +919,6 @@
     {
       "confidence": 0.7,
       "cost": 0.3,
-      "default_weight": 0.7,
       "from": "Control::ChooseBest",
       "policy_effect": "Optimize",
       "safety": 0.7,
@@ -647,7 +927,6 @@
     {
       "confidence": 0.75,
       "cost": 0.25,
-      "default_weight": 0.75,
       "from": "State::Optimize",
       "policy_effect": "OptimizeReady",
       "safety": 0.75,
@@ -656,7 +935,6 @@
     {
       "confidence": 0.82,
       "cost": 0.18,
-      "default_weight": 0.82,
       "from": "Event::OptimizeReady",
       "policy_effect": "ExecuteOptimized",
       "safety": 0.82,
@@ -665,7 +943,6 @@
     {
       "confidence": 0.97,
       "cost": 0.03,
-      "default_weight": 0.97,
       "from": "State::Execute",
       "policy_effect": "GateExecution",
       "safety": 0.97,
@@ -674,7 +951,6 @@
     {
       "confidence": 0.96,
       "cost": 0.04,
-      "default_weight": 0.96,
       "from": "Control::GateExecution",
       "policy_effect": "StartExecution",
       "safety": 0.96,
@@ -683,7 +959,6 @@
     {
       "confidence": 0.05,
       "cost": 0.95,
-      "default_weight": 0.05,
       "from": "Control::GateExecution",
       "policy_effect": "BlockExecution",
       "safety": 0.05,
@@ -692,7 +967,6 @@
     {
       "confidence": 0.9,
       "cost": 0.1,
-      "default_weight": 0.9,
       "from": "Event::ExecuteStarted",
       "policy_effect": "FinishExecution",
       "safety": 0.9,
@@ -701,7 +975,6 @@
     {
       "confidence": 0.85,
       "cost": 0.15,
-      "default_weight": 0.85,
       "from": "Event::ExecuteFinished",
       "policy_effect": "AttachReceipt",
       "safety": 0.85,
@@ -710,7 +983,6 @@
     {
       "confidence": 0.97,
       "cost": 0.03,
-      "default_weight": 0.97,
       "from": "Event::ReceiptAttached",
       "policy_effect": "GateReceipt",
       "safety": 0.97,
@@ -719,7 +991,6 @@
     {
       "confidence": 0.9,
       "cost": 0.1,
-      "default_weight": 0.9,
       "from": "Control::GateReceipt",
       "policy_effect": "AcceptReceipt",
       "safety": 0.9,
@@ -728,7 +999,6 @@
     {
       "confidence": 0.15,
       "cost": 0.85,
-      "default_weight": 0.15,
       "from": "Control::GateReceipt",
       "policy_effect": "RejectReceipt",
       "safety": 0.15,
@@ -737,7 +1007,6 @@
     {
       "confidence": 0.95,
       "cost": 0.05,
-      "default_weight": 0.95,
       "from": "Event::ReceiptAccepted",
       "policy_effect": "CheckHash",
       "safety": 0.95,
@@ -746,7 +1015,6 @@
     {
       "confidence": 0.96,
       "cost": 0.04,
-      "default_weight": 0.96,
       "from": "Event::HashNonzero",
       "policy_effect": "Validate",
       "safety": 0.96,
@@ -755,7 +1023,6 @@
     {
       "confidence": 0.8,
       "cost": 0.2,
-      "default_weight": 0.8,
       "from": "Event::ReceiptRejected",
       "policy_effect": "Rollback",
       "safety": 0.8,
@@ -764,7 +1031,6 @@
     {
       "confidence": 0.6,
       "cost": 0.4,
-      "default_weight": 0.6,
       "from": "Control::Rollback",
       "policy_effect": "Repair",
       "safety": 0.6,
@@ -773,7 +1039,6 @@
     {
       "confidence": 0.94,
       "cost": 0.06,
-      "default_weight": 0.94,
       "from": "State::Validate",
       "policy_effect": "Commit",
       "safety": 0.94,
@@ -782,7 +1047,6 @@
     {
       "confidence": 0.05,
       "cost": 0.95,
-      "default_weight": 0.05,
       "from": "State::Validate",
       "policy_effect": "BlockValidation",
       "safety": 0.05,
@@ -791,7 +1055,6 @@
     {
       "confidence": 0.98,
       "cost": 0.02,
-      "default_weight": 0.98,
       "from": "Control::Commit",
       "policy_effect": "GateMemory",
       "safety": 0.98,
@@ -800,7 +1063,6 @@
     {
       "confidence": 0.95,
       "cost": 0.05,
-      "default_weight": 0.95,
       "from": "Control::GateMemory",
       "policy_effect": "Memory",
       "safety": 0.95,
@@ -809,7 +1071,6 @@
     {
       "confidence": 0.88,
       "cost": 0.12,
-      "default_weight": 0.88,
       "from": "State::Memory",
       "policy_effect": "LearnFromMemory",
       "safety": 0.88,
@@ -818,7 +1079,6 @@
     {
       "confidence": 0.92,
       "cost": 0.08,
-      "default_weight": 0.92,
       "from": "State::Memory",
       "policy_effect": "MemoryWritten",
       "safety": 0.92,
@@ -827,7 +1087,6 @@
     {
       "confidence": 0.9,
       "cost": 0.1,
-      "default_weight": 0.9,
       "from": "Event::MemoryWritten",
       "policy_effect": "GateLearn",
       "safety": 0.9,
@@ -836,7 +1095,6 @@
     {
       "confidence": 0.88,
       "cost": 0.12,
-      "default_weight": 0.88,
       "from": "Control::GateLearn",
       "policy_effect": "Learn",
       "safety": 0.88,
@@ -845,7 +1103,6 @@
     {
       "confidence": 0.34,
       "cost": 0.66,
-      "default_weight": 0.34,
       "from": "State::Learn",
       "policy_effect": "BuildTopologyOverlay",
       "safety": 0.95,
@@ -854,16 +1111,22 @@
     {
       "confidence": 0.97,
       "cost": 0.03,
-      "default_weight": 0.97,
       "from": "Control::BuildTopologyOverlay",
       "policy_effect": "TopologyOverlayBuilt",
       "safety": 0.98,
       "to": "Event::TopologyOverlayBuilt"
     },
     {
+      "confidence": 0.51,
+      "cost": 0.49,
+      "from": "Control::BuildTopologyOverlay",
+      "policy_effect": "TopologyOverlayDirectResumeFallback",
+      "safety": 0.9,
+      "to": "Event::LearnUpdated"
+    },
+    {
       "confidence": 0.9,
       "cost": 0.1,
-      "default_weight": 0.9,
       "from": "Event::TopologyOverlayBuilt",
       "policy_effect": "ResumeAfterTopologyOverlayBuild",
       "safety": 0.95,
@@ -872,16 +1135,22 @@
     {
       "confidence": 0.3,
       "cost": 0.7,
-      "default_weight": 0.3,
       "from": "Control::Block",
       "policy_effect": "RecoverFromBlock",
       "safety": 0.3,
       "to": "State::Input"
     },
     {
+      "confidence": 0.28,
+      "cost": 0.72,
+      "from": "Control::Block",
+      "policy_effect": "RepairFromBlockFallback",
+      "safety": 0.62,
+      "to": "Control::Repair"
+    },
+    {
       "confidence": 0.7,
       "cost": 0.3,
-      "default_weight": 0.7,
       "from": "Event::LearnUpdated",
       "policy_effect": "Halt",
       "safety": 0.7,
@@ -890,7 +1159,6 @@
     {
       "confidence": 0.95,
       "cost": 0.05,
-      "default_weight": 0.95,
       "from": "Event::LearnUpdated",
       "policy_effect": "RestartTradingCycle",
       "safety": 0.95,
@@ -899,7 +1167,6 @@
     {
       "confidence": 0.8,
       "cost": 1.5,
-      "default_weight": 0.8,
       "from": "State::Execute",
       "policy_effect": "DispatchVectorAdd",
       "safety": 0.8,
@@ -908,7 +1175,6 @@
     {
       "confidence": 0.8,
       "cost": 1.5,
-      "default_weight": 0.8,
       "from": "State::Execute",
       "policy_effect": "DispatchVectorScale",
       "safety": 0.8,
@@ -917,7 +1183,6 @@
     {
       "confidence": 0.75,
       "cost": 2.0,
-      "default_weight": 0.75,
       "from": "State::Execute",
       "policy_effect": "DispatchFusedVectorAddScale",
       "safety": 0.78,
@@ -926,7 +1191,6 @@
     {
       "confidence": 0.88,
       "cost": 0.8,
-      "default_weight": 0.88,
       "from": "Execution::VectorAdd",
       "policy_effect": "GateAfterVectorAdd",
       "safety": 0.88,
@@ -935,7 +1199,6 @@
     {
       "confidence": 0.88,
       "cost": 0.8,
-      "default_weight": 0.88,
       "from": "Execution::VectorScale",
       "policy_effect": "GateAfterVectorScale",
       "safety": 0.88,
@@ -944,7 +1207,6 @@
     {
       "confidence": 0.92,
       "cost": 0.6,
-      "default_weight": 0.92,
       "from": "Execution::FusedVectorAddScale",
       "policy_effect": "GateAfterFusedVectorAddScale",
       "safety": 0.9,
@@ -953,16 +1215,22 @@
     {
       "confidence": 0.97,
       "cost": 0.03,
-      "default_weight": 0.97,
       "from": "State::Input",
       "policy_effect": "FetchMarketFeed",
       "safety": 0.97,
       "to": "State::MarketFeed"
     },
     {
+      "confidence": 0.62,
+      "cost": 0.38,
+      "from": "State::Input",
+      "policy_effect": "AcceptInputFallback",
+      "safety": 0.9,
+      "to": "Event::InputAccepted"
+    },
+    {
       "confidence": 0.92,
       "cost": 0.08,
-      "default_weight": 0.92,
       "from": "State::MarketFeed",
       "policy_effect": "MarketFeedUpdated",
       "safety": 0.92,
@@ -971,7 +1239,6 @@
     {
       "confidence": 0.91,
       "cost": 0.09,
-      "default_weight": 0.91,
       "from": "Event::MarketFeedUpdated",
       "policy_effect": "PlanAnalysis",
       "safety": 0.91,
@@ -980,7 +1247,6 @@
     {
       "confidence": 0.89,
       "cost": 0.11,
-      "default_weight": 0.89,
       "from": "State::AnalysisPlan",
       "policy_effect": "AnalysisPlanReady",
       "safety": 0.89,
@@ -989,7 +1255,6 @@
     {
       "confidence": 0.88,
       "cost": 1.2,
-      "default_weight": 0.88,
       "from": "Event::AnalysisPlanReady",
       "policy_effect": "DispatchReturn1",
       "safety": 0.88,
@@ -998,16 +1263,22 @@
     {
       "confidence": 0.9,
       "cost": 1.0,
-      "default_weight": 0.9,
       "from": "Analysis::Return1",
       "policy_effect": "ChainReturn1ToVolatility",
       "safety": 0.9,
       "to": "Analysis::Volatility"
     },
     {
+      "confidence": 0.55,
+      "cost": 1.5,
+      "from": "Analysis::Return1",
+      "policy_effect": "Return1DirectSignalFallback",
+      "safety": 0.82,
+      "to": "Analysis::SignalScore"
+    },
+    {
       "confidence": 0.9,
       "cost": 1.0,
-      "default_weight": 0.9,
       "from": "Analysis::Volatility",
       "policy_effect": "ChainVolatilityToSignalScore",
       "safety": 0.9,
@@ -1016,7 +1287,6 @@
     {
       "confidence": 0.89,
       "cost": 0.11,
-      "default_weight": 0.89,
       "from": "Analysis::SignalScore",
       "policy_effect": "AnalysisFinished",
       "safety": 0.89,
@@ -1025,7 +1295,6 @@
     {
       "confidence": 0.6,
       "cost": 0.4,
-      "default_weight": 0.6,
       "from": "State::AnalysisPlan",
       "policy_effect": "SkipAnalysisChain",
       "safety": 0.6,
@@ -1034,16 +1303,22 @@
     {
       "confidence": 0.95,
       "cost": 0.05,
-      "default_weight": 0.95,
       "from": "Event::AnalysisFinished",
       "policy_effect": "PlanAfterAnalysis",
       "safety": 0.95,
       "to": "State::Plan"
     },
     {
+      "confidence": 0.52,
+      "cost": 0.48,
+      "from": "Event::AnalysisFinished",
+      "policy_effect": "TradePlanAfterAnalysisFallback",
+      "safety": 0.86,
+      "to": "State::TradePlan"
+    },
+    {
       "confidence": 0.94,
       "cost": 0.06,
-      "default_weight": 0.94,
       "from": "State::Plan",
       "policy_effect": "TradePlan",
       "safety": 0.94,
@@ -1052,16 +1327,22 @@
     {
       "confidence": 0.87,
       "cost": 0.13,
-      "default_weight": 0.87,
       "from": "State::TradePlan",
       "policy_effect": "TradeDecisionReady",
       "safety": 0.87,
       "to": "Event::TradeDecisionReady"
     },
     {
+      "confidence": 0.51,
+      "cost": 0.49,
+      "from": "State::TradePlan",
+      "policy_effect": "TradePlanDirectPaperTradeFallback",
+      "safety": 0.84,
+      "to": "State::PaperTrade"
+    },
+    {
       "confidence": 0.86,
       "cost": 0.14,
-      "default_weight": 0.86,
       "from": "Event::TradeDecisionReady",
       "policy_effect": "ExecutePaperTrade",
       "safety": 0.86,
@@ -1070,7 +1351,6 @@
     {
       "confidence": 0.85,
       "cost": 0.15,
-      "default_weight": 0.85,
       "from": "State::PaperTrade",
       "policy_effect": "PaperTradeFilled",
       "safety": 0.85,
@@ -1079,7 +1359,6 @@
     {
       "confidence": 0.1,
       "cost": 0.9,
-      "default_weight": 0.1,
       "from": "State::PaperTrade",
       "policy_effect": "PaperTradeRejected",
       "safety": 0.1,
@@ -1088,7 +1367,6 @@
     {
       "confidence": 0.93,
       "cost": 0.07,
-      "default_weight": 0.93,
       "from": "Event::PaperTradeFilled",
       "policy_effect": "MemoryAfterFill",
       "safety": 0.93,
@@ -1097,7 +1375,6 @@
     {
       "confidence": 0.8,
       "cost": 0.2,
-      "default_weight": 0.8,
       "from": "Event::PaperTradeRejected",
       "policy_effect": "MemoryAfterRejection",
       "safety": 0.8,
@@ -1106,7 +1383,6 @@
     {
       "confidence": 0.97,
       "cost": 0.03,
-      "default_weight": 0.97,
       "from": "Control::TopologyMutate",
       "policy_effect": "TopologyMutated",
       "safety": 0.98,
@@ -1115,7 +1391,6 @@
     {
       "confidence": 0.97,
       "cost": 0.03,
-      "default_weight": 0.97,
       "from": "Event::TopologyMutated",
       "policy_effect": "BuildTopologyOverlayAfterMutate",
       "safety": 0.98,
@@ -1124,7 +1399,6 @@
     {
       "confidence": 0.97,
       "cost": 0.03,
-      "default_weight": 0.97,
       "from": "State::TopologyPlan",
       "policy_effect": "TopologyMutateFromPlan",
       "safety": 0.98,
@@ -1133,7 +1407,6 @@
     {
       "confidence": 0.97,
       "cost": 0.03,
-      "default_weight": 0.97,
       "from": "State::Learn",
       "policy_effect": "Introspect",
       "safety": 0.95,
@@ -1142,7 +1415,6 @@
     {
       "confidence": 0.97,
       "cost": 0.03,
-      "default_weight": 0.97,
       "from": "State::Introspect",
       "policy_effect": "TopologyPlanFromIntrospect",
       "safety": 0.97,
@@ -1151,7 +1423,6 @@
     {
       "confidence": 0.65,
       "cost": 0.35,
-      "default_weight": 0.65,
       "from": "Event::TopologyMutated",
       "policy_effect": "OperatorPlan",
       "safety": 0.95,
@@ -1160,7 +1431,6 @@
     {
       "confidence": 0.97,
       "cost": 0.03,
-      "default_weight": 0.97,
       "from": "State::OperatorPlan",
       "policy_effect": "WriteOperator",
       "safety": 0.97,
@@ -1169,7 +1439,6 @@
     {
       "confidence": 0.97,
       "cost": 0.03,
-      "default_weight": 0.97,
       "from": "Control::WriteOperator",
       "policy_effect": "OperatorWritten",
       "safety": 0.98,
@@ -1178,7 +1447,6 @@
     {
       "confidence": 0.5,
       "cost": 0.5,
-      "default_weight": 0.5,
       "from": "Event::OperatorWritten",
       "policy_effect": "BuildOverlayAfterWrite",
       "safety": 0.97,
@@ -1187,7 +1455,6 @@
     {
       "confidence": 0.25,
       "cost": 0.75,
-      "default_weight": 0.25,
       "from": "State::Learn",
       "policy_effect": "PatternPlan",
       "safety": 0.95,
@@ -1196,7 +1463,6 @@
     {
       "confidence": 0.97,
       "cost": 0.03,
-      "default_weight": 0.97,
       "from": "State::PatternPlan",
       "policy_effect": "PatternMutate",
       "safety": 0.97,
@@ -1205,7 +1471,6 @@
     {
       "confidence": 0.97,
       "cost": 0.03,
-      "default_weight": 0.97,
       "from": "Control::PatternMutate",
       "policy_effect": "PatternMutated",
       "safety": 0.98,
@@ -1214,7 +1479,6 @@
     {
       "confidence": 0.9,
       "cost": 0.1,
-      "default_weight": 0.9,
       "from": "Event::PatternMutated",
       "policy_effect": "ResumeAfterPatternMutate",
       "safety": 0.95,
@@ -1223,7 +1487,6 @@
     {
       "confidence": 0.5,
       "cost": 0.5,
-      "default_weight": 0.5,
       "from": "State::Introspect",
       "policy_effect": "IntrospectBypass",
       "safety": 0.95,
@@ -1232,7 +1495,6 @@
     {
       "confidence": 0.62,
       "cost": 0.38,
-      "default_weight": 0.62,
       "from": "Control::WriteOperator",
       "safety": 0.9,
       "to": "Control::Repair"
@@ -1240,7 +1502,6 @@
     {
       "confidence": 0.62,
       "cost": 0.38,
-      "default_weight": 0.62,
       "from": "Control::PatternMutate",
       "safety": 0.9,
       "to": "Control::Repair"
@@ -1248,7 +1509,6 @@
     {
       "confidence": 0.92,
       "cost": 0.08,
-      "default_weight": 0.92,
       "from": "Event::TopologyMutated",
       "policy_effect": "ReviewTopologyMutationQueue",
       "safety": 0.99,
@@ -1257,7 +1517,6 @@
     {
       "confidence": 0.92,
       "cost": 0.08,
-      "default_weight": 0.92,
       "from": "Event::OperatorWritten",
       "policy_effect": "ReviewOperatorMutationQueue",
       "safety": 0.99,
@@ -1266,7 +1525,6 @@
     {
       "confidence": 0.92,
       "cost": 0.08,
-      "default_weight": 0.92,
       "from": "Event::PatternMutated",
       "policy_effect": "ReviewPatternMutationQueue",
       "safety": 0.99,
@@ -1275,7 +1533,6 @@
     {
       "confidence": 0.98,
       "cost": 0.02,
-      "default_weight": 0.98,
       "from": "State::MutationReview",
       "policy_effect": "MutationQueueReviewed",
       "safety": 0.99,
@@ -1284,7 +1541,6 @@
     {
       "confidence": 0.4,
       "cost": 0.6,
-      "default_weight": 0.4,
       "from": "State::MutationReview",
       "policy_effect": "MutationReviewBypass",
       "safety": 0.98,
@@ -1293,7 +1549,6 @@
     {
       "confidence": 0.9,
       "cost": 0.1,
-      "default_weight": 0.9,
       "from": "Event::MutationReviewed",
       "policy_effect": "LearnAfterMutationReview",
       "safety": 0.98,
@@ -1403,5 +1658,6 @@
       "safety": 0.98,
       "to": "State::Plan"
     }
-  ]
+  ],
+  "version": 1
 }

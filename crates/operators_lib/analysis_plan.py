@@ -9,8 +9,8 @@ this script is useful for testing and as an alternative operator with validation
 
 Validation rules:
   - analysis_chain must be a non-empty array of strings
-  - each operator name must exist in assets/topology.json nodes
-  - each operator name must exist in assets/operators.json with executable=jit_cuda
+  - each operator name must exist in assets/topology.generated.json nodes
+  - each operator name must exist in assets/operators.generated.json with executable=jit_cuda
   - slot dependencies must be satisfiable: each operator's reads must be
     covered by a previous operator's writes or the market feed features
 """
@@ -23,8 +23,8 @@ import sys
 
 _OPERATORS_LIB = pathlib.Path(__file__).resolve().parent
 _ASSET_DIR = _OPERATORS_LIB.parent.parent.parent / "assets"
-TOPOLOGY_PATH = _ASSET_DIR / "topology.json"
-OPERATORS_PATH = _ASSET_DIR / "operators.json"
+TOPOLOGY_PATH = pathlib.Path(os.environ.get("QUANTALE_TOPOLOGY", _ASSET_DIR / "topology.generated.json"))
+OPERATORS_PATH = pathlib.Path(os.environ.get("QUANTALE_OPERATORS", _ASSET_DIR / "operators.generated.json"))
 MARKET_ANALYSIS_PATH = _ASSET_DIR / "market_analysis.json"
 ANALYSIS_SCHEMA_PATH = _ASSET_DIR / "analysis_decision_schema.json"
 

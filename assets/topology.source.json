@@ -1,385 +1,513 @@
 {
   "matrix_name": "quantale_semiring_v2",
   "version": 1,
-
   "slots": {
-    "env.task":                     { "type": "json",   "kind": "input"   },
-    "task.context":                 { "type": "json",   "kind": "state"   },
-    "market.config":                { "type": "json",   "kind": "config"  },
-    "market.feed":                  { "type": "json",   "kind": "state"   },
-    "market.price":                 { "type": "f32[]",  "kind": "tensor"  },
-    "market.open":                  { "type": "f32[]",  "kind": "tensor"  },
-    "analysis.config":              { "type": "json",   "kind": "config"  },
-    "analysis.plan":                { "type": "json",   "kind": "state"   },
-    "analysis.return":              { "type": "f32[]",  "kind": "tensor"  },
-    "analysis.volatility":          { "type": "f32[]",  "kind": "tensor"  },
-    "analysis.signal_score":        { "type": "f32[]",  "kind": "tensor"  },
-    "trade.decision":               { "type": "json",   "kind": "state"   },
-    "trading.policy":               { "type": "json",   "kind": "config"  },
-    "trade.receipt":                { "type": "json",   "kind": "receipt" },
-    "plan.tensor":                  { "type": "json",   "kind": "state"   },
-    "optimized.tensor":             { "type": "json",   "kind": "state"   },
-    "execution.report":             { "type": "json",   "kind": "state"   },
-    "validation.report":            { "type": "json",   "kind": "state"   },
-    "commit.record":                { "type": "json",   "kind": "state"   },
-    "memory.store":                 { "type": "json",   "kind": "state"   },
-    "learning.tensor":              { "type": "json",   "kind": "state"   },
-    "repair.intent":                { "type": "json",   "kind": "state"   },
-    "retry.intent":                 { "type": "json",   "kind": "state"   },
-    "map.candidates":               { "type": "json",   "kind": "state"   },
-    "search.results":               { "type": "json",   "kind": "state"   },
-    "parse.tree":                   { "type": "json",   "kind": "state"   },
-    "score.report":                 { "type": "json",   "kind": "state"   },
-    "workspace.diff":               { "type": "bytes",  "kind": "state"   },
-    "workspace.files":              { "type": "bytes",  "kind": "state"   },
-    "receipt.report":               { "type": "json",   "kind": "receipt" },
-    "math.a":                       { "type": "f32[]",  "kind": "tensor"  },
-    "math.b":                       { "type": "f32[]",  "kind": "tensor"  },
-    "math.scale":                   { "type": "f32[]",  "kind": "tensor"  },
-    "math.add_out":                 { "type": "f32[]",  "kind": "tensor"  },
-    "math.out":                     { "type": "f32[]",  "kind": "tensor"  },
-    "portfolio.state":              { "type": "json",   "kind": "state"   },
-    "trading.signals":              { "type": "f32[]",  "kind": "tensor"  },
-    "execution.gpu.results":        { "type": "f32[]",  "kind": "tensor"  },
-    "state/quantale.tlog":          { "type": "jsonl",  "kind": "log"     },
-    "state/learned_edges.jsonl":    { "type": "jsonl",  "kind": "log"     },
-    "state/market_feed.jsonl":      { "type": "jsonl",  "kind": "log"     },
-    "state/paper_orders.jsonl":     { "type": "jsonl",  "kind": "log"     },
-    "state/paper_positions.json":   { "type": "json",   "kind": "state"   },
-    "state/topology_mutations.jsonl":{ "type": "jsonl", "kind": "log"     },
-    "state/mutation_queue.jsonl":   { "type": "jsonl",  "kind": "log"     },
-    "introspect.report":            { "type": "json",   "kind": "state"   },
-    "topology.plan":                { "type": "json",   "kind": "state"   },
-    "operator.plan":                { "type": "json",   "kind": "state"   },
-    "pattern.plan":                 { "type": "json",   "kind": "state"   },
-    "select.result":                { "type": "json",   "kind": "state"   },
-    "mutation.review":              { "type": "json",   "kind": "state"   },
-    "rollback.record":              { "type": "json",   "kind": "state"   }
+    "env.task": {
+      "type": "json",
+      "kind": "input"
+    },
+    "task.context": {
+      "type": "json",
+      "kind": "state"
+    },
+    "market.config": {
+      "type": "json",
+      "kind": "config"
+    },
+    "market.feed": {
+      "type": "json",
+      "kind": "state"
+    },
+    "market.price": {
+      "type": "f32[]",
+      "kind": "tensor"
+    },
+    "market.open": {
+      "type": "f32[]",
+      "kind": "tensor"
+    },
+    "analysis.config": {
+      "type": "json",
+      "kind": "config"
+    },
+    "analysis.plan": {
+      "type": "json",
+      "kind": "state"
+    },
+    "analysis.return": {
+      "type": "f32[]",
+      "kind": "tensor"
+    },
+    "analysis.volatility": {
+      "type": "f32[]",
+      "kind": "tensor"
+    },
+    "analysis.signal_score": {
+      "type": "f32[]",
+      "kind": "tensor"
+    },
+    "trade.decision": {
+      "type": "json",
+      "kind": "state"
+    },
+    "trading.policy": {
+      "type": "json",
+      "kind": "config"
+    },
+    "trade.receipt": {
+      "type": "json",
+      "kind": "receipt"
+    },
+    "plan.tensor": {
+      "type": "json",
+      "kind": "state"
+    },
+    "optimized.tensor": {
+      "type": "json",
+      "kind": "state"
+    },
+    "execution.report": {
+      "type": "json",
+      "kind": "state"
+    },
+    "validation.report": {
+      "type": "json",
+      "kind": "state"
+    },
+    "commit.record": {
+      "type": "json",
+      "kind": "state"
+    },
+    "memory.store": {
+      "type": "json",
+      "kind": "state"
+    },
+    "learning.tensor": {
+      "type": "json",
+      "kind": "state"
+    },
+    "repair.intent": {
+      "type": "json",
+      "kind": "state"
+    },
+    "retry.intent": {
+      "type": "json",
+      "kind": "state"
+    },
+    "map.candidates": {
+      "type": "json",
+      "kind": "state"
+    },
+    "search.results": {
+      "type": "json",
+      "kind": "state"
+    },
+    "parse.tree": {
+      "type": "json",
+      "kind": "state"
+    },
+    "score.report": {
+      "type": "json",
+      "kind": "state"
+    },
+    "workspace.diff": {
+      "type": "bytes",
+      "kind": "state"
+    },
+    "workspace.files": {
+      "type": "bytes",
+      "kind": "state"
+    },
+    "receipt.report": {
+      "type": "json",
+      "kind": "receipt"
+    },
+    "math.a": {
+      "type": "f32[]",
+      "kind": "tensor"
+    },
+    "math.b": {
+      "type": "f32[]",
+      "kind": "tensor"
+    },
+    "math.scale": {
+      "type": "f32[]",
+      "kind": "tensor"
+    },
+    "math.add_out": {
+      "type": "f32[]",
+      "kind": "tensor"
+    },
+    "math.out": {
+      "type": "f32[]",
+      "kind": "tensor"
+    },
+    "portfolio.state": {
+      "type": "json",
+      "kind": "state"
+    },
+    "trading.signals": {
+      "type": "f32[]",
+      "kind": "tensor"
+    },
+    "execution.gpu.results": {
+      "type": "f32[]",
+      "kind": "tensor"
+    },
+    "state/quantale.tlog": {
+      "type": "jsonl",
+      "kind": "log"
+    },
+    "state/learned_edges.jsonl": {
+      "type": "jsonl",
+      "kind": "log"
+    },
+    "state/market_feed.jsonl": {
+      "type": "jsonl",
+      "kind": "log"
+    },
+    "state/paper_orders.jsonl": {
+      "type": "jsonl",
+      "kind": "log"
+    },
+    "state/paper_positions.json": {
+      "type": "json",
+      "kind": "state"
+    },
+    "state/topology_mutations.jsonl": {
+      "type": "jsonl",
+      "kind": "log"
+    },
+    "state/mutation_queue.jsonl": {
+      "type": "jsonl",
+      "kind": "log"
+    },
+    "introspect.report": {
+      "type": "json",
+      "kind": "state"
+    },
+    "topology.plan": {
+      "type": "json",
+      "kind": "state"
+    },
+    "operator.plan": {
+      "type": "json",
+      "kind": "state"
+    },
+    "pattern.plan": {
+      "type": "json",
+      "kind": "state"
+    },
+    "select.result": {
+      "type": "json",
+      "kind": "state"
+    },
+    "mutation.review": {
+      "type": "json",
+      "kind": "state"
+    },
+    "rollback.record": {
+      "type": "json",
+      "kind": "state"
+    }
   },
-
   "resources": {
-    "cuda":           { "kind": "gpu",  "capacity": 1 },
-    "workspace":      { "kind": "lock", "capacity": 1 },
-    "memory":         { "kind": "lock", "capacity": 1 },
-    "executor":       { "kind": "lock", "capacity": 1 },
-    "commit":         { "kind": "lock", "capacity": 1 },
-    "learning":       { "kind": "lock", "capacity": 1 },
-    "topology":       { "kind": "lock", "capacity": 1 },
-    "topology_assets":{ "kind": "lock", "capacity": 1 },
-    "paper_broker":   { "kind": "lock", "capacity": 1 },
-    "operators_lib":  { "kind": "lock", "capacity": 1 },
-    "patterns":       { "kind": "lock", "capacity": 1 }
+    "cuda": {
+      "kind": "gpu",
+      "capacity": 1
+    },
+    "workspace": {
+      "kind": "lock",
+      "capacity": 1
+    },
+    "memory": {
+      "kind": "lock",
+      "capacity": 1
+    },
+    "executor": {
+      "kind": "lock",
+      "capacity": 1
+    },
+    "commit": {
+      "kind": "lock",
+      "capacity": 1
+    },
+    "learning": {
+      "kind": "lock",
+      "capacity": 1
+    },
+    "topology": {
+      "kind": "lock",
+      "capacity": 1
+    },
+    "topology_assets": {
+      "kind": "lock",
+      "capacity": 1
+    },
+    "paper_broker": {
+      "kind": "lock",
+      "capacity": 1
+    },
+    "operators_lib": {
+      "kind": "lock",
+      "capacity": 1
+    },
+    "patterns": {
+      "kind": "lock",
+      "capacity": 1
+    }
   },
-
   "quantale": {
     "layers": [
-      { "name": "confidence", "join": "max", "compose": "times", "bottom": 0.0,   "unit": 1.0 },
-      { "name": "cost",       "join": "min", "compose": "plus",  "bottom": "inf", "unit": 0.0 },
-      { "name": "safety",     "join": "max", "compose": "min",   "bottom": 0.0,   "unit": 1.0 }
+      {
+        "name": "confidence",
+        "join": "max",
+        "compose": "times",
+        "bottom": 0.0,
+        "unit": 1.0
+      },
+      {
+        "name": "cost",
+        "join": "min",
+        "compose": "plus",
+        "bottom": "inf",
+        "unit": 0.0
+      },
+      {
+        "name": "safety",
+        "join": "max",
+        "compose": "min",
+        "bottom": 0.0,
+        "unit": 1.0
+      }
     ]
   },
-
   "nodes": [
     {
-      "name": "Analysis::Return1",
-      "kind": "kernel",
-      "runtime": { "backend": "cuda", "module": "analysis", "kernel": "analysis_return1" },
-      "reads": ["market.price", "market.open"],
-      "writes": ["analysis.return"],
-      "locks": []
-    },
-    {
-      "name": "Analysis::Volatility",
-      "kind": "kernel",
-      "runtime": { "backend": "cuda", "module": "analysis", "kernel": "analysis_volatility" },
-      "reads": ["market.price", "analysis.return"],
-      "writes": ["analysis.volatility"],
-      "locks": []
-    },
-    {
-      "name": "Analysis::SignalScore",
-      "kind": "kernel",
-      "runtime": { "backend": "cuda", "module": "analysis", "kernel": "analysis_signal_score" },
-      "reads": ["analysis.return", "analysis.volatility"],
-      "writes": ["analysis.signal_score"],
-      "locks": []
-    },
-    {
-      "name": "Execution::VectorAdd",
-      "kind": "kernel",
-      "runtime": { "backend": "cuda", "module": "math", "kernel": "vector_add" },
-      "reads": ["math.a", "math.b"],
-      "writes": ["math.add_out"],
-      "locks": []
-    },
-    {
-      "name": "Execution::VectorScale",
-      "kind": "kernel",
-      "runtime": { "backend": "cuda", "module": "math", "kernel": "vector_scale" },
-      "reads": ["math.add_out", "math.scale"],
-      "writes": ["math.out"],
-      "locks": []
-    },
-    {
-      "name": "Execution::FusedVectorAddScale",
-      "kind": "kernel",
-      "runtime": { "backend": "cuda", "module": "math", "kernel": "fused_vector_add_scale" },
-      "reads": ["math.a", "math.b", "math.scale"],
-      "writes": ["math.out"],
+      "name": "State::Goal",
+      "kind": "host_node",
+      "purity": "pure",
+      "runtime": {
+        "backend": "noop"
+      },
+      "reads": [
+        "env.task"
+      ],
+      "writes": [
+        "task.context"
+      ],
       "locks": []
     },
     {
       "name": "State::Input",
       "kind": "host_node",
       "purity": "deterministic_io",
-      "runtime": { "backend": "python", "script": "crates/operators_lib/input.py" },
-      "reads": ["env.task"],
-      "writes": ["task.context"],
+      "runtime": {
+        "backend": "python",
+        "script": "crates/operators_lib/input.py"
+      },
+      "reads": [
+        "env.task"
+      ],
+      "writes": [
+        "task.context"
+      ],
       "locks": []
-    },
-    {
-      "name": "State::MarketFeed",
-      "kind": "boundary_node",
-      "runtime": { "backend": "python", "script": "crates/operators_lib/market_feed.py" },
-      "reads": ["market.config"],
-      "writes": ["market.feed", "state/market_feed.jsonl"],
-      "locks": [],
-      "governance": { "network": true, "allowed_hosts": ["coingecko", "stooq"] }
-    },
-    {
-      "name": "State::AnalysisPlan",
-      "kind": "boundary_node",
-      "runtime": { "backend": "python", "script": "crates/operators_lib/call_llm.py", "template": "analysis" },
-      "reads": ["market.feed", "analysis.config"],
-      "writes": ["analysis.plan"],
-      "locks": [],
-      "governance": { "llm": true }
-    },
-    {
-      "name": "State::TradePlan",
-      "kind": "boundary_node",
-      "runtime": { "backend": "python", "script": "crates/operators_lib/call_llm.py", "template": "trade" },
-      "reads": ["market.feed", "trading.policy"],
-      "writes": ["trade.decision"],
-      "locks": [],
-      "governance": { "llm": true }
-    },
-    {
-      "name": "State::PaperTrade",
-      "kind": "boundary_node",
-      "runtime": { "backend": "python", "script": "crates/operators_lib/paper_trade.py" },
-      "reads": ["trade.decision", "market.feed", "trading.policy"],
-      "writes": ["trade.receipt", "state/paper_orders.jsonl", "state/paper_positions.json"],
-      "locks": ["paper_broker"],
-      "governance": { "trading": true }
-    },
-    {
-      "name": "State::Plan",
-      "kind": "boundary_node",
-      "runtime": { "backend": "python", "script": "crates/operators_lib/call_llm.py", "template": "plan" },
-      "reads": ["task.context"],
-      "writes": ["plan.tensor"],
-      "locks": [],
-      "governance": { "llm": true }
-    },
-    {
-      "name": "State::Optimize",
-      "kind": "host_node",
-      "purity": "pure",
-      "runtime": { "backend": "noop" },
-      "reads": ["plan.tensor"],
-      "writes": ["optimized.tensor"],
-      "locks": []
-    },
-    {
-      "name": "State::Execute",
-      "kind": "host_node",
-      "purity": "deterministic_io",
-      "runtime": { "backend": "noop" },
-      "reads": ["optimized.tensor"],
-      "writes": ["execution.report"],
-      "locks": ["executor"]
-    },
-    {
-      "name": "State::Memory",
-      "kind": "host_node",
-      "purity": "deterministic_io",
-      "runtime": { "backend": "python", "script": "crates/operators_lib/memory.py" },
-      "reads": ["task.context"],
-      "writes": ["memory.store"],
-      "locks": ["memory"]
-    },
-    {
-      "name": "State::Learn",
-      "kind": "host_node",
-      "purity": "deterministic_io",
-      "runtime": { "backend": "python", "script": "crates/operators_lib/learn.py" },
-      "reads": ["memory.store", "state/quantale.tlog"],
-      "writes": ["learning.tensor", "state/learned_edges.jsonl"],
-      "locks": ["learning"]
-    },
-    {
-      "name": "Control::GateExecution",
-      "kind": "host_node",
-      "purity": "deterministic_io",
-      "runtime": { "backend": "patch" },
-      "reads": ["workspace.diff"],
-      "writes": ["workspace.files"],
-      "locks": ["workspace"]
-    },
-    {
-      "name": "State::Validate",
-      "kind": "host_node",
-      "purity": "deterministic_io",
-      "runtime": { "backend": "cargo", "args": ["test", "--release"] },
-      "reads": ["workspace.files"],
-      "writes": ["validation.report"],
-      "locks": []
-    },
-    {
-      "name": "Control::Commit",
-      "kind": "boundary_node",
-      "runtime": { "backend": "python", "script": "crates/operators_lib/commit.py" },
-      "reads": ["task.context", "execution.report", "validation.report"],
-      "writes": ["commit.record"],
-      "locks": ["commit"],
-      "governance": { "git": true }
-    },
-
-    { "name": "Event::AnalysisFinished",     "kind": "event_node", "runtime": { "backend": "noop" }, "reads": [], "writes": [], "locks": [] },
-    { "name": "Event::AnalysisPlanReady",    "kind": "event_node", "runtime": { "backend": "noop" }, "reads": [], "writes": [], "locks": [] },
-    { "name": "Event::CandidateFound",       "kind": "event_node", "runtime": { "backend": "noop" }, "reads": [], "writes": [], "locks": [] },
-    { "name": "Event::ExecuteFinished",      "kind": "event_node", "runtime": { "backend": "noop" }, "reads": [], "writes": [], "locks": [] },
-    { "name": "Event::ExecuteStarted",       "kind": "event_node", "runtime": { "backend": "noop" }, "reads": [], "writes": [], "locks": [] },
-    { "name": "Event::FactArrived",          "kind": "event_node", "runtime": { "backend": "noop" }, "reads": [], "writes": [], "locks": [] },
-    { "name": "Event::HashNonzero",          "kind": "event_node", "runtime": { "backend": "noop" }, "reads": [], "writes": [], "locks": [] },
-    { "name": "Event::InputAccepted",        "kind": "event_node", "runtime": { "backend": "noop" }, "reads": [], "writes": [], "locks": [] },
-    { "name": "Event::LearnUpdated",         "kind": "event_node", "runtime": { "backend": "noop" }, "reads": [], "writes": [], "locks": [] },
-    { "name": "Event::MapReady",             "kind": "event_node", "runtime": { "backend": "noop" }, "reads": [], "writes": [], "locks": [] },
-    { "name": "Event::MarketFeedUpdated",    "kind": "event_node", "runtime": { "backend": "noop" }, "reads": [], "writes": [], "locks": [] },
-    { "name": "Event::MemoryWritten",        "kind": "event_node", "runtime": { "backend": "noop" }, "reads": [], "writes": [], "locks": [] },
-    { "name": "Event::MutationReviewed",     "kind": "event_node", "runtime": { "backend": "noop" }, "reads": [], "writes": [], "locks": [] },
-    { "name": "Event::OperatorWritten",      "kind": "event_node", "runtime": { "backend": "noop" }, "reads": [], "writes": [], "locks": [] },
-    { "name": "Event::OptimizeReady",        "kind": "event_node", "runtime": { "backend": "noop" }, "reads": [], "writes": [], "locks": [] },
-    { "name": "Event::PaperTradeFilled",     "kind": "event_node", "runtime": { "backend": "noop" }, "reads": [], "writes": [], "locks": [] },
-    { "name": "Event::PaperTradeRejected",   "kind": "event_node", "runtime": { "backend": "noop" }, "reads": [], "writes": [], "locks": [] },
-    { "name": "Event::ParseErr",             "kind": "event_node", "runtime": { "backend": "noop" }, "reads": [], "writes": [], "locks": [] },
-    { "name": "Event::ParseOk",              "kind": "event_node", "runtime": { "backend": "noop" }, "reads": [], "writes": [], "locks": [] },
-    { "name": "Event::PatternMutated",       "kind": "event_node", "runtime": { "backend": "noop" }, "reads": [], "writes": [], "locks": [] },
-    { "name": "Event::PlanReady",            "kind": "event_node", "runtime": { "backend": "noop" }, "reads": [], "writes": [], "locks": [] },
-    { "name": "Event::ReceiptAccepted",      "kind": "event_node", "runtime": { "backend": "noop" }, "reads": [], "writes": [], "locks": [] },
-    { "name": "Event::ReceiptAttached",      "kind": "event_node", "runtime": { "backend": "noop" }, "reads": [], "writes": [], "locks": [] },
-    { "name": "Event::ReceiptRejected",      "kind": "event_node", "runtime": { "backend": "noop" }, "reads": [], "writes": [], "locks": [] },
-    { "name": "Event::ScoreReady",           "kind": "event_node", "runtime": { "backend": "noop" }, "reads": [], "writes": [], "locks": [] },
-    { "name": "Event::TopKSelected",         "kind": "event_node", "runtime": { "backend": "noop" }, "reads": [], "writes": [], "locks": [] },
-    { "name": "Event::TopologyMutated",      "kind": "event_node", "runtime": { "backend": "noop" }, "reads": [], "writes": [], "locks": [] },
-    { "name": "Event::TopologyOverlayBuilt", "kind": "event_node", "runtime": { "backend": "noop" }, "reads": [], "writes": [], "locks": [] },
-    { "name": "Event::TradeDecisionReady",   "kind": "event_node", "runtime": { "backend": "noop" }, "reads": [], "writes": [], "locks": [] },
-
-    {
-      "name": "State::Goal",
-      "kind": "host_node",
-      "purity": "pure",
-      "runtime": { "backend": "noop" },
-      "reads": ["env.task"],
-      "writes": ["task.context"],
-      "locks": []
-    },
-    {
-      "name": "State::Introspect",
-      "kind": "boundary_node",
-      "runtime": { "backend": "python", "script": "crates/operators_lib/call_llm.py", "template": "introspect" },
-      "reads": ["state/quantale.tlog", "state/learned_edges.jsonl", "state/topology_mutations.jsonl"],
-      "writes": ["introspect.report"],
-      "locks": [],
-      "governance": { "llm": true }
-    },
-    {
-      "name": "State::Map",
-      "kind": "host_node",
-      "purity": "deterministic_io",
-      "runtime": { "backend": "python", "script": "crates/operators_lib/map.py" },
-      "reads": ["task.context"],
-      "writes": ["map.candidates"],
-      "locks": []
-    },
-    {
-      "name": "State::MutationReview",
-      "kind": "boundary_node",
-      "runtime": { "backend": "python", "script": "crates/operators_lib/mutation_review.py" },
-      "reads": ["state/mutation_queue.jsonl"],
-      "writes": ["mutation.review"],
-      "locks": [],
-      "governance": { "review": true }
-    },
-    {
-      "name": "State::OperatorPlan",
-      "kind": "boundary_node",
-      "runtime": { "backend": "python", "script": "crates/operators_lib/call_llm.py", "template": "operator_plan" },
-      "reads": ["state/topology_mutations.jsonl"],
-      "writes": ["operator.plan"],
-      "locks": [],
-      "governance": { "llm": true }
     },
     {
       "name": "State::Parse",
       "kind": "host_node",
       "purity": "pure",
-      "runtime": { "backend": "python", "script": "crates/operators_lib/parse.py" },
-      "reads": ["task.context"],
-      "writes": ["parse.tree"],
+      "runtime": {
+        "backend": "python",
+        "script": "crates/operators_lib/parse.py"
+      },
+      "reads": [
+        "task.context"
+      ],
+      "writes": [
+        "parse.tree"
+      ],
       "locks": []
     },
     {
-      "name": "State::PatternPlan",
-      "kind": "boundary_node",
-      "runtime": { "backend": "python", "script": "crates/operators_lib/call_llm.py", "template": "pattern_plan" },
-      "reads": ["state/quantale.tlog"],
-      "writes": ["pattern.plan"],
-      "locks": [],
-      "governance": { "llm": true }
-    },
-    {
-      "name": "State::Score",
+      "name": "State::Map",
       "kind": "host_node",
-      "purity": "pure",
-      "runtime": { "backend": "python", "script": "crates/operators_lib/score.py" },
-      "reads": ["parse.tree"],
-      "writes": ["score.report"],
+      "purity": "deterministic_io",
+      "runtime": {
+        "backend": "python",
+        "script": "crates/operators_lib/map.py"
+      },
+      "reads": [
+        "task.context"
+      ],
+      "writes": [
+        "map.candidates"
+      ],
       "locks": []
     },
     {
       "name": "State::Search",
       "kind": "host_node",
       "purity": "deterministic_io",
-      "runtime": { "backend": "python", "script": "crates/operators_lib/search.py" },
-      "reads": ["map.candidates"],
-      "writes": ["search.results"],
+      "runtime": {
+        "backend": "python",
+        "script": "crates/operators_lib/search.py"
+      },
+      "reads": [
+        "map.candidates"
+      ],
+      "writes": [
+        "search.results"
+      ],
+      "locks": []
+    },
+    {
+      "name": "State::Score",
+      "kind": "host_node",
+      "purity": "pure",
+      "runtime": {
+        "backend": "python",
+        "script": "crates/operators_lib/score.py"
+      },
+      "reads": [
+        "parse.tree"
+      ],
+      "writes": [
+        "score.report"
+      ],
       "locks": []
     },
     {
       "name": "State::Select",
       "kind": "host_node",
       "purity": "pure",
-      "runtime": { "backend": "python", "script": "crates/operators_lib/select.py" },
-      "reads": ["score.report"],
-      "writes": ["select.result"],
+      "runtime": {
+        "backend": "python",
+        "script": "crates/operators_lib/select.py"
+      },
+      "reads": [
+        "score.report"
+      ],
+      "writes": [
+        "select.result"
+      ],
       "locks": []
     },
     {
-      "name": "State::TopologyPlan",
+      "name": "State::Plan",
       "kind": "boundary_node",
-      "runtime": { "backend": "python", "script": "crates/operators_lib/call_llm.py", "template": "topology_plan" },
-      "reads": ["state/quantale.tlog", "state/topology_mutations.jsonl"],
-      "writes": ["topology.plan"],
+      "runtime": {
+        "backend": "python",
+        "script": "crates/operators_lib/call_llm.py",
+        "template": "plan"
+      },
+      "reads": [
+        "task.context"
+      ],
+      "writes": [
+        "plan.tensor"
+      ],
       "locks": [],
-      "governance": { "llm": true }
+      "governance": {
+        "llm": true
+      }
     },
-
+    {
+      "name": "State::Optimize",
+      "kind": "host_node",
+      "purity": "pure",
+      "runtime": {
+        "backend": "noop"
+      },
+      "reads": [
+        "plan.tensor"
+      ],
+      "writes": [
+        "optimized.tensor"
+      ],
+      "locks": []
+    },
+    {
+      "name": "State::Execute",
+      "kind": "host_node",
+      "purity": "deterministic_io",
+      "runtime": {
+        "backend": "noop"
+      },
+      "reads": [
+        "optimized.tensor"
+      ],
+      "writes": [
+        "execution.report"
+      ],
+      "locks": [
+        "executor"
+      ]
+    },
+    {
+      "name": "State::Validate",
+      "kind": "host_node",
+      "purity": "deterministic_io",
+      "runtime": {
+        "backend": "cargo",
+        "args": [
+          "test",
+          "--release"
+        ]
+      },
+      "reads": [
+        "workspace.files"
+      ],
+      "writes": [
+        "validation.report"
+      ],
+      "locks": []
+    },
+    {
+      "name": "State::Memory",
+      "kind": "host_node",
+      "purity": "deterministic_io",
+      "runtime": {
+        "backend": "python",
+        "script": "crates/operators_lib/memory.py"
+      },
+      "reads": [
+        "task.context"
+      ],
+      "writes": [
+        "memory.store"
+      ],
+      "locks": [
+        "memory"
+      ]
+    },
+    {
+      "name": "State::Learn",
+      "kind": "host_node",
+      "purity": "deterministic_io",
+      "runtime": {
+        "backend": "python",
+        "script": "crates/operators_lib/learn.py"
+      },
+      "reads": [
+        "memory.store",
+        "state/quantale.tlog"
+      ],
+      "writes": [
+        "learning.tensor",
+        "state/learned_edges.jsonl"
+      ],
+      "locks": [
+        "learning"
+      ]
+    },
     {
       "name": "Control::Allow",
       "kind": "policy_node",
-      "runtime": { "backend": "noop" },
+      "runtime": {
+        "backend": "noop"
+      },
       "reads": [],
       "writes": [],
       "locks": []
@@ -387,40 +515,128 @@
     {
       "name": "Control::Block",
       "kind": "policy_node",
-      "runtime": { "backend": "noop" },
+      "runtime": {
+        "backend": "noop"
+      },
       "reads": [],
       "writes": [],
       "locks": []
     },
     {
-      "name": "Control::BuildTopologyOverlay",
+      "name": "Control::Retry",
       "kind": "host_node",
-      "purity": "deterministic_io",
-      "runtime": { "backend": "cargo", "args": ["run", "--", "topology", "build-overlay"] },
-      "reads": [],
-      "writes": [],
-      "locks": ["topology_assets"]
+      "purity": "pure",
+      "runtime": {
+        "backend": "noop"
+      },
+      "reads": [
+        "receipt.report"
+      ],
+      "writes": [
+        "retry.intent"
+      ],
+      "locks": []
     },
     {
-      "name": "Control::ChooseBest",
+      "name": "Control::Repair",
+      "kind": "host_node",
+      "purity": "pure",
+      "runtime": {
+        "backend": "noop"
+      },
+      "reads": [
+        "receipt.report"
+      ],
+      "writes": [
+        "repair.intent"
+      ],
+      "locks": []
+    },
+    {
+      "name": "Control::Commit",
+      "kind": "boundary_node",
+      "runtime": {
+        "backend": "python",
+        "script": "crates/operators_lib/commit.py"
+      },
+      "reads": [
+        "task.context",
+        "execution.report",
+        "validation.report"
+      ],
+      "writes": [
+        "commit.record"
+      ],
+      "locks": [
+        "commit"
+      ],
+      "governance": {
+        "git": true
+      }
+    },
+    {
+      "name": "Control::Rollback",
+      "kind": "boundary_node",
+      "runtime": {
+        "backend": "python",
+        "script": "crates/operators_lib/rollback.py"
+      },
+      "reads": [
+        "commit.record"
+      ],
+      "writes": [
+        "rollback.record"
+      ],
+      "locks": [
+        "commit"
+      ],
+      "governance": {
+        "git": true
+      }
+    },
+    {
+      "name": "Control::Halt",
       "kind": "policy_node",
-      "runtime": { "backend": "noop" },
-      "reads": ["plan.tensor"],
+      "runtime": {
+        "backend": "noop"
+      },
+      "reads": [],
       "writes": [],
       "locks": []
     },
     {
       "name": "Control::GateInput",
       "kind": "policy_node",
-      "runtime": { "backend": "noop" },
+      "runtime": {
+        "backend": "noop"
+      },
       "reads": [],
       "writes": [],
       "locks": []
     },
     {
-      "name": "Control::GateLearn",
+      "name": "Control::GateExecution",
+      "kind": "host_node",
+      "purity": "deterministic_io",
+      "runtime": {
+        "backend": "patch"
+      },
+      "reads": [
+        "workspace.diff"
+      ],
+      "writes": [
+        "workspace.files"
+      ],
+      "locks": [
+        "workspace"
+      ]
+    },
+    {
+      "name": "Control::GateReceipt",
       "kind": "policy_node",
-      "runtime": { "backend": "noop" },
+      "runtime": {
+        "backend": "noop"
+      },
       "reads": [],
       "writes": [],
       "locks": []
@@ -428,83 +644,690 @@
     {
       "name": "Control::GateMemory",
       "kind": "policy_node",
-      "runtime": { "backend": "noop" },
+      "runtime": {
+        "backend": "noop"
+      },
       "reads": [],
       "writes": [],
       "locks": []
     },
     {
-      "name": "Control::GateReceipt",
+      "name": "Control::GateLearn",
       "kind": "policy_node",
-      "runtime": { "backend": "noop" },
+      "runtime": {
+        "backend": "noop"
+      },
       "reads": [],
       "writes": [],
       "locks": []
     },
     {
-      "name": "Control::Halt",
+      "name": "Control::ChooseBest",
       "kind": "policy_node",
-      "runtime": { "backend": "noop" },
+      "runtime": {
+        "backend": "noop"
+      },
+      "reads": [
+        "plan.tensor"
+      ],
+      "writes": [],
+      "locks": []
+    },
+    {
+      "name": "Event::FactArrived",
+      "kind": "event_node",
+      "runtime": {
+        "backend": "noop"
+      },
       "reads": [],
       "writes": [],
       "locks": []
     },
     {
-      "name": "Control::PatternMutate",
-      "kind": "boundary_node",
-      "runtime": { "backend": "python", "script": "crates/operators_lib/pattern_mutate.py" },
-      "reads": ["pattern.plan"],
-      "writes": ["state/topology_mutations.jsonl"],
-      "locks": ["patterns"],
-      "governance": { "self_modification": true }
-    },
-    {
-      "name": "Control::Repair",
-      "kind": "host_node",
-      "purity": "pure",
-      "runtime": { "backend": "noop" },
-      "reads": ["receipt.report"],
-      "writes": ["repair.intent"],
+      "name": "Event::InputAccepted",
+      "kind": "event_node",
+      "runtime": {
+        "backend": "noop"
+      },
+      "reads": [],
+      "writes": [],
       "locks": []
     },
     {
-      "name": "Control::Retry",
-      "kind": "host_node",
-      "purity": "pure",
-      "runtime": { "backend": "noop" },
-      "reads": ["receipt.report"],
-      "writes": ["retry.intent"],
+      "name": "Event::ParseOk",
+      "kind": "event_node",
+      "runtime": {
+        "backend": "noop"
+      },
+      "reads": [],
+      "writes": [],
       "locks": []
     },
     {
-      "name": "Control::Rollback",
+      "name": "Event::ParseErr",
+      "kind": "event_node",
+      "runtime": {
+        "backend": "noop"
+      },
+      "reads": [],
+      "writes": [],
+      "locks": []
+    },
+    {
+      "name": "Event::MapReady",
+      "kind": "event_node",
+      "runtime": {
+        "backend": "noop"
+      },
+      "reads": [],
+      "writes": [],
+      "locks": []
+    },
+    {
+      "name": "Event::CandidateFound",
+      "kind": "event_node",
+      "runtime": {
+        "backend": "noop"
+      },
+      "reads": [],
+      "writes": [],
+      "locks": []
+    },
+    {
+      "name": "Event::ScoreReady",
+      "kind": "event_node",
+      "runtime": {
+        "backend": "noop"
+      },
+      "reads": [],
+      "writes": [],
+      "locks": []
+    },
+    {
+      "name": "Event::TopKSelected",
+      "kind": "event_node",
+      "runtime": {
+        "backend": "noop"
+      },
+      "reads": [],
+      "writes": [],
+      "locks": []
+    },
+    {
+      "name": "Event::PlanReady",
+      "kind": "event_node",
+      "runtime": {
+        "backend": "noop"
+      },
+      "reads": [],
+      "writes": [],
+      "locks": []
+    },
+    {
+      "name": "Event::OptimizeReady",
+      "kind": "event_node",
+      "runtime": {
+        "backend": "noop"
+      },
+      "reads": [],
+      "writes": [],
+      "locks": []
+    },
+    {
+      "name": "Event::ExecuteStarted",
+      "kind": "event_node",
+      "runtime": {
+        "backend": "noop"
+      },
+      "reads": [],
+      "writes": [],
+      "locks": []
+    },
+    {
+      "name": "Event::ExecuteFinished",
+      "kind": "event_node",
+      "runtime": {
+        "backend": "noop"
+      },
+      "reads": [],
+      "writes": [],
+      "locks": []
+    },
+    {
+      "name": "Event::ReceiptAttached",
+      "kind": "event_node",
+      "runtime": {
+        "backend": "noop"
+      },
+      "reads": [],
+      "writes": [],
+      "locks": []
+    },
+    {
+      "name": "Event::ReceiptAccepted",
+      "kind": "event_node",
+      "runtime": {
+        "backend": "noop"
+      },
+      "reads": [],
+      "writes": [],
+      "locks": []
+    },
+    {
+      "name": "Event::ReceiptRejected",
+      "kind": "event_node",
+      "runtime": {
+        "backend": "noop"
+      },
+      "reads": [],
+      "writes": [],
+      "locks": []
+    },
+    {
+      "name": "Event::HashNonzero",
+      "kind": "event_node",
+      "runtime": {
+        "backend": "noop"
+      },
+      "reads": [],
+      "writes": [],
+      "locks": []
+    },
+    {
+      "name": "Event::MemoryWritten",
+      "kind": "event_node",
+      "runtime": {
+        "backend": "noop"
+      },
+      "reads": [],
+      "writes": [],
+      "locks": []
+    },
+    {
+      "name": "Event::LearnUpdated",
+      "kind": "event_node",
+      "runtime": {
+        "backend": "noop"
+      },
+      "reads": [],
+      "writes": [],
+      "locks": []
+    },
+    {
+      "name": "Execution::VectorAdd",
+      "kind": "kernel",
+      "runtime": {
+        "backend": "cuda",
+        "module": "math",
+        "kernel": "vector_add"
+      },
+      "reads": [
+        "math.a",
+        "math.b"
+      ],
+      "writes": [
+        "math.add_out"
+      ],
+      "locks": []
+    },
+    {
+      "name": "Execution::VectorScale",
+      "kind": "kernel",
+      "runtime": {
+        "backend": "cuda",
+        "module": "math",
+        "kernel": "vector_scale"
+      },
+      "reads": [
+        "math.add_out",
+        "math.scale"
+      ],
+      "writes": [
+        "math.out"
+      ],
+      "locks": []
+    },
+    {
+      "name": "Execution::FusedVectorAddScale",
+      "kind": "kernel",
+      "runtime": {
+        "backend": "cuda",
+        "module": "math",
+        "kernel": "fused_vector_add_scale"
+      },
+      "reads": [
+        "math.a",
+        "math.b",
+        "math.scale"
+      ],
+      "writes": [
+        "math.out"
+      ],
+      "locks": []
+    },
+    {
+      "name": "State::MarketFeed",
       "kind": "boundary_node",
-      "runtime": { "backend": "python", "script": "crates/operators_lib/rollback.py" },
-      "reads": ["commit.record"],
-      "writes": ["rollback.record"],
-      "locks": ["commit"],
-      "governance": { "git": true }
+      "runtime": {
+        "backend": "python",
+        "script": "crates/operators_lib/market_feed.py"
+      },
+      "reads": [
+        "market.config"
+      ],
+      "writes": [
+        "market.feed",
+        "state/market_feed.jsonl"
+      ],
+      "locks": [],
+      "governance": {
+        "network": true,
+        "allowed_hosts": [
+          "coingecko",
+          "stooq"
+        ]
+      }
+    },
+    {
+      "name": "State::AnalysisPlan",
+      "kind": "boundary_node",
+      "runtime": {
+        "backend": "python",
+        "script": "crates/operators_lib/call_llm.py",
+        "template": "analysis"
+      },
+      "reads": [
+        "market.feed",
+        "analysis.config"
+      ],
+      "writes": [
+        "analysis.plan"
+      ],
+      "locks": [],
+      "governance": {
+        "llm": true
+      }
+    },
+    {
+      "name": "State::TradePlan",
+      "kind": "boundary_node",
+      "runtime": {
+        "backend": "python",
+        "script": "crates/operators_lib/call_llm.py",
+        "template": "trade"
+      },
+      "reads": [
+        "market.feed",
+        "trading.policy"
+      ],
+      "writes": [
+        "trade.decision"
+      ],
+      "locks": [],
+      "governance": {
+        "llm": true
+      }
+    },
+    {
+      "name": "State::PaperTrade",
+      "kind": "boundary_node",
+      "runtime": {
+        "backend": "python",
+        "script": "crates/operators_lib/paper_trade.py"
+      },
+      "reads": [
+        "trade.decision",
+        "market.feed",
+        "trading.policy"
+      ],
+      "writes": [
+        "trade.receipt",
+        "state/paper_orders.jsonl",
+        "state/paper_positions.json"
+      ],
+      "locks": [
+        "paper_broker"
+      ],
+      "governance": {
+        "trading": true
+      }
+    },
+    {
+      "name": "Event::MarketFeedUpdated",
+      "kind": "event_node",
+      "runtime": {
+        "backend": "noop"
+      },
+      "reads": [],
+      "writes": [],
+      "locks": []
+    },
+    {
+      "name": "Event::AnalysisPlanReady",
+      "kind": "event_node",
+      "runtime": {
+        "backend": "noop"
+      },
+      "reads": [],
+      "writes": [],
+      "locks": []
+    },
+    {
+      "name": "Event::AnalysisFinished",
+      "kind": "event_node",
+      "runtime": {
+        "backend": "noop"
+      },
+      "reads": [],
+      "writes": [],
+      "locks": []
+    },
+    {
+      "name": "Event::TradeDecisionReady",
+      "kind": "event_node",
+      "runtime": {
+        "backend": "noop"
+      },
+      "reads": [],
+      "writes": [],
+      "locks": []
+    },
+    {
+      "name": "Event::PaperTradeFilled",
+      "kind": "event_node",
+      "runtime": {
+        "backend": "noop"
+      },
+      "reads": [],
+      "writes": [],
+      "locks": []
+    },
+    {
+      "name": "Event::PaperTradeRejected",
+      "kind": "event_node",
+      "runtime": {
+        "backend": "noop"
+      },
+      "reads": [],
+      "writes": [],
+      "locks": []
+    },
+    {
+      "name": "Analysis::Return1",
+      "kind": "kernel",
+      "runtime": {
+        "backend": "cuda",
+        "module": "analysis",
+        "kernel": "analysis_return1"
+      },
+      "reads": [
+        "market.price",
+        "market.open"
+      ],
+      "writes": [
+        "analysis.return"
+      ],
+      "locks": []
+    },
+    {
+      "name": "Analysis::Volatility",
+      "kind": "kernel",
+      "runtime": {
+        "backend": "cuda",
+        "module": "analysis",
+        "kernel": "analysis_volatility"
+      },
+      "reads": [
+        "market.price",
+        "analysis.return"
+      ],
+      "writes": [
+        "analysis.volatility"
+      ],
+      "locks": []
+    },
+    {
+      "name": "Analysis::SignalScore",
+      "kind": "kernel",
+      "runtime": {
+        "backend": "cuda",
+        "module": "analysis",
+        "kernel": "analysis_signal_score"
+      },
+      "reads": [
+        "analysis.return",
+        "analysis.volatility"
+      ],
+      "writes": [
+        "analysis.signal_score"
+      ],
+      "locks": []
+    },
+    {
+      "name": "Control::BuildTopologyOverlay",
+      "kind": "host_node",
+      "purity": "deterministic_io",
+      "runtime": {
+        "backend": "cargo",
+        "args": [
+          "run",
+          "--",
+          "topology",
+          "build-overlay"
+        ]
+      },
+      "reads": [],
+      "writes": [],
+      "locks": [
+        "topology_assets"
+      ]
+    },
+    {
+      "name": "Event::TopologyOverlayBuilt",
+      "kind": "event_node",
+      "runtime": {
+        "backend": "noop"
+      },
+      "reads": [],
+      "writes": [],
+      "locks": []
     },
     {
       "name": "Control::TopologyMutate",
       "kind": "boundary_node",
-      "runtime": { "backend": "python", "script": "crates/operators_lib/topology_mutate.py" },
-      "reads": ["topology.plan"],
-      "writes": ["state/topology_mutations.jsonl"],
-      "locks": ["topology"],
-      "governance": { "self_modification": true }
+      "runtime": {
+        "backend": "python",
+        "script": "crates/operators_lib/topology_mutate.py"
+      },
+      "reads": [
+        "topology.plan"
+      ],
+      "writes": [
+        "state/topology_mutations.jsonl"
+      ],
+      "locks": [
+        "topology"
+      ],
+      "governance": {
+        "self_modification": true
+      }
+    },
+    {
+      "name": "Event::TopologyMutated",
+      "kind": "event_node",
+      "runtime": {
+        "backend": "noop"
+      },
+      "reads": [],
+      "writes": [],
+      "locks": []
+    },
+    {
+      "name": "State::TopologyPlan",
+      "kind": "boundary_node",
+      "runtime": {
+        "backend": "python",
+        "script": "crates/operators_lib/call_llm.py",
+        "template": "topology_plan"
+      },
+      "reads": [
+        "state/quantale.tlog",
+        "state/topology_mutations.jsonl"
+      ],
+      "writes": [
+        "topology.plan"
+      ],
+      "locks": [],
+      "governance": {
+        "llm": true
+      }
+    },
+    {
+      "name": "State::Introspect",
+      "kind": "boundary_node",
+      "runtime": {
+        "backend": "python",
+        "script": "crates/operators_lib/call_llm.py",
+        "template": "introspect"
+      },
+      "reads": [
+        "state/quantale.tlog",
+        "state/learned_edges.jsonl",
+        "state/topology_mutations.jsonl"
+      ],
+      "writes": [
+        "introspect.report"
+      ],
+      "locks": [],
+      "governance": {
+        "llm": true
+      }
+    },
+    {
+      "name": "State::OperatorPlan",
+      "kind": "boundary_node",
+      "runtime": {
+        "backend": "python",
+        "script": "crates/operators_lib/call_llm.py",
+        "template": "operator_plan"
+      },
+      "reads": [
+        "state/topology_mutations.jsonl"
+      ],
+      "writes": [
+        "operator.plan"
+      ],
+      "locks": [],
+      "governance": {
+        "llm": true
+      }
     },
     {
       "name": "Control::WriteOperator",
       "kind": "boundary_node",
-      "runtime": { "backend": "python", "script": "crates/operators_lib/write_operator.py" },
-      "reads": ["operator.plan"],
+      "runtime": {
+        "backend": "python",
+        "script": "crates/operators_lib/write_operator.py"
+      },
+      "reads": [
+        "operator.plan"
+      ],
       "writes": [],
-      "locks": ["operators_lib"],
-      "governance": { "self_modification": true }
+      "locks": [
+        "operators_lib"
+      ],
+      "governance": {
+        "self_modification": true
+      }
+    },
+    {
+      "name": "Event::OperatorWritten",
+      "kind": "event_node",
+      "runtime": {
+        "backend": "noop"
+      },
+      "reads": [],
+      "writes": [],
+      "locks": []
+    },
+    {
+      "name": "State::PatternPlan",
+      "kind": "boundary_node",
+      "runtime": {
+        "backend": "python",
+        "script": "crates/operators_lib/call_llm.py",
+        "template": "pattern_plan"
+      },
+      "reads": [
+        "state/quantale.tlog"
+      ],
+      "writes": [
+        "pattern.plan"
+      ],
+      "locks": [],
+      "governance": {
+        "llm": true
+      }
+    },
+    {
+      "name": "Control::PatternMutate",
+      "kind": "boundary_node",
+      "runtime": {
+        "backend": "python",
+        "script": "crates/operators_lib/pattern_mutate.py"
+      },
+      "reads": [
+        "pattern.plan"
+      ],
+      "writes": [
+        "state/topology_mutations.jsonl"
+      ],
+      "locks": [
+        "patterns"
+      ],
+      "governance": {
+        "self_modification": true
+      }
+    },
+    {
+      "name": "Event::PatternMutated",
+      "kind": "event_node",
+      "runtime": {
+        "backend": "noop"
+      },
+      "reads": [],
+      "writes": [],
+      "locks": []
+    },
+    {
+      "name": "State::MutationReview",
+      "kind": "boundary_node",
+      "runtime": {
+        "backend": "python",
+        "script": "crates/operators_lib/mutation_review.py"
+      },
+      "reads": [
+        "state/mutation_queue.jsonl"
+      ],
+      "writes": [
+        "mutation.review"
+      ],
+      "locks": [],
+      "governance": {
+        "review": true
+      }
+    },
+    {
+      "name": "Event::MutationReviewed",
+      "kind": "event_node",
+      "runtime": {
+        "backend": "noop"
+      },
+      "reads": [],
+      "writes": [],
+      "locks": []
     }
   ],
-
   "programs": [
     {
       "name": "plan_optimize_execute",
@@ -705,6 +1528,896 @@
         "cost": 1.0,
         "safety": 0.98
       }
+    }
+  ],
+  "transitions": [
+    {
+      "from": "State::Goal",
+      "to": "Control::GateInput",
+      "policy_effect": "TriggerGateInput",
+      "confidence": 0.99,
+      "cost": 0.01,
+      "safety": 0.99
+    },
+    {
+      "from": "Control::GateInput",
+      "to": "Event::FactArrived",
+      "policy_effect": "AwaitFact",
+      "confidence": 0.98,
+      "cost": 0.02,
+      "safety": 0.98
+    },
+    {
+      "from": "Event::FactArrived",
+      "to": "State::Input",
+      "policy_effect": "AcceptInput",
+      "confidence": 0.97,
+      "cost": 0.03,
+      "safety": 0.97
+    },
+    {
+      "from": "Event::InputAccepted",
+      "to": "State::Parse",
+      "policy_effect": "ParseInput",
+      "confidence": 0.95,
+      "cost": 0.05,
+      "safety": 0.95
+    },
+    {
+      "from": "State::Parse",
+      "to": "Event::ParseOk",
+      "policy_effect": "ParseOk",
+      "confidence": 0.92,
+      "cost": 0.08,
+      "safety": 0.92
+    },
+    {
+      "from": "State::Parse",
+      "to": "Event::ParseErr",
+      "policy_effect": "ParseErr",
+      "confidence": 0.1,
+      "cost": 0.9,
+      "safety": 0.1
+    },
+    {
+      "from": "Event::ParseOk",
+      "to": "State::Map",
+      "policy_effect": "MapInput",
+      "confidence": 0.9,
+      "cost": 0.1,
+      "safety": 0.9
+    },
+    {
+      "from": "Event::ParseErr",
+      "to": "Control::Repair",
+      "policy_effect": "RepairParse",
+      "confidence": 0.6,
+      "cost": 0.4,
+      "safety": 0.6
+    },
+    {
+      "from": "Control::Repair",
+      "to": "State::Parse",
+      "policy_effect": "RetryParse",
+      "confidence": 0.55,
+      "cost": 0.45,
+      "safety": 0.55
+    },
+    {
+      "from": "State::Map",
+      "to": "Event::MapReady",
+      "policy_effect": "MapReady",
+      "confidence": 0.93,
+      "cost": 0.07,
+      "safety": 0.93
+    },
+    {
+      "from": "Event::MapReady",
+      "to": "State::Search",
+      "policy_effect": "Search",
+      "confidence": 0.92,
+      "cost": 0.08,
+      "safety": 0.92
+    },
+    {
+      "from": "State::Search",
+      "to": "Event::CandidateFound",
+      "policy_effect": "CandidateFound",
+      "confidence": 0.91,
+      "cost": 0.09,
+      "safety": 0.91
+    },
+    {
+      "from": "State::Search",
+      "to": "State::Score",
+      "policy_effect": "SearchDirectScoreFallback",
+      "confidence": 0.54,
+      "cost": 0.46,
+      "safety": 0.84
+    },
+    {
+      "from": "Event::CandidateFound",
+      "to": "State::Score",
+      "policy_effect": "Score",
+      "confidence": 0.92,
+      "cost": 0.08,
+      "safety": 0.92
+    },
+    {
+      "from": "State::Score",
+      "to": "Event::ScoreReady",
+      "policy_effect": "ScoreReady",
+      "confidence": 0.94,
+      "cost": 0.06,
+      "safety": 0.94
+    },
+    {
+      "from": "State::Score",
+      "to": "State::Select",
+      "policy_effect": "ScoreDirectSelectFallback",
+      "confidence": 0.53,
+      "cost": 0.47,
+      "safety": 0.84
+    },
+    {
+      "from": "Event::ScoreReady",
+      "to": "State::Select",
+      "policy_effect": "Select",
+      "confidence": 0.95,
+      "cost": 0.05,
+      "safety": 0.95
+    },
+    {
+      "from": "State::Select",
+      "to": "Event::TopKSelected",
+      "policy_effect": "TopKSelected",
+      "confidence": 0.94,
+      "cost": 0.06,
+      "safety": 0.94
+    },
+    {
+      "from": "State::Select",
+      "to": "State::Plan",
+      "policy_effect": "SelectDirectPlanFallback",
+      "confidence": 0.52,
+      "cost": 0.48,
+      "safety": 0.84
+    },
+    {
+      "from": "Event::TopKSelected",
+      "to": "State::Plan",
+      "policy_effect": "Plan",
+      "confidence": 0.93,
+      "cost": 0.07,
+      "safety": 0.93
+    },
+    {
+      "from": "State::Plan",
+      "to": "Event::PlanReady",
+      "policy_effect": "PlanReady",
+      "confidence": 0.92,
+      "cost": 0.08,
+      "safety": 0.92
+    },
+    {
+      "from": "Event::PlanReady",
+      "to": "Control::ChooseBest",
+      "policy_effect": "ChooseBest",
+      "confidence": 0.96,
+      "cost": 0.04,
+      "safety": 0.96
+    },
+    {
+      "from": "Control::ChooseBest",
+      "to": "State::Execute",
+      "policy_effect": "Execute",
+      "confidence": 0.88,
+      "cost": 0.12,
+      "safety": 0.88
+    },
+    {
+      "from": "Control::ChooseBest",
+      "to": "State::Optimize",
+      "policy_effect": "Optimize",
+      "confidence": 0.7,
+      "cost": 0.3,
+      "safety": 0.7
+    },
+    {
+      "from": "State::Optimize",
+      "to": "Event::OptimizeReady",
+      "policy_effect": "OptimizeReady",
+      "confidence": 0.75,
+      "cost": 0.25,
+      "safety": 0.75
+    },
+    {
+      "from": "Event::OptimizeReady",
+      "to": "State::Execute",
+      "policy_effect": "ExecuteOptimized",
+      "confidence": 0.82,
+      "cost": 0.18,
+      "safety": 0.82
+    },
+    {
+      "from": "State::Execute",
+      "to": "Control::GateExecution",
+      "policy_effect": "GateExecution",
+      "confidence": 0.97,
+      "cost": 0.03,
+      "safety": 0.97
+    },
+    {
+      "from": "Control::GateExecution",
+      "to": "Event::ExecuteStarted",
+      "policy_effect": "StartExecution",
+      "confidence": 0.96,
+      "cost": 0.04,
+      "safety": 0.96
+    },
+    {
+      "from": "Control::GateExecution",
+      "to": "Control::Block",
+      "policy_effect": "BlockExecution",
+      "confidence": 0.05,
+      "cost": 0.95,
+      "safety": 0.05
+    },
+    {
+      "from": "Event::ExecuteStarted",
+      "to": "Event::ExecuteFinished",
+      "policy_effect": "FinishExecution",
+      "confidence": 0.9,
+      "cost": 0.1,
+      "safety": 0.9
+    },
+    {
+      "from": "Event::ExecuteFinished",
+      "to": "Event::ReceiptAttached",
+      "policy_effect": "AttachReceipt",
+      "confidence": 0.85,
+      "cost": 0.15,
+      "safety": 0.85
+    },
+    {
+      "from": "Event::ReceiptAttached",
+      "to": "Control::GateReceipt",
+      "policy_effect": "GateReceipt",
+      "confidence": 0.97,
+      "cost": 0.03,
+      "safety": 0.97
+    },
+    {
+      "from": "Control::GateReceipt",
+      "to": "Event::ReceiptAccepted",
+      "policy_effect": "AcceptReceipt",
+      "confidence": 0.9,
+      "cost": 0.1,
+      "safety": 0.9
+    },
+    {
+      "from": "Control::GateReceipt",
+      "to": "Event::ReceiptRejected",
+      "policy_effect": "RejectReceipt",
+      "confidence": 0.15,
+      "cost": 0.85,
+      "safety": 0.15
+    },
+    {
+      "from": "Event::ReceiptAccepted",
+      "to": "Event::HashNonzero",
+      "policy_effect": "CheckHash",
+      "confidence": 0.95,
+      "cost": 0.05,
+      "safety": 0.95
+    },
+    {
+      "from": "Event::HashNonzero",
+      "to": "State::Validate",
+      "policy_effect": "Validate",
+      "confidence": 0.96,
+      "cost": 0.04,
+      "safety": 0.96
+    },
+    {
+      "from": "Event::ReceiptRejected",
+      "to": "Control::Rollback",
+      "policy_effect": "Rollback",
+      "confidence": 0.8,
+      "cost": 0.2,
+      "safety": 0.8
+    },
+    {
+      "from": "Control::Rollback",
+      "to": "Control::Repair",
+      "policy_effect": "Repair",
+      "confidence": 0.6,
+      "cost": 0.4,
+      "safety": 0.6
+    },
+    {
+      "from": "State::Validate",
+      "to": "Control::Commit",
+      "policy_effect": "Commit",
+      "confidence": 0.94,
+      "cost": 0.06,
+      "safety": 0.94
+    },
+    {
+      "from": "State::Validate",
+      "to": "Control::Block",
+      "policy_effect": "BlockValidation",
+      "confidence": 0.05,
+      "cost": 0.95,
+      "safety": 0.05
+    },
+    {
+      "from": "Control::Commit",
+      "to": "Control::GateMemory",
+      "policy_effect": "GateMemory",
+      "confidence": 0.98,
+      "cost": 0.02,
+      "safety": 0.98
+    },
+    {
+      "from": "Control::GateMemory",
+      "to": "State::Memory",
+      "policy_effect": "Memory",
+      "confidence": 0.95,
+      "cost": 0.05,
+      "safety": 0.95
+    },
+    {
+      "from": "State::Memory",
+      "to": "State::Learn",
+      "policy_effect": "LearnFromMemory",
+      "confidence": 0.88,
+      "cost": 0.12,
+      "safety": 0.88
+    },
+    {
+      "from": "State::Memory",
+      "to": "Event::MemoryWritten",
+      "policy_effect": "MemoryWritten",
+      "confidence": 0.92,
+      "cost": 0.08,
+      "safety": 0.92
+    },
+    {
+      "from": "Event::MemoryWritten",
+      "to": "Control::GateLearn",
+      "policy_effect": "GateLearn",
+      "confidence": 0.9,
+      "cost": 0.1,
+      "safety": 0.9
+    },
+    {
+      "from": "Control::GateLearn",
+      "to": "State::Learn",
+      "policy_effect": "Learn",
+      "confidence": 0.88,
+      "cost": 0.12,
+      "safety": 0.88
+    },
+    {
+      "from": "State::Learn",
+      "to": "Control::BuildTopologyOverlay",
+      "policy_effect": "BuildTopologyOverlay",
+      "confidence": 0.34,
+      "cost": 0.66,
+      "safety": 0.95
+    },
+    {
+      "from": "Control::BuildTopologyOverlay",
+      "to": "Event::TopologyOverlayBuilt",
+      "policy_effect": "TopologyOverlayBuilt",
+      "confidence": 0.97,
+      "cost": 0.03,
+      "safety": 0.98
+    },
+    {
+      "from": "Control::BuildTopologyOverlay",
+      "to": "Event::LearnUpdated",
+      "policy_effect": "TopologyOverlayDirectResumeFallback",
+      "confidence": 0.51,
+      "cost": 0.49,
+      "safety": 0.9
+    },
+    {
+      "from": "Event::TopologyOverlayBuilt",
+      "to": "Event::LearnUpdated",
+      "policy_effect": "ResumeAfterTopologyOverlayBuild",
+      "confidence": 0.9,
+      "cost": 0.1,
+      "safety": 0.95
+    },
+    {
+      "from": "Control::Block",
+      "to": "State::Input",
+      "policy_effect": "RecoverFromBlock",
+      "confidence": 0.3,
+      "cost": 0.7,
+      "safety": 0.3
+    },
+    {
+      "from": "Control::Block",
+      "to": "Control::Repair",
+      "policy_effect": "RepairFromBlockFallback",
+      "confidence": 0.28,
+      "cost": 0.72,
+      "safety": 0.62
+    },
+    {
+      "from": "Event::LearnUpdated",
+      "to": "Control::Halt",
+      "policy_effect": "Halt",
+      "confidence": 0.7,
+      "cost": 0.3,
+      "safety": 0.7
+    },
+    {
+      "from": "Event::LearnUpdated",
+      "to": "State::Input",
+      "policy_effect": "RestartTradingCycle",
+      "confidence": 0.95,
+      "cost": 0.05,
+      "safety": 0.95
+    },
+    {
+      "from": "State::Execute",
+      "to": "Execution::VectorAdd",
+      "policy_effect": "DispatchVectorAdd",
+      "confidence": 0.8,
+      "cost": 1.5,
+      "safety": 0.8
+    },
+    {
+      "from": "State::Execute",
+      "to": "Execution::VectorScale",
+      "policy_effect": "DispatchVectorScale",
+      "confidence": 0.8,
+      "cost": 1.5,
+      "safety": 0.8
+    },
+    {
+      "from": "State::Execute",
+      "to": "Execution::FusedVectorAddScale",
+      "policy_effect": "DispatchFusedVectorAddScale",
+      "confidence": 0.75,
+      "cost": 2.0,
+      "safety": 0.78
+    },
+    {
+      "from": "Execution::VectorAdd",
+      "to": "Control::GateExecution",
+      "policy_effect": "GateAfterVectorAdd",
+      "confidence": 0.88,
+      "cost": 0.8,
+      "safety": 0.88
+    },
+    {
+      "from": "Execution::VectorScale",
+      "to": "Control::GateExecution",
+      "policy_effect": "GateAfterVectorScale",
+      "confidence": 0.88,
+      "cost": 0.8,
+      "safety": 0.88
+    },
+    {
+      "from": "Execution::FusedVectorAddScale",
+      "to": "Control::GateExecution",
+      "policy_effect": "GateAfterFusedVectorAddScale",
+      "confidence": 0.92,
+      "cost": 0.6,
+      "safety": 0.9
+    },
+    {
+      "from": "State::Input",
+      "to": "State::MarketFeed",
+      "policy_effect": "FetchMarketFeed",
+      "confidence": 0.97,
+      "cost": 0.03,
+      "safety": 0.97
+    },
+    {
+      "from": "State::Input",
+      "to": "Event::InputAccepted",
+      "policy_effect": "AcceptInputFallback",
+      "confidence": 0.62,
+      "cost": 0.38,
+      "safety": 0.9
+    },
+    {
+      "from": "State::MarketFeed",
+      "to": "Event::MarketFeedUpdated",
+      "policy_effect": "MarketFeedUpdated",
+      "confidence": 0.92,
+      "cost": 0.08,
+      "safety": 0.92
+    },
+    {
+      "from": "Event::MarketFeedUpdated",
+      "to": "State::AnalysisPlan",
+      "policy_effect": "PlanAnalysis",
+      "confidence": 0.91,
+      "cost": 0.09,
+      "safety": 0.91
+    },
+    {
+      "from": "State::AnalysisPlan",
+      "to": "Event::AnalysisPlanReady",
+      "policy_effect": "AnalysisPlanReady",
+      "confidence": 0.89,
+      "cost": 0.11,
+      "safety": 0.89
+    },
+    {
+      "from": "Event::AnalysisPlanReady",
+      "to": "Analysis::Return1",
+      "policy_effect": "DispatchReturn1",
+      "confidence": 0.88,
+      "cost": 1.2,
+      "safety": 0.88
+    },
+    {
+      "from": "Analysis::Return1",
+      "to": "Analysis::Volatility",
+      "policy_effect": "ChainReturn1ToVolatility",
+      "confidence": 0.9,
+      "cost": 1.0,
+      "safety": 0.9
+    },
+    {
+      "from": "Analysis::Return1",
+      "to": "Analysis::SignalScore",
+      "policy_effect": "Return1DirectSignalFallback",
+      "confidence": 0.55,
+      "cost": 1.5,
+      "safety": 0.82
+    },
+    {
+      "from": "Analysis::Volatility",
+      "to": "Analysis::SignalScore",
+      "policy_effect": "ChainVolatilityToSignalScore",
+      "confidence": 0.9,
+      "cost": 1.0,
+      "safety": 0.9
+    },
+    {
+      "from": "Analysis::SignalScore",
+      "to": "Event::AnalysisFinished",
+      "policy_effect": "AnalysisFinished",
+      "confidence": 0.89,
+      "cost": 0.11,
+      "safety": 0.89
+    },
+    {
+      "from": "State::AnalysisPlan",
+      "to": "Event::AnalysisFinished",
+      "policy_effect": "SkipAnalysisChain",
+      "confidence": 0.6,
+      "cost": 0.4,
+      "safety": 0.6
+    },
+    {
+      "from": "Event::AnalysisFinished",
+      "to": "State::Plan",
+      "policy_effect": "PlanAfterAnalysis",
+      "confidence": 0.95,
+      "cost": 0.05,
+      "safety": 0.95
+    },
+    {
+      "from": "Event::AnalysisFinished",
+      "to": "State::TradePlan",
+      "policy_effect": "TradePlanAfterAnalysisFallback",
+      "confidence": 0.52,
+      "cost": 0.48,
+      "safety": 0.86
+    },
+    {
+      "from": "State::Plan",
+      "to": "State::TradePlan",
+      "policy_effect": "TradePlan",
+      "confidence": 0.94,
+      "cost": 0.06,
+      "safety": 0.94
+    },
+    {
+      "from": "State::TradePlan",
+      "to": "Event::TradeDecisionReady",
+      "policy_effect": "TradeDecisionReady",
+      "confidence": 0.87,
+      "cost": 0.13,
+      "safety": 0.87
+    },
+    {
+      "from": "State::TradePlan",
+      "to": "State::PaperTrade",
+      "policy_effect": "TradePlanDirectPaperTradeFallback",
+      "confidence": 0.51,
+      "cost": 0.49,
+      "safety": 0.84
+    },
+    {
+      "from": "Event::TradeDecisionReady",
+      "to": "State::PaperTrade",
+      "policy_effect": "ExecutePaperTrade",
+      "confidence": 0.86,
+      "cost": 0.14,
+      "safety": 0.86
+    },
+    {
+      "from": "State::PaperTrade",
+      "to": "Event::PaperTradeFilled",
+      "policy_effect": "PaperTradeFilled",
+      "confidence": 0.85,
+      "cost": 0.15,
+      "safety": 0.85
+    },
+    {
+      "from": "State::PaperTrade",
+      "to": "Event::PaperTradeRejected",
+      "policy_effect": "PaperTradeRejected",
+      "confidence": 0.1,
+      "cost": 0.9,
+      "safety": 0.1
+    },
+    {
+      "from": "Event::PaperTradeFilled",
+      "to": "State::Memory",
+      "policy_effect": "MemoryAfterFill",
+      "confidence": 0.93,
+      "cost": 0.07,
+      "safety": 0.93
+    },
+    {
+      "from": "Event::PaperTradeRejected",
+      "to": "State::Memory",
+      "policy_effect": "MemoryAfterRejection",
+      "confidence": 0.8,
+      "cost": 0.2,
+      "safety": 0.8
+    },
+    {
+      "from": "Control::TopologyMutate",
+      "to": "Event::TopologyMutated",
+      "confidence": 0.97,
+      "cost": 0.03,
+      "safety": 0.98,
+      "policy_effect": "TopologyMutated"
+    },
+    {
+      "from": "Event::TopologyMutated",
+      "to": "Control::BuildTopologyOverlay",
+      "confidence": 0.97,
+      "cost": 0.03,
+      "safety": 0.98,
+      "policy_effect": "BuildTopologyOverlayAfterMutate"
+    },
+    {
+      "from": "State::TopologyPlan",
+      "to": "Control::TopologyMutate",
+      "confidence": 0.97,
+      "cost": 0.03,
+      "safety": 0.98,
+      "policy_effect": "TopologyMutateFromPlan"
+    },
+    {
+      "from": "State::Learn",
+      "to": "State::Introspect",
+      "confidence": 0.97,
+      "cost": 0.03,
+      "safety": 0.95,
+      "policy_effect": "Introspect"
+    },
+    {
+      "from": "State::Introspect",
+      "to": "State::TopologyPlan",
+      "confidence": 0.97,
+      "cost": 0.03,
+      "safety": 0.97,
+      "policy_effect": "TopologyPlanFromIntrospect"
+    },
+    {
+      "from": "Event::TopologyMutated",
+      "to": "State::OperatorPlan",
+      "confidence": 0.65,
+      "cost": 0.35,
+      "safety": 0.95,
+      "policy_effect": "OperatorPlan"
+    },
+    {
+      "from": "State::OperatorPlan",
+      "to": "Control::WriteOperator",
+      "confidence": 0.97,
+      "cost": 0.03,
+      "safety": 0.97,
+      "policy_effect": "WriteOperator"
+    },
+    {
+      "from": "Control::WriteOperator",
+      "to": "Event::OperatorWritten",
+      "confidence": 0.97,
+      "cost": 0.03,
+      "safety": 0.98,
+      "policy_effect": "OperatorWritten"
+    },
+    {
+      "from": "Event::OperatorWritten",
+      "to": "Control::BuildTopologyOverlay",
+      "confidence": 0.5,
+      "cost": 0.5,
+      "safety": 0.97,
+      "policy_effect": "BuildOverlayAfterWrite"
+    },
+    {
+      "from": "State::Learn",
+      "to": "State::PatternPlan",
+      "confidence": 0.25,
+      "cost": 0.75,
+      "safety": 0.95,
+      "policy_effect": "PatternPlan"
+    },
+    {
+      "from": "State::PatternPlan",
+      "to": "Control::PatternMutate",
+      "confidence": 0.97,
+      "cost": 0.03,
+      "safety": 0.97,
+      "policy_effect": "PatternMutate"
+    },
+    {
+      "from": "Control::PatternMutate",
+      "to": "Event::PatternMutated",
+      "confidence": 0.97,
+      "cost": 0.03,
+      "safety": 0.98,
+      "policy_effect": "PatternMutated"
+    },
+    {
+      "from": "Event::PatternMutated",
+      "to": "Event::LearnUpdated",
+      "confidence": 0.9,
+      "cost": 0.1,
+      "safety": 0.95,
+      "policy_effect": "ResumeAfterPatternMutate"
+    },
+    {
+      "from": "State::Introspect",
+      "to": "Event::LearnUpdated",
+      "confidence": 0.5,
+      "cost": 0.5,
+      "safety": 0.95,
+      "policy_effect": "IntrospectBypass"
+    },
+    {
+      "from": "Control::WriteOperator",
+      "to": "Control::Repair",
+      "confidence": 0.62,
+      "cost": 0.38,
+      "safety": 0.9
+    },
+    {
+      "from": "Control::PatternMutate",
+      "to": "Control::Repair",
+      "confidence": 0.62,
+      "cost": 0.38,
+      "safety": 0.9
+    },
+    {
+      "from": "Event::TopologyMutated",
+      "to": "State::MutationReview",
+      "confidence": 0.92,
+      "cost": 0.08,
+      "safety": 0.99,
+      "policy_effect": "ReviewTopologyMutationQueue"
+    },
+    {
+      "from": "Event::OperatorWritten",
+      "to": "State::MutationReview",
+      "confidence": 0.92,
+      "cost": 0.08,
+      "safety": 0.99,
+      "policy_effect": "ReviewOperatorMutationQueue"
+    },
+    {
+      "from": "Event::PatternMutated",
+      "to": "State::MutationReview",
+      "confidence": 0.92,
+      "cost": 0.08,
+      "safety": 0.99,
+      "policy_effect": "ReviewPatternMutationQueue"
+    },
+    {
+      "from": "State::MutationReview",
+      "to": "Event::MutationReviewed",
+      "confidence": 0.98,
+      "cost": 0.02,
+      "safety": 0.99,
+      "policy_effect": "MutationQueueReviewed"
+    },
+    {
+      "from": "State::MutationReview",
+      "to": "Event::LearnUpdated",
+      "confidence": 0.4,
+      "cost": 0.6,
+      "safety": 0.98,
+      "policy_effect": "MutationReviewBypass"
+    },
+    {
+      "from": "Event::MutationReviewed",
+      "to": "Event::LearnUpdated",
+      "confidence": 0.9,
+      "cost": 0.1,
+      "safety": 0.98,
+      "policy_effect": "LearnAfterMutationReview"
+    }
+  ],
+  "pages": [
+    {
+      "name": "main",
+      "node_names": [
+        "State::Goal",
+        "State::Input",
+        "State::Parse",
+        "State::Map",
+        "State::Search",
+        "State::Score",
+        "State::Select",
+        "State::Plan",
+        "State::Optimize",
+        "State::Execute",
+        "State::Validate",
+        "State::Memory",
+        "State::Learn",
+        "Control::Block",
+        "Control::Repair",
+        "Control::Commit",
+        "Control::Rollback",
+        "Control::Halt",
+        "Control::GateInput",
+        "Control::GateExecution",
+        "Control::GateReceipt",
+        "Control::GateMemory",
+        "Control::GateLearn",
+        "Control::ChooseBest",
+        "Event::FactArrived",
+        "Event::ParseOk",
+        "Event::ParseErr",
+        "Event::MapReady",
+        "Event::CandidateFound",
+        "Event::ScoreReady",
+        "Event::TopKSelected",
+        "Event::PlanReady",
+        "Event::OptimizeReady",
+        "Event::ExecuteStarted",
+        "Event::ExecuteFinished",
+        "Event::ReceiptAttached",
+        "Event::ReceiptAccepted",
+        "Event::ReceiptRejected",
+        "Event::HashNonzero",
+        "Event::MemoryWritten",
+        "Event::LearnUpdated",
+        "Execution::VectorAdd",
+        "Execution::VectorScale",
+        "Execution::FusedVectorAddScale",
+        "State::MarketFeed",
+        "State::AnalysisPlan",
+        "State::TradePlan",
+        "State::PaperTrade",
+        "Event::MarketFeedUpdated",
+        "Event::AnalysisPlanReady",
+        "Event::AnalysisFinished",
+        "Event::TradeDecisionReady",
+        "Event::PaperTradeFilled",
+        "Event::PaperTradeRejected",
+        "Analysis::Return1",
+        "Analysis::Volatility",
+        "Analysis::SignalScore",
+        "Control::BuildTopologyOverlay",
+        "Event::TopologyOverlayBuilt"
+      ]
     }
   ]
 }

@@ -16,7 +16,7 @@ TLOG_WINDOW = int(os.environ.get("QUANTALE_LEARN_WINDOW", "50"))
 DELTA_UP = float(os.environ.get("QUANTALE_LEARN_DELTA_UP", "0.05"))
 PENALTY = float(os.environ.get("QUANTALE_LEARN_PENALTY", "2.0"))
 SHRINK = float(os.environ.get("QUANTALE_LEARN_SHRINK", "0.95"))
-TOPOLOGY_FILE = pathlib.Path(os.environ.get("QUANTALE_TOPOLOGY", str(pathlib.Path(__file__).resolve().parent.parent.parent / "assets" / "topology.json")))
+TOPOLOGY_FILE = pathlib.Path(os.environ.get("QUANTALE_TOPOLOGY", str(pathlib.Path(__file__).resolve().parent.parent.parent / "assets" / "topology.generated.json")))
 
 
 def read_json_stdin() -> dict:

@@ -13,7 +13,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::programs::NodeEffects;
 
@@ -21,15 +21,15 @@ use crate::programs::NodeEffects;
 
 /// A maximal GPU-resident fusible kernel region.
 pub struct FusionRegion {
-    pub region:  String,
+    pub region: String,
     pub backend: String,
-    pub fusion:  String,
-    pub nodes:   Vec<String>,
-    pub reads:   Vec<String>,
-    pub writes:  Vec<String>,
-    pub locks:   Vec<String>,
+    pub fusion: String,
+    pub nodes: Vec<String>,
+    pub reads: Vec<String>,
+    pub writes: Vec<String>,
+    pub locks: Vec<String>,
     pub compose: Vec<String>,
-    pub join:    Vec<String>,
+    pub join: Vec<String>,
 }
 
 impl FusionRegion {
@@ -86,7 +86,9 @@ pub fn partition_fusible_regions(source: &Value, transitions: &[Value]) -> Vec<F
                 ins.iter().filter(|i| comp_set.contains(i.as_str())).count()
             });
             let out_count = adj_out.get(n).map_or(0, |outs| {
-                outs.iter().filter(|o| comp_set.contains(o.as_str())).count()
+                outs.iter()
+                    .filter(|o| comp_set.contains(o.as_str()))
+                    .count()
             });
             in_count <= 1 && out_count <= 1
         });
@@ -101,28 +103,34 @@ pub fn partition_fusible_regions(source: &Value, transitions: &[Value]) -> Vec<F
         };
 
         // Merge slot effects across the chain.
-        let all_reads: BTreeSet<String> =
-            chain.iter().flat_map(|n| fusible[n].reads.iter().cloned()).collect();
-        let all_writes: BTreeSet<String> =
-            chain.iter().flat_map(|n| fusible[n].writes.iter().cloned()).collect();
-        let all_locks: BTreeSet<String> =
-            chain.iter().flat_map(|n| fusible[n].locks.iter().cloned()).collect();
+        let all_reads: BTreeSet<String> = chain
+            .iter()
+            .flat_map(|n| fusible[n].reads.iter().cloned())
+            .collect();
+        let all_writes: BTreeSet<String> = chain
+            .iter()
+            .flat_map(|n| fusible[n].writes.iter().cloned())
+            .collect();
+        let all_locks: BTreeSet<String> = chain
+            .iter()
+            .flat_map(|n| fusible[n].locks.iter().cloned())
+            .collect();
 
         // External reads  = slots consumed by the region but not produced inside.
         // External writes = slots produced by the region but not consumed inside.
-        let ext_reads:  Vec<String> = all_reads.difference(&all_writes).cloned().collect();
+        let ext_reads: Vec<String> = all_reads.difference(&all_writes).cloned().collect();
         let ext_writes: Vec<String> = all_writes.difference(&all_reads).cloned().collect();
 
         regions.push(FusionRegion {
-            region:  chain.join("__"),
+            region: chain.join("__"),
             backend: "cuda_jit".to_string(),
-            fusion:  "linear_chain".to_string(),
-            nodes:   chain,
-            reads:   ext_reads,
-            writes:  ext_writes,
-            locks:   all_locks.into_iter().collect(),
+            fusion: "linear_chain".to_string(),
+            nodes: chain,
+            reads: ext_reads,
+            writes: ext_writes,
+            locks: all_locks.into_iter().collect(),
             compose: compose.clone(),
-            join:    join.clone(),
+            join: join.clone(),
         });
     }
 
@@ -133,7 +141,12 @@ pub fn partition_fusible_regions(source: &Value, transitions: &[Value]) -> Vec<F
 
 fn str_set(v: Option<&Value>) -> BTreeSet<String> {
     v.and_then(Value::as_array)
-        .map(|arr| arr.iter().filter_map(Value::as_str).map(str::to_string).collect())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -161,9 +174,9 @@ fn fusible_node_info(source: &Value) -> BTreeMap<String, NodeEffects> {
         result.insert(
             name,
             NodeEffects {
-                reads:  str_set(node.get("reads")),
+                reads: str_set(node.get("reads")),
                 writes: str_set(node.get("writes")),
-                locks:  str_set(node.get("locks")),
+                locks: str_set(node.get("locks")),
             },
         );
     }
@@ -182,10 +195,16 @@ fn build_adj(
 
     for t in transitions {
         let from = t.get("from").and_then(Value::as_str).unwrap_or("");
-        let to   = t.get("to").and_then(Value::as_str).unwrap_or("");
+        let to = t.get("to").and_then(Value::as_str).unwrap_or("");
         if fusible.contains_key(from) && fusible.contains_key(to) {
-            adj_out.entry(from.to_string()).or_default().push(to.to_string());
-            adj_in.entry(to.to_string()).or_default().push(from.to_string());
+            adj_out
+                .entry(from.to_string())
+                .or_default()
+                .push(to.to_string());
+            adj_in
+                .entry(to.to_string())
+                .or_default()
+                .push(from.to_string());
         }
     }
 
@@ -196,7 +215,7 @@ fn build_adj(
 fn connected_components(
     nodes: &BTreeSet<String>,
     adj_out: &BTreeMap<String, Vec<String>>,
-    adj_in:  &BTreeMap<String, Vec<String>>,
+    adj_in: &BTreeMap<String, Vec<String>>,
 ) -> Vec<Vec<String>> {
     let mut visited: BTreeSet<String> = BTreeSet::new();
     let mut components: Vec<Vec<String>> = Vec::new();
@@ -246,16 +265,15 @@ fn connected_components(
 fn topo_chain(
     component: &[String],
     adj_out: &BTreeMap<String, Vec<String>>,
-    adj_in:  &BTreeMap<String, Vec<String>>,
+    adj_in: &BTreeMap<String, Vec<String>>,
 ) -> Option<Vec<String>> {
     let comp_set: BTreeSet<&str> = component.iter().map(String::as_str).collect();
 
     // Unique source: in-degree 0 within component.
     let mut sources = component.iter().filter(|n| {
-        adj_in
-            .get(*n)
-            .map_or(0, |ins| ins.iter().filter(|i| comp_set.contains(i.as_str())).count())
-            == 0
+        adj_in.get(*n).map_or(0, |ins| {
+            ins.iter().filter(|i| comp_set.contains(i.as_str())).count()
+        }) == 0
     });
     let source = sources.next()?;
     if sources.next().is_some() {
@@ -269,7 +287,11 @@ fn topo_chain(
         chain.push(current.clone());
         let next_in_comp: Vec<&String> = adj_out
             .get(&current)
-            .map(|outs| outs.iter().filter(|o| comp_set.contains(o.as_str())).collect())
+            .map(|outs| {
+                outs.iter()
+                    .filter(|o| comp_set.contains(o.as_str()))
+                    .collect()
+            })
             .unwrap_or_default();
 
         match next_in_comp.as_slice() {
@@ -355,9 +377,7 @@ mod tests {
 
     #[test]
     fn single_kernel_produces_no_region() {
-        let src = source_with_kernels(json!([
-            cuda_kernel("K::A", &["slot.in"], &["slot.out"])
-        ]));
+        let src = source_with_kernels(json!([cuda_kernel("K::A", &["slot.in"], &["slot.out"])]));
         assert!(partition_fusible_regions(&src, &[]).is_empty());
     }
 
@@ -372,32 +392,57 @@ mod tests {
         assert_eq!(regions.len(), 1);
         assert_eq!(regions[0].fusion, "linear_chain");
         assert_eq!(regions[0].nodes, vec!["K::A", "K::B"]);
-        assert_eq!(regions[0].reads,  vec!["x"]);
+        assert_eq!(regions[0].reads, vec!["x"]);
         assert_eq!(regions[0].writes, vec!["z"]);
     }
 
     #[test]
     fn three_node_analysis_chain() {
         let src = source_with_kernels(json!([
-            cuda_kernel("Analysis::Return1",    &["market.price", "market.open"], &["analysis.return"]),
-            cuda_kernel("Analysis::Volatility", &["market.price", "analysis.return"], &["analysis.volatility"]),
-            cuda_kernel("Analysis::SignalScore",&["analysis.return", "analysis.volatility"], &["analysis.signal_score"])
+            cuda_kernel(
+                "Analysis::Return1",
+                &["market.price", "market.open"],
+                &["analysis.return"]
+            ),
+            cuda_kernel(
+                "Analysis::Volatility",
+                &["market.price", "analysis.return"],
+                &["analysis.volatility"]
+            ),
+            cuda_kernel(
+                "Analysis::SignalScore",
+                &["analysis.return", "analysis.volatility"],
+                &["analysis.signal_score"]
+            )
         ]));
         let ts = vec![
-            trans("Analysis::Return1",    "Analysis::Volatility"),
+            trans("Analysis::Return1", "Analysis::Volatility"),
             trans("Analysis::Volatility", "Analysis::SignalScore"),
         ];
         let regions = partition_fusible_regions(&src, &ts);
         assert_eq!(regions.len(), 1);
         let r = &regions[0];
         assert_eq!(r.fusion, "linear_chain");
-        assert_eq!(r.nodes, vec!["Analysis::Return1", "Analysis::Volatility", "Analysis::SignalScore"]);
+        assert_eq!(
+            r.nodes,
+            vec![
+                "Analysis::Return1",
+                "Analysis::Volatility",
+                "Analysis::SignalScore"
+            ]
+        );
         // External reads: market.price and market.open (not produced inside)
         let reads: BTreeSet<&str> = r.reads.iter().map(String::as_str).collect();
         assert!(reads.contains("market.price"), "reads={:?}", r.reads);
-        assert!(reads.contains("market.open"),  "reads={:?}", r.reads);
-        assert!(!reads.contains("analysis.return"),     "internal slot leaked into reads");
-        assert!(!reads.contains("analysis.volatility"), "internal slot leaked into reads");
+        assert!(reads.contains("market.open"), "reads={:?}", r.reads);
+        assert!(
+            !reads.contains("analysis.return"),
+            "internal slot leaked into reads"
+        );
+        assert!(
+            !reads.contains("analysis.volatility"),
+            "internal slot leaked into reads"
+        );
         // External write: only the final output
         assert_eq!(r.writes, vec!["analysis.signal_score"]);
         assert!(r.locks.is_empty());
@@ -411,7 +456,10 @@ mod tests {
         ]));
         // No edge between A and B.
         let regions = partition_fusible_regions(&src, &[]);
-        assert!(regions.is_empty(), "singleton components must not form regions");
+        assert!(
+            regions.is_empty(),
+            "singleton components must not form regions"
+        );
     }
 
     #[test]
@@ -466,7 +514,7 @@ mod tests {
         let ts = vec![trans("K::A", "K::B")];
         let regions = partition_fusible_regions(&src, &ts);
         assert_eq!(regions[0].compose, vec!["times", "plus", "min"]);
-        assert_eq!(regions[0].join,    vec!["max",   "min",  "max"]);
+        assert_eq!(regions[0].join, vec!["max", "min", "max"]);
     }
 
     #[test]
