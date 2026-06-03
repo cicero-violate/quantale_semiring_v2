@@ -47,7 +47,14 @@
     "state/paper_orders.jsonl":     { "type": "jsonl",  "kind": "log"     },
     "state/paper_positions.json":   { "type": "json",   "kind": "state"   },
     "state/topology_mutations.jsonl":{ "type": "jsonl", "kind": "log"     },
-    "state/mutation_queue.jsonl":   { "type": "jsonl",  "kind": "log"     }
+    "state/mutation_queue.jsonl":   { "type": "jsonl",  "kind": "log"     },
+    "introspect.report":            { "type": "json",   "kind": "state"   },
+    "topology.plan":                { "type": "json",   "kind": "state"   },
+    "operator.plan":                { "type": "json",   "kind": "state"   },
+    "pattern.plan":                 { "type": "json",   "kind": "state"   },
+    "select.result":                { "type": "json",   "kind": "state"   },
+    "mutation.review":              { "type": "json",   "kind": "state"   },
+    "rollback.record":              { "type": "json",   "kind": "state"   }
   },
 
   "resources": {
@@ -237,6 +244,264 @@
       "writes": ["commit.record"],
       "locks": ["commit"],
       "governance": { "git": true }
+    },
+
+    { "name": "Event::AnalysisFinished",     "kind": "event_node", "runtime": { "backend": "noop" }, "reads": [], "writes": [], "locks": [] },
+    { "name": "Event::AnalysisPlanReady",    "kind": "event_node", "runtime": { "backend": "noop" }, "reads": [], "writes": [], "locks": [] },
+    { "name": "Event::CandidateFound",       "kind": "event_node", "runtime": { "backend": "noop" }, "reads": [], "writes": [], "locks": [] },
+    { "name": "Event::ExecuteFinished",      "kind": "event_node", "runtime": { "backend": "noop" }, "reads": [], "writes": [], "locks": [] },
+    { "name": "Event::ExecuteStarted",       "kind": "event_node", "runtime": { "backend": "noop" }, "reads": [], "writes": [], "locks": [] },
+    { "name": "Event::FactArrived",          "kind": "event_node", "runtime": { "backend": "noop" }, "reads": [], "writes": [], "locks": [] },
+    { "name": "Event::HashNonzero",          "kind": "event_node", "runtime": { "backend": "noop" }, "reads": [], "writes": [], "locks": [] },
+    { "name": "Event::InputAccepted",        "kind": "event_node", "runtime": { "backend": "noop" }, "reads": [], "writes": [], "locks": [] },
+    { "name": "Event::LearnUpdated",         "kind": "event_node", "runtime": { "backend": "noop" }, "reads": [], "writes": [], "locks": [] },
+    { "name": "Event::MapReady",             "kind": "event_node", "runtime": { "backend": "noop" }, "reads": [], "writes": [], "locks": [] },
+    { "name": "Event::MarketFeedUpdated",    "kind": "event_node", "runtime": { "backend": "noop" }, "reads": [], "writes": [], "locks": [] },
+    { "name": "Event::MemoryWritten",        "kind": "event_node", "runtime": { "backend": "noop" }, "reads": [], "writes": [], "locks": [] },
+    { "name": "Event::MutationReviewed",     "kind": "event_node", "runtime": { "backend": "noop" }, "reads": [], "writes": [], "locks": [] },
+    { "name": "Event::OperatorWritten",      "kind": "event_node", "runtime": { "backend": "noop" }, "reads": [], "writes": [], "locks": [] },
+    { "name": "Event::OptimizeReady",        "kind": "event_node", "runtime": { "backend": "noop" }, "reads": [], "writes": [], "locks": [] },
+    { "name": "Event::PaperTradeFilled",     "kind": "event_node", "runtime": { "backend": "noop" }, "reads": [], "writes": [], "locks": [] },
+    { "name": "Event::PaperTradeRejected",   "kind": "event_node", "runtime": { "backend": "noop" }, "reads": [], "writes": [], "locks": [] },
+    { "name": "Event::ParseErr",             "kind": "event_node", "runtime": { "backend": "noop" }, "reads": [], "writes": [], "locks": [] },
+    { "name": "Event::ParseOk",              "kind": "event_node", "runtime": { "backend": "noop" }, "reads": [], "writes": [], "locks": [] },
+    { "name": "Event::PatternMutated",       "kind": "event_node", "runtime": { "backend": "noop" }, "reads": [], "writes": [], "locks": [] },
+    { "name": "Event::PlanReady",            "kind": "event_node", "runtime": { "backend": "noop" }, "reads": [], "writes": [], "locks": [] },
+    { "name": "Event::ReceiptAccepted",      "kind": "event_node", "runtime": { "backend": "noop" }, "reads": [], "writes": [], "locks": [] },
+    { "name": "Event::ReceiptAttached",      "kind": "event_node", "runtime": { "backend": "noop" }, "reads": [], "writes": [], "locks": [] },
+    { "name": "Event::ReceiptRejected",      "kind": "event_node", "runtime": { "backend": "noop" }, "reads": [], "writes": [], "locks": [] },
+    { "name": "Event::ScoreReady",           "kind": "event_node", "runtime": { "backend": "noop" }, "reads": [], "writes": [], "locks": [] },
+    { "name": "Event::TopKSelected",         "kind": "event_node", "runtime": { "backend": "noop" }, "reads": [], "writes": [], "locks": [] },
+    { "name": "Event::TopologyMutated",      "kind": "event_node", "runtime": { "backend": "noop" }, "reads": [], "writes": [], "locks": [] },
+    { "name": "Event::TopologyOverlayBuilt", "kind": "event_node", "runtime": { "backend": "noop" }, "reads": [], "writes": [], "locks": [] },
+    { "name": "Event::TradeDecisionReady",   "kind": "event_node", "runtime": { "backend": "noop" }, "reads": [], "writes": [], "locks": [] },
+
+    {
+      "name": "State::Goal",
+      "kind": "host_node",
+      "purity": "pure",
+      "runtime": { "backend": "noop" },
+      "reads": ["env.task"],
+      "writes": ["task.context"],
+      "locks": []
+    },
+    {
+      "name": "State::Introspect",
+      "kind": "boundary_node",
+      "runtime": { "backend": "python", "script": "crates/operators_lib/call_llm.py", "template": "introspect" },
+      "reads": ["state/quantale.tlog", "state/learned_edges.jsonl", "state/topology_mutations.jsonl"],
+      "writes": ["introspect.report"],
+      "locks": [],
+      "governance": { "llm": true }
+    },
+    {
+      "name": "State::Map",
+      "kind": "host_node",
+      "purity": "deterministic_io",
+      "runtime": { "backend": "python", "script": "crates/operators_lib/map.py" },
+      "reads": ["task.context"],
+      "writes": ["map.candidates"],
+      "locks": []
+    },
+    {
+      "name": "State::MutationReview",
+      "kind": "boundary_node",
+      "runtime": { "backend": "python", "script": "crates/operators_lib/mutation_review.py" },
+      "reads": ["state/mutation_queue.jsonl"],
+      "writes": ["mutation.review"],
+      "locks": [],
+      "governance": { "review": true }
+    },
+    {
+      "name": "State::OperatorPlan",
+      "kind": "boundary_node",
+      "runtime": { "backend": "python", "script": "crates/operators_lib/call_llm.py", "template": "operator_plan" },
+      "reads": ["state/topology_mutations.jsonl"],
+      "writes": ["operator.plan"],
+      "locks": [],
+      "governance": { "llm": true }
+    },
+    {
+      "name": "State::Parse",
+      "kind": "host_node",
+      "purity": "pure",
+      "runtime": { "backend": "python", "script": "crates/operators_lib/parse.py" },
+      "reads": ["task.context"],
+      "writes": ["parse.tree"],
+      "locks": []
+    },
+    {
+      "name": "State::PatternPlan",
+      "kind": "boundary_node",
+      "runtime": { "backend": "python", "script": "crates/operators_lib/call_llm.py", "template": "pattern_plan" },
+      "reads": ["state/quantale.tlog"],
+      "writes": ["pattern.plan"],
+      "locks": [],
+      "governance": { "llm": true }
+    },
+    {
+      "name": "State::Score",
+      "kind": "host_node",
+      "purity": "pure",
+      "runtime": { "backend": "python", "script": "crates/operators_lib/score.py" },
+      "reads": ["parse.tree"],
+      "writes": ["score.report"],
+      "locks": []
+    },
+    {
+      "name": "State::Search",
+      "kind": "host_node",
+      "purity": "deterministic_io",
+      "runtime": { "backend": "python", "script": "crates/operators_lib/search.py" },
+      "reads": ["map.candidates"],
+      "writes": ["search.results"],
+      "locks": []
+    },
+    {
+      "name": "State::Select",
+      "kind": "host_node",
+      "purity": "pure",
+      "runtime": { "backend": "python", "script": "crates/operators_lib/select.py" },
+      "reads": ["score.report"],
+      "writes": ["select.result"],
+      "locks": []
+    },
+    {
+      "name": "State::TopologyPlan",
+      "kind": "boundary_node",
+      "runtime": { "backend": "python", "script": "crates/operators_lib/call_llm.py", "template": "topology_plan" },
+      "reads": ["state/quantale.tlog", "state/topology_mutations.jsonl"],
+      "writes": ["topology.plan"],
+      "locks": [],
+      "governance": { "llm": true }
+    },
+
+    {
+      "name": "Control::Allow",
+      "kind": "policy_node",
+      "runtime": { "backend": "noop" },
+      "reads": [],
+      "writes": [],
+      "locks": []
+    },
+    {
+      "name": "Control::Block",
+      "kind": "policy_node",
+      "runtime": { "backend": "noop" },
+      "reads": [],
+      "writes": [],
+      "locks": []
+    },
+    {
+      "name": "Control::BuildTopologyOverlay",
+      "kind": "host_node",
+      "purity": "deterministic_io",
+      "runtime": { "backend": "cargo", "args": ["run", "--", "topology", "build-overlay"] },
+      "reads": [],
+      "writes": [],
+      "locks": ["topology_assets"]
+    },
+    {
+      "name": "Control::ChooseBest",
+      "kind": "policy_node",
+      "runtime": { "backend": "noop" },
+      "reads": ["plan.tensor"],
+      "writes": [],
+      "locks": []
+    },
+    {
+      "name": "Control::GateInput",
+      "kind": "policy_node",
+      "runtime": { "backend": "noop" },
+      "reads": [],
+      "writes": [],
+      "locks": []
+    },
+    {
+      "name": "Control::GateLearn",
+      "kind": "policy_node",
+      "runtime": { "backend": "noop" },
+      "reads": [],
+      "writes": [],
+      "locks": []
+    },
+    {
+      "name": "Control::GateMemory",
+      "kind": "policy_node",
+      "runtime": { "backend": "noop" },
+      "reads": [],
+      "writes": [],
+      "locks": []
+    },
+    {
+      "name": "Control::GateReceipt",
+      "kind": "policy_node",
+      "runtime": { "backend": "noop" },
+      "reads": [],
+      "writes": [],
+      "locks": []
+    },
+    {
+      "name": "Control::Halt",
+      "kind": "policy_node",
+      "runtime": { "backend": "noop" },
+      "reads": [],
+      "writes": [],
+      "locks": []
+    },
+    {
+      "name": "Control::PatternMutate",
+      "kind": "boundary_node",
+      "runtime": { "backend": "python", "script": "crates/operators_lib/pattern_mutate.py" },
+      "reads": ["pattern.plan"],
+      "writes": ["state/topology_mutations.jsonl"],
+      "locks": ["patterns"],
+      "governance": { "self_modification": true }
+    },
+    {
+      "name": "Control::Repair",
+      "kind": "host_node",
+      "purity": "pure",
+      "runtime": { "backend": "noop" },
+      "reads": ["receipt.report"],
+      "writes": ["repair.intent"],
+      "locks": []
+    },
+    {
+      "name": "Control::Retry",
+      "kind": "host_node",
+      "purity": "pure",
+      "runtime": { "backend": "noop" },
+      "reads": ["receipt.report"],
+      "writes": ["retry.intent"],
+      "locks": []
+    },
+    {
+      "name": "Control::Rollback",
+      "kind": "boundary_node",
+      "runtime": { "backend": "python", "script": "crates/operators_lib/rollback.py" },
+      "reads": ["commit.record"],
+      "writes": ["rollback.record"],
+      "locks": ["commit"],
+      "governance": { "git": true }
+    },
+    {
+      "name": "Control::TopologyMutate",
+      "kind": "boundary_node",
+      "runtime": { "backend": "python", "script": "crates/operators_lib/topology_mutate.py" },
+      "reads": ["topology.plan"],
+      "writes": ["state/topology_mutations.jsonl"],
+      "locks": ["topology"],
+      "governance": { "self_modification": true }
+    },
+    {
+      "name": "Control::WriteOperator",
+      "kind": "boundary_node",
+      "runtime": { "backend": "python", "script": "crates/operators_lib/write_operator.py" },
+      "reads": ["operator.plan"],
+      "writes": [],
+      "locks": ["operators_lib"],
+      "governance": { "self_modification": true }
     }
   ],
 

@@ -1084,6 +1084,43 @@ fn build_runtime_epoch(
     )
     .map_err(|error| error.to_string())?;
 
+    // Phase 7: log fusion dispatch regions and dry-run CUDA C synthesis.
+    if config.fusion_dispatch.is_empty() {
+        console::info("fusion", "no_regions", &[("epoch", id.to_string())]);
+    } else {
+        console::info(
+            "fusion",
+            "regions_loaded",
+            &[
+                ("epoch", id.to_string()),
+                ("count", config.fusion_dispatch.len().to_string()),
+            ],
+        );
+        for entry in &config.fusion_dispatch.entries {
+            console::info(
+                "fusion",
+                "region",
+                &[
+                    ("region", entry.region.clone()),
+                    ("chain_len", entry.metadata.chain_len.to_string()),
+                    ("inputs", entry.chain.inputs.len().to_string()),
+                    ("outputs", entry.chain.outputs.len().to_string()),
+                    ("estimated_savings", format!("{:.1}", entry.metadata.estimated_savings)),
+                ],
+            );
+        }
+        for kernel in config.fusion_dispatch.synthesize_all(&config.operator_registry) {
+            console::info(
+                "fusion",
+                "kernel_synthesized",
+                &[
+                    ("region", kernel.region.clone()),
+                    ("lines", kernel.source.lines().count().to_string()),
+                ],
+            );
+        }
+    }
+
     Ok(RuntimeEpoch {
         id,
         fingerprint: current_asset_fingerprint(),

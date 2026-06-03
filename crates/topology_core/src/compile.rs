@@ -20,9 +20,9 @@ impl GraphTopology {
         if Path::new("assets/topology.generated.json").exists() {
             return Self::from_json_file("assets/topology.generated.json");
         }
-        if Path::new("assets/topology.json").exists() {
-            return Self::from_json_file("assets/topology.json");
-        }
+        // Fall back to the compile-time bundled topology only — the hand-authored
+        // topology.json is the build input for `topology build-overlay`, not a
+        // runtime fallback. Run `cargo run -- topology build-overlay` first.
         Self::from_json_str(DEFAULT_TOPOLOGY_JSON)
     }
 

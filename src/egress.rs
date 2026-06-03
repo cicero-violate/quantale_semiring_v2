@@ -29,7 +29,7 @@ impl UniversalExecutor {
         Self {
             operator_registry: config.operator_registry.clone(),
             node_registry: GraphTopology::bundled_registry()
-                .expect("bundled assets/topology.json must compile"),
+                .expect("topology.generated.json or bundled topology must compile"),
             #[cfg(feature = "cuda")]
             jit_cache: Mutex::new(JitCache::new()),
             #[cfg(feature = "cuda")]
@@ -55,7 +55,7 @@ impl UniversalExecutor {
         Self {
             operator_registry,
             node_registry: GraphTopology::bundled_registry()
-                .expect("bundled assets/topology.json must compile"),
+                .expect("topology.generated.json or bundled topology must compile"),
             #[cfg(feature = "cuda")]
             jit_cache: Mutex::new(JitCache::new()),
             #[cfg(feature = "cuda")]

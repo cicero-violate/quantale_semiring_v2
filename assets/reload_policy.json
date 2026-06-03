@@ -14,7 +14,8 @@
     "assets/mutation_review_policy.json",
     "assets/exploration.json",
     "assets/learning_policy.json",
-    "assets/patterns.json",
+    "assets/patterns.source.json",
+    "assets/topology.fusion.json",
     "assets/reload_policy.json"
   ]
 }

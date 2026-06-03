@@ -587,13 +587,12 @@ fn make_transition(
     policy_effect: &str,
 ) -> Value {
     json!({
-        "from":           from,
-        "to":             to,
-        "default_weight": confidence,
-        "confidence":     confidence,
-        "cost":           cost,
-        "safety":         safety,
-        "policy_effect":  policy_effect
+        "from":          from,
+        "to":            to,
+        "confidence":    confidence,
+        "cost":          cost,
+        "safety":        safety,
+        "policy_effect": policy_effect
     })
 }
 
@@ -693,6 +692,371 @@ fn object_keys(source: &Value, field: &str) -> Result<BTreeSet<String>, String> 
         Some(Value::Object(obj)) => Ok(obj.keys().cloned().collect()),
         Some(_) => Err(format!("'{field}' must be an object")),
     }
+}
+
+// ── Phase 4: quantale layer validation ───────────────────────────────────────
+
+#[derive(Debug, Clone)]
+struct LayerDef {
+    name: String,
+    join: String,
+    compose: String,
+    bottom: f64,
+    unit: f64,
+}
+
+fn parse_bottom_value(v: &Value) -> Option<f64> {
+    if let Some(n) = v.as_f64() {
+        return Some(n);
+    }
+    if v.as_str() == Some("inf") {
+        return Some(f64::INFINITY);
+    }
+    None
+}
+
+fn parse_layer_def(layer: &Value, idx: usize) -> Result<LayerDef, String> {
+    let ctx = format!("quantale.layers[{idx}]");
+    let name = layer
+        .get("name")
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("{ctx}: missing 'name'"))?
+        .to_string();
+    let join = layer
+        .get("join")
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("{ctx} '{name}': missing 'join'"))?
+        .to_string();
+    let compose = layer
+        .get("compose")
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("{ctx} '{name}': missing 'compose'"))?
+        .to_string();
+    let bottom = layer
+        .get("bottom")
+        .and_then(|v| parse_bottom_value(v))
+        .ok_or_else(|| format!("{ctx} '{name}': missing or invalid 'bottom' (use a number or \"inf\")"))?;
+    let unit = layer
+        .get("unit")
+        .and_then(Value::as_f64)
+        .ok_or_else(|| format!("{ctx} '{name}': missing numeric 'unit'"))?;
+    Ok(LayerDef { name, join, compose, bottom, unit })
+}
+
+fn validate_layer_laws(def: &LayerDef) -> Vec<String> {
+    let mut v = Vec::new();
+    match def.compose.as_str() {
+        "times" => {
+            if (def.unit - 1.0).abs() > 1e-9 {
+                v.push(format!(
+                    "layer '{}': compose=times requires unit=1.0, got {}",
+                    def.name, def.unit
+                ));
+            }
+            if def.bottom.abs() > 1e-9 {
+                v.push(format!(
+                    "layer '{}': compose=times requires bottom=0.0, got {}",
+                    def.name, def.bottom
+                ));
+            }
+        }
+        "plus" => {
+            if def.unit.abs() > 1e-9 {
+                v.push(format!(
+                    "layer '{}': compose=plus requires unit=0.0, got {}",
+                    def.name, def.unit
+                ));
+            }
+            if !def.bottom.is_infinite() {
+                v.push(format!(
+                    "layer '{}': compose=plus requires bottom=inf, got {}",
+                    def.name, def.bottom
+                ));
+            }
+        }
+        "min" => {
+            if (def.unit - 1.0).abs() > 1e-9 {
+                v.push(format!(
+                    "layer '{}': compose=min requires unit=1.0, got {}",
+                    def.name, def.unit
+                ));
+            }
+            if def.bottom.abs() > 1e-9 {
+                v.push(format!(
+                    "layer '{}': compose=min requires bottom=0.0, got {}",
+                    def.name, def.bottom
+                ));
+            }
+        }
+        other => {
+            v.push(format!(
+                "layer '{}': unknown compose '{}' (expected times/plus/min)",
+                def.name, other
+            ));
+        }
+    }
+    if !matches!(def.join.as_str(), "max" | "min") {
+        v.push(format!(
+            "layer '{}': unknown join '{}' (expected max/min)",
+            def.name, def.join
+        ));
+    }
+    v
+}
+
+fn is_pure_bottom_or_unit_expr(expr: &Value) -> bool {
+    matches!(
+        expr.as_str().unwrap_or(""),
+        "zero" | "blocked" | "impossible" | "one" | "identity" | "skip"
+    )
+}
+
+/// Return the weight value for `layer.name` from a program, supporting both
+/// new-style `"weight": { ... }` and compat-style top-level fields.
+fn program_layer_value(program: &Value, layer_name: &str) -> Option<f64> {
+    program
+        .get("weight")
+        .and_then(|w| w.get(layer_name))
+        .or_else(|| program.get(layer_name))
+        .and_then(Value::as_f64)
+}
+
+fn validate_weight_against_layers(
+    program: &Value,
+    layers: &[LayerDef],
+    violations: &mut Vec<String>,
+) {
+    let name = program.get("name").and_then(Value::as_str).unwrap_or("?");
+
+    if let Some(expr) = program.get("expr") {
+        if is_pure_bottom_or_unit_expr(expr) {
+            return;
+        }
+    }
+
+    for def in layers {
+        let val = match program_layer_value(program, &def.name) {
+            None => {
+                violations.push(format!(
+                    "program '{name}': weight missing component for layer '{}'",
+                    def.name
+                ));
+                continue;
+            }
+            Some(v) => v,
+        };
+
+        if def.bottom.is_infinite() || def.unit.is_infinite() {
+            // Unbounded layer (e.g. cost: [0, ∞)): value must be finite and non-negative.
+            if val < -1e-9 || val.is_infinite() || val.is_nan() {
+                violations.push(format!(
+                    "program '{name}': layer '{}' value {} out of domain [0, ∞)",
+                    def.name, val
+                ));
+            }
+        } else {
+            // Bounded layer (e.g. confidence/safety: [0, 1]).
+            let lo = def.bottom.min(def.unit);
+            let hi = def.bottom.max(def.unit);
+            if val < lo - 1e-9 || val > hi + 1e-9 || val.is_nan() {
+                violations.push(format!(
+                    "program '{name}': layer '{}' value {} out of domain [{lo}, {hi}]",
+                    def.name, val
+                ));
+            }
+        }
+    }
+}
+
+// ── Phase 6: source node uniqueness and known-backend validation ──────────────
+
+/// Validate that all node names in `topology.source.json` `nodes[]` are unique.
+pub fn validate_unique_source_node_names(source: &Value) -> Vec<String> {
+    let nodes = match source.get("nodes").and_then(Value::as_array) {
+        Some(n) => n,
+        None => return vec![],
+    };
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    let mut violations = Vec::new();
+    for node in nodes {
+        let name = node.get("name").and_then(Value::as_str).unwrap_or("?");
+        if !seen.insert(name.to_string()) {
+            violations.push(format!("duplicate source node name: '{name}'"));
+        }
+    }
+    violations
+}
+
+/// Validate that every node's `runtime.backend` is a recognised backend.
+///
+/// Known backends:
+///   cuda           — GPU kernels (NVRTC/PTX)
+///   python         — host Python scripts
+///   noop           — identity / marker (no execution)
+///   patch          — applies a unified diff to the workspace
+///   cargo          — runs a cargo subcommand
+///   rust_host      — compiled Rust boundary operator
+///   resident_worker— long-running Rust worker (JSONL protocol)
+pub fn validate_known_backends(source: &Value) -> Vec<String> {
+    const KNOWN: &[&str] = &[
+        "cuda", "python", "noop", "patch", "cargo", "rust_host", "resident_worker",
+    ];
+    let nodes = match source.get("nodes").and_then(Value::as_array) {
+        Some(n) => n,
+        None => return vec![],
+    };
+    let mut violations = Vec::new();
+    for node in nodes {
+        let name = node.get("name").and_then(Value::as_str).unwrap_or("?");
+        if let Some(backend) = node
+            .get("runtime")
+            .and_then(|r| r.get("backend"))
+            .and_then(Value::as_str)
+        {
+            if !KNOWN.contains(&backend) {
+                violations.push(format!(
+                    "node '{name}': unknown runtime backend '{backend}'"
+                ));
+            }
+        }
+    }
+    violations
+}
+
+// ── Phase 5: boundary governance and kernel slot purity ──────────────────────
+
+/// Validate that every `boundary_node` in `topology.source.json` declares a
+/// non-empty `governance` object.
+///
+/// A boundary node without governance is an ungoverned external effect — the
+/// topology invariant requires all I/O to be declared, governed, and receipted.
+pub fn validate_boundary_governance(source: &Value) -> Vec<String> {
+    let nodes = match source.get("nodes").and_then(Value::as_array) {
+        Some(n) => n,
+        None => return vec![],
+    };
+
+    let mut violations = Vec::new();
+
+    for node in nodes {
+        if node.get("kind").and_then(Value::as_str) != Some("boundary_node") {
+            continue;
+        }
+        let name = node.get("name").and_then(Value::as_str).unwrap_or("?");
+        match node.get("governance") {
+            None => violations.push(format!(
+                "boundary_node '{name}': missing 'governance' field"
+            )),
+            Some(v) if !v.is_object() => violations.push(format!(
+                "boundary_node '{name}': 'governance' must be an object"
+            )),
+            Some(Value::Object(obj)) if obj.is_empty() => violations.push(format!(
+                "boundary_node '{name}': 'governance' must declare at least one constraint"
+            )),
+            _ => {}
+        }
+    }
+
+    violations
+}
+
+/// Validate that every `kernel` node reads and writes only tensor-kind slots.
+///
+/// Kernels are pure GPU compute; they must not touch json/state/log slots.
+/// Tensor-kind slots carry `"kind": "tensor"` in the `slots` declaration.
+/// Undeclared slots are already caught by `validate_source_node_effects`; this
+/// validator only checks the kind of slots that do exist.
+pub fn validate_kernel_slot_purity(source: &Value) -> Vec<String> {
+    let slots = match source.get("slots").and_then(Value::as_object) {
+        Some(s) => s,
+        None => return vec![],
+    };
+    let nodes = match source.get("nodes").and_then(Value::as_array) {
+        Some(n) => n,
+        None => return vec![],
+    };
+
+    let mut violations = Vec::new();
+
+    for node in nodes {
+        if node.get("kind").and_then(Value::as_str) != Some("kernel") {
+            continue;
+        }
+        let name = node.get("name").and_then(Value::as_str).unwrap_or("?");
+        for field in &["reads", "writes"] {
+            if let Some(Value::Array(items)) = node.get(*field) {
+                for item in items {
+                    let slot_name = item.as_str().unwrap_or("");
+                    if let Some(slot_def) = slots.get(slot_name) {
+                        let slot_kind =
+                            slot_def.get("kind").and_then(Value::as_str).unwrap_or("");
+                        if slot_kind != "tensor" {
+                            violations.push(format!(
+                                "kernel node '{name}': {field} slot '{slot_name}' has kind '{slot_kind}', expected 'tensor'"
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    violations
+}
+
+/// Validate the `quantale` field in `topology.source.json`.
+///
+/// Checks:
+/// - `quantale.layers` is present and non-empty
+/// - Each layer has valid `join`, `compose`, `bottom`, `unit` declarations
+/// - Algebraic laws: unit is the identity for compose; bottom is the absorbing element
+/// - Every non-trivial (non-zero/one) program weight has a component per declared layer
+/// - Each weight component is within the layer's domain
+pub fn validate_quantale_layers(source: &Value) -> Vec<String> {
+    let quantale = match source.get("quantale") {
+        None => {
+            return vec![
+                "topology.source.json missing top-level 'quantale' declaration".to_string()
+            ]
+        }
+        Some(q) => q,
+    };
+
+    let layers_arr = match quantale.get("layers").and_then(Value::as_array) {
+        None => return vec!["quantale.layers must be a non-empty array".to_string()],
+        Some(arr) if arr.is_empty() => {
+            return vec!["quantale.layers must not be empty".to_string()]
+        }
+        Some(arr) => arr,
+    };
+
+    let mut violations: Vec<String> = Vec::new();
+    let mut layer_defs: Vec<LayerDef> = Vec::new();
+
+    for (i, layer) in layers_arr.iter().enumerate() {
+        match parse_layer_def(layer, i) {
+            Ok(def) => {
+                violations.extend(validate_layer_laws(&def));
+                layer_defs.push(def);
+            }
+            Err(e) => violations.push(e),
+        }
+    }
+
+    if layer_defs.len() != layers_arr.len() {
+        return violations;
+    }
+
+    if let Some(Value::Array(programs)) = source.get("programs") {
+        for program in programs {
+            if program.get("kind").and_then(Value::as_str) == Some("cka_pattern") {
+                continue;
+            }
+            validate_weight_against_layers(program, &layer_defs, &mut violations);
+        }
+    }
+
+    violations
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -1021,5 +1385,413 @@ mod tests {
             compile_source_programs(&src, &BTreeSet::new(), &nodes(), None).unwrap();
         assert!(ts.is_empty());
         assert!(groups.is_empty());
+    }
+
+    // ── make_transition no longer emits default_weight ────────────────────────
+
+    #[test]
+    fn make_transition_emits_quantale_triple_not_default_weight() {
+        let (ts, _) = compile(
+            json!([{
+                "name": "p",
+                "expr": { "seq": ["A", "B"] },
+                "confidence": 0.9, "cost": 1.5, "safety": 0.8
+            }]),
+            &[],
+        );
+        assert_eq!(ts.len(), 1);
+        assert!(ts[0].get("default_weight").is_none(), "default_weight must not appear in compiled transitions");
+        assert!((ts[0]["confidence"].as_f64().unwrap() - 0.9).abs() < 1e-6);
+        assert!((ts[0]["cost"].as_f64().unwrap() - 1.5).abs() < 1e-6);
+        assert!((ts[0]["safety"].as_f64().unwrap() - 0.8).abs() < 1e-6);
+    }
+
+    // ── validate_quantale_layers ──────────────────────────────────────────────
+
+    fn three_layer_quantale() -> serde_json::Value {
+        json!({
+            "layers": [
+                { "name": "confidence", "join": "max", "compose": "times", "bottom": 0.0, "unit": 1.0 },
+                { "name": "cost",       "join": "min", "compose": "plus",  "bottom": "inf", "unit": 0.0 },
+                { "name": "safety",     "join": "max", "compose": "min",   "bottom": 0.0, "unit": 1.0 }
+            ]
+        })
+    }
+
+    #[test]
+    fn valid_quantale_layers_no_violations() {
+        let src = json!({
+            "quantale": three_layer_quantale(),
+            "programs": [{
+                "name": "p",
+                "expr": { "seq": ["A", "B"] },
+                "confidence": 0.9, "cost": 1.0, "safety": 0.9
+            }]
+        });
+        assert!(validate_quantale_layers(&src).is_empty(), "{:?}", validate_quantale_layers(&src));
+    }
+
+    #[test]
+    fn missing_quantale_is_flagged() {
+        let src = json!({ "programs": [] });
+        let v = validate_quantale_layers(&src);
+        assert!(!v.is_empty());
+        assert!(v[0].contains("missing"), "{:?}", v);
+    }
+
+    #[test]
+    fn empty_layers_array_is_flagged() {
+        let src = json!({ "quantale": { "layers": [] } });
+        let v = validate_quantale_layers(&src);
+        assert!(!v.is_empty());
+    }
+
+    #[test]
+    fn wrong_unit_for_times_is_flagged() {
+        let src = json!({
+            "quantale": { "layers": [
+                { "name": "confidence", "join": "max", "compose": "times", "bottom": 0.0, "unit": 0.5 }
+            ]},
+            "programs": []
+        });
+        let v = validate_quantale_layers(&src);
+        assert!(!v.is_empty());
+        assert!(v[0].contains("unit=1.0"), "{:?}", v);
+    }
+
+    #[test]
+    fn wrong_bottom_for_plus_is_flagged() {
+        let src = json!({
+            "quantale": { "layers": [
+                { "name": "cost", "join": "min", "compose": "plus", "bottom": 0.0, "unit": 0.0 }
+            ]},
+            "programs": []
+        });
+        let v = validate_quantale_layers(&src);
+        assert!(!v.is_empty());
+        assert!(v[0].contains("bottom=inf"), "{:?}", v);
+    }
+
+    #[test]
+    fn wrong_unit_for_min_is_flagged() {
+        let src = json!({
+            "quantale": { "layers": [
+                { "name": "safety", "join": "max", "compose": "min", "bottom": 0.0, "unit": 0.5 }
+            ]},
+            "programs": []
+        });
+        let v = validate_quantale_layers(&src);
+        assert!(!v.is_empty());
+        assert!(v[0].contains("unit=1.0"), "{:?}", v);
+    }
+
+    #[test]
+    fn unknown_compose_is_flagged() {
+        let src = json!({
+            "quantale": { "layers": [
+                { "name": "x", "join": "max", "compose": "divide", "bottom": 0.0, "unit": 1.0 }
+            ]},
+            "programs": []
+        });
+        let v = validate_quantale_layers(&src);
+        assert!(!v.is_empty());
+        assert!(v[0].contains("compose"), "{:?}", v);
+    }
+
+    #[test]
+    fn unknown_join_is_flagged() {
+        let src = json!({
+            "quantale": { "layers": [
+                { "name": "x", "join": "xor", "compose": "times", "bottom": 0.0, "unit": 1.0 }
+            ]},
+            "programs": []
+        });
+        let v = validate_quantale_layers(&src);
+        assert!(!v.is_empty());
+        assert!(v[0].contains("join"), "{:?}", v);
+    }
+
+    #[test]
+    fn confidence_out_of_domain_is_flagged() {
+        let src = json!({
+            "quantale": { "layers": [
+                { "name": "confidence", "join": "max", "compose": "times", "bottom": 0.0, "unit": 1.0 }
+            ]},
+            "programs": [{ "name": "p", "expr": { "seq": ["A", "B"] }, "confidence": 1.5 }]
+        });
+        let v = validate_quantale_layers(&src);
+        assert!(!v.is_empty());
+        assert!(v[0].contains("out of domain"), "{:?}", v);
+    }
+
+    #[test]
+    fn negative_cost_is_flagged() {
+        let src = json!({
+            "quantale": { "layers": [
+                { "name": "cost", "join": "min", "compose": "plus", "bottom": "inf", "unit": 0.0 }
+            ]},
+            "programs": [{ "name": "p", "expr": { "seq": ["A", "B"] }, "cost": -0.5 }]
+        });
+        let v = validate_quantale_layers(&src);
+        assert!(!v.is_empty());
+        assert!(v[0].contains("out of domain"), "{:?}", v);
+    }
+
+    #[test]
+    fn missing_layer_component_is_flagged() {
+        let src = json!({
+            "quantale": three_layer_quantale(),
+            "programs": [{ "name": "p", "expr": { "seq": ["A", "B"] }, "confidence": 0.9, "cost": 1.0 }]
+            //                                                                          ^ missing "safety"
+        });
+        let v = validate_quantale_layers(&src);
+        assert!(!v.is_empty());
+        assert!(v[0].contains("missing component"), "{:?}", v);
+    }
+
+    #[test]
+    fn weight_object_style_validated() {
+        let src = json!({
+            "quantale": { "layers": [
+                { "name": "confidence", "join": "max", "compose": "times", "bottom": 0.0, "unit": 1.0 }
+            ]},
+            "programs": [{ "name": "p", "expr": { "seq": ["A", "B"] }, "weight": { "confidence": 1.5 } }]
+        });
+        let v = validate_quantale_layers(&src);
+        assert!(!v.is_empty());
+        assert!(v[0].contains("out of domain"), "{:?}", v);
+    }
+
+    #[test]
+    fn zero_expr_program_weight_not_validated() {
+        let src = json!({
+            "quantale": { "layers": [
+                { "name": "confidence", "join": "max", "compose": "times", "bottom": 0.0, "unit": 1.0 }
+            ]},
+            "programs": [{ "name": "z", "expr": "zero", "confidence": 99.0 }]
+        });
+        assert!(validate_quantale_layers(&src).is_empty());
+    }
+
+    #[test]
+    fn one_expr_program_weight_not_validated() {
+        let src = json!({
+            "quantale": { "layers": [
+                { "name": "confidence", "join": "max", "compose": "times", "bottom": 0.0, "unit": 1.0 }
+            ]},
+            "programs": [{ "name": "o", "expr": "one", "confidence": -5.0 }]
+        });
+        assert!(validate_quantale_layers(&src).is_empty());
+    }
+
+    #[test]
+    fn cka_pattern_program_not_validated() {
+        let src = json!({
+            "quantale": { "layers": [
+                { "name": "confidence", "join": "max", "compose": "times", "bottom": 0.0, "unit": 1.0 }
+            ]},
+            "programs": [{ "name": "lp", "kind": "cka_pattern", "expr": { "seq": ["A", "B"] }, "confidence": 99.0 }]
+        });
+        assert!(validate_quantale_layers(&src).is_empty());
+    }
+
+    // ── validate_boundary_governance ─────────────────────────────────────────
+
+    // ── validate_unique_source_node_names ─────────────────────────────────────
+
+    #[test]
+    fn unique_source_names_no_violation() {
+        let src = json!({ "nodes": [
+            { "name": "A", "kind": "kernel" },
+            { "name": "B", "kind": "host_node" }
+        ]});
+        assert!(validate_unique_source_node_names(&src).is_empty());
+    }
+
+    #[test]
+    fn duplicate_source_name_is_flagged() {
+        let src = json!({ "nodes": [
+            { "name": "A", "kind": "kernel" },
+            { "name": "A", "kind": "host_node" }
+        ]});
+        let v = validate_unique_source_node_names(&src);
+        assert_eq!(v.len(), 1);
+        assert!(v[0].contains("duplicate source node name"), "{:?}", v);
+    }
+
+    #[test]
+    fn no_nodes_section_unique_names_ok() {
+        let src = json!({ "matrix_name": "test" });
+        assert!(validate_unique_source_node_names(&src).is_empty());
+    }
+
+    // ── validate_known_backends ───────────────────────────────────────────────
+
+    #[test]
+    fn known_backends_no_violation() {
+        let src = json!({ "nodes": [
+            { "name": "A", "kind": "kernel",  "runtime": { "backend": "cuda" } },
+            { "name": "B", "kind": "host_node","runtime": { "backend": "python" } },
+            { "name": "C", "kind": "event_node","runtime": { "backend": "noop" } }
+        ]});
+        assert!(validate_known_backends(&src).is_empty());
+    }
+
+    #[test]
+    fn unknown_backend_is_flagged() {
+        let src = json!({ "nodes": [
+            { "name": "X", "kind": "kernel", "runtime": { "backend": "webgpu" } }
+        ]});
+        let v = validate_known_backends(&src);
+        assert_eq!(v.len(), 1);
+        assert!(v[0].contains("unknown runtime backend 'webgpu'"), "{:?}", v);
+    }
+
+    #[test]
+    fn node_without_runtime_is_not_flagged() {
+        let src = json!({ "nodes": [{ "name": "A", "kind": "event_node" }] });
+        assert!(validate_known_backends(&src).is_empty());
+    }
+
+    #[test]
+    fn all_declared_backends_pass() {
+        for backend in &["cuda", "python", "noop", "patch", "cargo", "rust_host", "resident_worker"] {
+            let src = json!({ "nodes": [
+                { "name": "N", "kind": "kernel", "runtime": { "backend": backend } }
+            ]});
+            assert!(validate_known_backends(&src).is_empty(), "backend '{backend}' should be known");
+        }
+    }
+
+    // ── validate_boundary_governance ─────────────────────────────────────────
+
+    #[test]
+    fn boundary_node_with_governance_is_valid() {
+        let src = json!({
+            "nodes": [{ "name": "Foo::Bar", "kind": "boundary_node", "governance": { "llm": true } }]
+        });
+        assert!(validate_boundary_governance(&src).is_empty());
+    }
+
+    #[test]
+    fn boundary_node_without_governance_is_flagged() {
+        let src = json!({
+            "nodes": [{ "name": "Foo::Bar", "kind": "boundary_node" }]
+        });
+        let v = validate_boundary_governance(&src);
+        assert_eq!(v.len(), 1);
+        assert!(v[0].contains("missing 'governance'"), "{:?}", v);
+    }
+
+    #[test]
+    fn boundary_node_with_empty_governance_is_flagged() {
+        let src = json!({
+            "nodes": [{ "name": "Foo::Bar", "kind": "boundary_node", "governance": {} }]
+        });
+        let v = validate_boundary_governance(&src);
+        assert_eq!(v.len(), 1);
+        assert!(v[0].contains("at least one constraint"), "{:?}", v);
+    }
+
+    #[test]
+    fn non_boundary_node_without_governance_is_fine() {
+        let src = json!({
+            "nodes": [
+                { "name": "A", "kind": "kernel" },
+                { "name": "B", "kind": "host_node" },
+                { "name": "C", "kind": "event_node" },
+                { "name": "D", "kind": "policy_node" }
+            ]
+        });
+        assert!(validate_boundary_governance(&src).is_empty());
+    }
+
+    // ── validate_kernel_slot_purity ───────────────────────────────────────────
+
+    #[test]
+    fn kernel_with_only_tensor_slots_is_valid() {
+        let src = json!({
+            "slots": {
+                "a": { "type": "f32[]", "kind": "tensor" },
+                "b": { "type": "f32[]", "kind": "tensor" }
+            },
+            "nodes": [{
+                "name": "K::One", "kind": "kernel",
+                "reads": ["a"], "writes": ["b"], "locks": []
+            }]
+        });
+        assert!(validate_kernel_slot_purity(&src).is_empty());
+    }
+
+    #[test]
+    fn kernel_reading_json_slot_is_flagged() {
+        let src = json!({
+            "slots": {
+                "config": { "type": "json", "kind": "config" },
+                "out":    { "type": "f32[]", "kind": "tensor" }
+            },
+            "nodes": [{
+                "name": "K::Bad", "kind": "kernel",
+                "reads": ["config"], "writes": ["out"], "locks": []
+            }]
+        });
+        let v = validate_kernel_slot_purity(&src);
+        assert_eq!(v.len(), 1);
+        assert!(v[0].contains("kind 'config'"), "{:?}", v);
+        assert!(v[0].contains("expected 'tensor'"), "{:?}", v);
+    }
+
+    #[test]
+    fn kernel_writing_state_slot_is_flagged() {
+        let src = json!({
+            "slots": {
+                "in":  { "type": "f32[]", "kind": "tensor" },
+                "out": { "type": "json",  "kind": "state" }
+            },
+            "nodes": [{
+                "name": "K::Bad2", "kind": "kernel",
+                "reads": ["in"], "writes": ["out"], "locks": []
+            }]
+        });
+        let v = validate_kernel_slot_purity(&src);
+        assert_eq!(v.len(), 1);
+        assert!(v[0].contains("kind 'state'"), "{:?}", v);
+    }
+
+    #[test]
+    fn non_kernel_node_can_read_any_slot_kind() {
+        let src = json!({
+            "slots": {
+                "config": { "type": "json", "kind": "config" },
+                "state":  { "type": "json", "kind": "state" }
+            },
+            "nodes": [
+                { "name": "H::One", "kind": "host_node",   "reads": ["config"], "writes": ["state"], "locks": [] },
+                { "name": "B::One", "kind": "boundary_node", "reads": ["config"], "writes": ["state"], "locks": [], "governance": { "llm": true } }
+            ]
+        });
+        assert!(validate_kernel_slot_purity(&src).is_empty());
+    }
+
+    #[test]
+    fn kernel_referencing_undeclared_slot_not_double_flagged() {
+        // undeclared slots are caught by validate_source_node_effects, not here
+        let src = json!({
+            "slots": {},
+            "nodes": [{ "name": "K::X", "kind": "kernel", "reads": ["ghost.slot"], "writes": [], "locks": [] }]
+        });
+        // slot doesn't exist → no entry in slots map → kernel purity validator skips it
+        assert!(validate_kernel_slot_purity(&src).is_empty());
+    }
+
+    #[test]
+    fn inf_string_parsed_as_cost_bottom() {
+        let src = json!({
+            "quantale": { "layers": [
+                { "name": "cost", "join": "min", "compose": "plus", "bottom": "inf", "unit": 0.0 }
+            ]},
+            "programs": []
+        });
+        assert!(validate_quantale_layers(&src).is_empty());
     }
 }

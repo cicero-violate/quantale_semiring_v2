@@ -14,6 +14,10 @@ pub struct TopologyNode {
 pub struct TopologyTransition {
     pub from: String,
     pub to: String,
+    /// Legacy scalar weight.  New compiled transitions omit this field; the
+    /// explicit `confidence`/`cost`/`safety` triple is the source of truth.
+    /// Kept for backward compat with hand-authored topology.json transitions.
+    #[serde(default)]
     pub default_weight: f32,
     #[serde(default)]
     pub confidence: Option<f32>,

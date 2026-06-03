@@ -4,8 +4,12 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use crate::fusion::{FusionRegion, partition_fusible_regions};
 use crate::programs::{
-    build_effects_map, compile_source_programs, emit_patterns_compat, validate_source_node_effects,
+    build_effects_map, compile_source_programs, emit_patterns_compat,
+    validate_boundary_governance, validate_kernel_slot_purity,
+    validate_known_backends, validate_quantale_layers,
+    validate_source_node_effects, validate_unique_source_node_names,
 };
 use crate::{TopologyNode, TopologyTransition};
 
@@ -58,6 +62,18 @@ pub fn build_overlay_assets(root: impl AsRef<Path>) -> Result<(), String> {
     reject_duplicate_operator_contracts(&operator_contracts)?;
     reject_operator_nodes_without_contracts(&nodes, &operator_contracts)?;
 
+    // Phase 6: partition fusible regions from the complete merged transition set
+    // before transitions are moved into the topology Value.
+    let fusion_regions: Vec<FusionRegion> = {
+        let source_path = root.join("assets/topology.source.json");
+        if source_path.exists() {
+            let source = read_json(source_path)?;
+            partition_fusible_regions(&source, &transitions)
+        } else {
+            vec![]
+        }
+    };
+
     topology["nodes"] = Value::Array(nodes);
     topology["transitions"] = Value::Array(transitions);
     if !parallel_groups.is_empty() {
@@ -74,6 +90,15 @@ pub fn build_overlay_assets(root: impl AsRef<Path>) -> Result<(), String> {
 
     write_json(root.join("assets/topology.generated.json"), &topology)?;
     write_json(root.join("assets/operators.generated.json"), &operators)?;
+
+    // Phase 6: emit topology.fusion.json when fusible regions were found.
+    if !fusion_regions.is_empty() {
+        let fusion_json = serde_json::json!({
+            "regions": fusion_regions.iter().map(FusionRegion::to_json).collect::<Vec<_>>()
+        });
+        write_json(root.join("assets/topology.fusion.json"), &fusion_json)?;
+    }
+
     Ok(())
 }
 
@@ -98,6 +123,24 @@ fn extend_from_source_topology(
 
     let source = read_json(source_path)?;
 
+    // Phase 6: validate source node uniqueness and known backends.
+    let name_violations = validate_unique_source_node_names(&source);
+    if !name_violations.is_empty() {
+        return Err(format!(
+            "topology.source.json node name violations ({} total):\n{}",
+            name_violations.len(),
+            name_violations.join("\n")
+        ));
+    }
+    let backend_violations = validate_known_backends(&source);
+    if !backend_violations.is_empty() {
+        return Err(format!(
+            "topology.source.json backend violations ({} total):\n{}",
+            backend_violations.len(),
+            backend_violations.join("\n")
+        ));
+    }
+
     // Phase 2: validate declared node effects against slots/resources.
     let violations = validate_source_node_effects(&source);
     if !violations.is_empty() {
@@ -105,6 +148,34 @@ fn extend_from_source_topology(
             "topology.source.json slot/resource violations ({} total):\n{}",
             violations.len(),
             violations.join("\n")
+        ));
+    }
+
+    // Phase 4: validate quantale layer declarations and program weights.
+    let q_violations = validate_quantale_layers(&source);
+    if !q_violations.is_empty() {
+        return Err(format!(
+            "topology.source.json quantale violations ({} total):\n{}",
+            q_violations.len(),
+            q_violations.join("\n")
+        ));
+    }
+
+    // Phase 5: validate boundary governance and kernel slot purity.
+    let gov_violations = validate_boundary_governance(&source);
+    if !gov_violations.is_empty() {
+        return Err(format!(
+            "topology.source.json boundary governance violations ({} total):\n{}",
+            gov_violations.len(),
+            gov_violations.join("\n")
+        ));
+    }
+    let purity_violations = validate_kernel_slot_purity(&source);
+    if !purity_violations.is_empty() {
+        return Err(format!(
+            "topology.source.json kernel purity violations ({} total):\n{}",
+            purity_violations.len(),
+            purity_violations.join("\n")
         ));
     }
 

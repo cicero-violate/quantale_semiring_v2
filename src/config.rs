@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use crate::fusion_dispatch::FusionDispatch;
 use crate::topology::GraphTopology;
 
 pub const DEFAULT_OPERATORS_JSON: &str = include_str!("../assets/operators.json");
@@ -53,6 +54,9 @@ pub struct SystemConfig {
     pub learned_edges_path: PathBuf,
     pub operators_path: PathBuf,
     pub operator_registry: OperatorRegistry,
+    /// Loaded from `assets/topology.fusion.json`; JitChains built from
+    /// `operator_registry`.  Empty when the file doesn't exist yet.
+    pub fusion_dispatch: FusionDispatch,
     pub ingress_capacity_hint: usize,
     /// Maximum ticks before the loop exits. 0 means run forever.
     pub max_ticks: usize,
@@ -161,6 +165,10 @@ impl Default for SystemConfig {
             .unwrap_or((0, 0));
         let runtime_policy = load_runtime_policy("assets/runtime_policy.json");
 
+        let fusion_dispatch =
+            FusionDispatch::load("assets/topology.fusion.json", &operator_registry)
+                .unwrap_or_default();
+
         Self {
             matrix_dim,
             matrix_len,
@@ -169,6 +177,7 @@ impl Default for SystemConfig {
             learned_edges_path: PathBuf::from("state/learned_edges.jsonl"),
             operators_path,
             operator_registry,
+            fusion_dispatch,
             ingress_capacity_hint: runtime_policy.ingress_capacity_hint.unwrap_or(1024),
             max_ticks: max_ticks_from_env(runtime_policy.max_ticks.unwrap_or(64)),
             tick_sleep_ms: tick_sleep_ms_from_env(runtime_policy.tick_sleep_ms.unwrap_or(0)),
@@ -208,12 +217,21 @@ impl SystemConfig {
 
     pub fn reload_operator_registry(&mut self) -> Result<(), String> {
         self.operator_registry = load_operator_registry(&self.operators_path)?;
+        self.reload_fusion_dispatch();
         Ok(())
     }
 
     pub fn reload_default_operator_registry(&mut self) -> Result<(), String> {
         self.operators_path = default_operators_path();
         self.reload_operator_registry()
+    }
+
+    /// Reload `topology.fusion.json` into `fusion_dispatch` using the current
+    /// operator registry.  Silently resets to empty if the file is absent.
+    pub fn reload_fusion_dispatch(&mut self) {
+        self.fusion_dispatch =
+            FusionDispatch::load("assets/topology.fusion.json", &self.operator_registry)
+                .unwrap_or_default();
     }
 
     pub fn validate(&self) -> Result<(), String> {

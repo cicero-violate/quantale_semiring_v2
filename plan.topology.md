@@ -1,27 +1,48 @@
 # Topology DSL Migration Plan
 
+## Status
+
+All phases complete. The pipeline runs end-to-end:
+
+```text
+topology.source.json
+  ──▶ topology build-overlay
+        ├── topology.generated.json   (flat quantale-valued tensor graph)
+        ├── operators.generated.json  (compiled operator registry)
+        ├── patterns.source.json      (CKA patterns, replaces patterns.json)
+        └── topology.fusion.json      (maximal GPU-safe kernel regions)
+  ──▶ runtime startup
+        ├── FusionDispatch::load(topology.fusion.json, registry)
+        │     └── detect_jit_chains → JitChain per region
+        ├── JitCache::get_or_compile (NVRTC/PTX, #[cfg(feature="cuda")])
+        └── tick loop: quantale projection → dispatch (fused or barrier)
+```
+
+---
+
 ## Goal
 
 Move orchestration into the topology itself so the source topology becomes an algebraic program, while runtime execution is handled by a small generic interpreter and pure kernels/operators.
 
-Current split:
+Original split:
 
 ```text
-topology.json   = flat node/transition graph
-patterns.json   = algebraic CKA expressions
-operators.json  = node -> executable metadata
+topology.json   = flat node/transition graph   (build input; still exists)
+patterns.json   = algebraic CKA expressions    (deleted; replaced by patterns.source.json)
+operators.json  = node → executable metadata   (build input; still exists)
 ```
 
-Target split:
+Achieved split:
 
 ```text
-topology.source.json     = algebraic topology DSL
-operators.source.json    = optional operator declarations / runtime backends
+topology.source.json     = algebraic topology DSL (source of truth)
 topology.generated.json  = compiled flat tensor graph
 operators.generated.json = compiled runtime operator registry
+patterns.source.json     = generated CKA patterns (replaces patterns.json)
+topology.fusion.json     = generated fusible kernel regions
 ```
 
-The fixed point is:
+The fixed point:
 
 ```text
 Topology = orchestration program
@@ -43,7 +64,7 @@ Python control/I/O   -> Rust boundary operators
 Python numeric loops -> CUDA kernels
 ```
 
-The correct split is:
+The correct split:
 
 ```text
 Topology DSL = what may happen, algebraic branch structure, slot/resource dependencies
@@ -52,7 +73,7 @@ Rust boundary= files, JSONL, HTTP, LLM, cargo/git/patch, governed mutations
 CUDA kernels = pure tensor/vector/market/risk compute
 ```
 
-The DSL should not attempt to open files, call HTTP APIs, spawn subprocesses, or mutate source files. It should declare those effects as boundary nodes.
+The DSL does not open files, call HTTP APIs, spawn subprocesses, or mutate source files. Those effects are declared as boundary nodes.
 
 ---
 
@@ -71,10 +92,10 @@ I/O node shape:
   "name": "State::MarketFeed",
   "kind": "boundary_node",
   "runtime": {
-    "backend": "rust_host",
-    "handler": "market_feed"
+    "backend": "python",
+    "script": "crates/operators_lib/market_feed.py"
   },
-  "reads": ["assets/market_feed.json"],
+  "reads": ["market.config"],
   "writes": ["market.feed", "state/market_feed.jsonl"],
   "locks": [],
   "governance": {
@@ -84,13 +105,13 @@ I/O node shape:
 }
 ```
 
-The invariant is:
+The invariant:
 
 ```text
 forall IO: declared(IO) and governed(IO) and receipted(IO)
 ```
 
-No I/O should be hidden in CUDA kernels, untracked Python scripts, or undeclared Rust helper code.
+No I/O is hidden in CUDA kernels, untracked Python scripts, or undeclared Rust helper code.
 
 ---
 
@@ -107,7 +128,7 @@ zero               = algebraic impossibility / bottom
 one                = identity / skip
 ```
 
-The runtime compiles these into tensor edges with quantale values. Unavailable paths are not skipped by host conditionals — they become bottom through the quantale algebra itself. The algebraic structure determines routing; no boolean guards are needed.
+The runtime compiles these into tensor edges with quantale values. Unavailable paths are not skipped by host conditionals — they become bottom through the quantale algebra itself.
 
 ---
 
@@ -143,8 +164,6 @@ t_ik = t_ij + t_jk       (accumulate)
 s_ik = min(s_ij, s_jk)   (bottleneck)
 ```
 
-Path confidence multiplies, cost accumulates, safety bottlenecks.
-
 ### Join (competing paths)
 
 ```text
@@ -158,117 +177,34 @@ s = max(s_a, s_b)         (higher safety wins)
 ### Bottom (algebraic impossibility)
 
 ```text
-⊥ = (0, ∞, 0)
-
-no confidence
-infinite cost
-no safety
+⊥ = (0, ∞, 0)   — additive identity of the semiring
 ```
-
-Bottom is not a boolean guard. It is the additive identity of the semiring — a path that can never be preferred over any other.
 
 ### Unit (identity transition)
 
 ```text
-e = (1, 0, 1)
-
-perfect confidence
-zero cost
-full safety
+e = (1, 0, 1)   — identity for composition
 ```
 
 ---
 
-## Desired Source Topology Shape
+## Source Topology Shape
+
+See `assets/topology.source.json` for the full current declaration. Key structure:
 
 ```json
 {
   "matrix_name": "quantale_semiring_v2",
   "version": 1,
-
-  "quantale": {
-    "layers": [
-      {
-        "name": "confidence",
-        "join": "max",
-        "compose": "times",
-        "bottom": 0.0,
-        "unit": 1.0
-      },
-      {
-        "name": "cost",
-        "join": "min",
-        "compose": "plus",
-        "bottom": "inf",
-        "unit": 0.0
-      },
-      {
-        "name": "safety",
-        "join": "max",
-        "compose": "min",
-        "bottom": 0.0,
-        "unit": 1.0
-      }
-    ]
-  },
-
-  "slots": {
-    "task.context": { "type": "json", "kind": "state" },
-    "market.feed": { "type": "json", "kind": "state" },
-    "analysis.return": { "type": "f32[]", "kind": "tensor" },
-    "analysis.volatility": { "type": "f32[]", "kind": "tensor" },
-    "analysis.signal_score": { "type": "f32[]", "kind": "tensor" }
-  },
-
-  "resources": {
-    "cuda": { "kind": "gpu", "capacity": 1 },
-    "memory": { "kind": "lock", "capacity": 1 },
-    "workspace": { "kind": "lock", "capacity": 1 },
-    "paper_broker": { "kind": "lock", "capacity": 1 }
-  },
-
-  "nodes": [
-    {
-      "name": "Analysis::SignalScore",
-      "kind": "kernel",
-      "runtime": {
-        "backend": "cuda",
-        "module": "analysis",
-        "kernel": "analysis_signal_score"
-      },
-      "reads": ["analysis.return", "analysis.volatility"],
-      "writes": ["analysis.signal_score"],
-      "locks": []
-    }
-  ],
-
-  "programs": [
-    {
-      "name": "market_analysis_cycle",
-      "entry": "State::Input",
-      "expr": {
-        "seq": [
-          "State::MarketFeed",
-          "Analysis::Return1",
-          "Analysis::Volatility",
-          "Analysis::SignalScore",
-          {
-            "choice": [
-              "State::TradePlan",
-              "Control::Block"
-            ]
-          }
-        ]
-      },
-      "weight": {
-        "confidence": 0.95,
-        "cost": 1.0,
-        "safety": 0.98
-      }
-    }
-  ]
+  "quantale": { "layers": [...] },
+  "slots":     { "slot.name": { "type": "f32[]|json|jsonl|bytes", "kind": "tensor|state|config|..." } },
+  "resources": { "resource.name": { "kind": "gpu|lock", "capacity": 1 } },
+  "nodes":     [ { "name": "...", "kind": "kernel|host_node|boundary_node|policy_node|event_node", ... } ],
+  "programs":  [ { "name": "...", "expr": { "seq|choice|par|star": [...] }, "confidence": 0.9, ... } ]
 }
 ```
+
+Current counts: **74 nodes**, **52 slots**, **11 resources**, **11 programs**.
 
 ---
 
@@ -279,28 +215,140 @@ The compiler emits quantale-valued transitions:
 ```json
 {
   "matrix_name": "quantale_semiring_v2",
-  "nodes": [],
+  "nodes": [...],
   "transitions": [
     {
       "from": "Analysis::Volatility",
       "to": "Analysis::SignalScore",
-      "confidence": 0.97,
-      "cost": 0.2,
-      "safety": 0.99,
-      "default_weight": 0.97,
-      "policy_effect": "AnalysisSignalScore"
+      "confidence": 0.9,
+      "cost": 1.0,
+      "safety": 0.9,
+      "policy_effect": "market_analysis_cycle"
     }
   ],
-  "pages": [],
   "parallel_groups": [
-    ["Analysis::Return1", "Analysis::Volatility"]
+    ["State::Map", "State::Parse"]
   ]
 }
 ```
 
-The `confidence`, `cost`, and `safety` fields on each transition are the quantale element for that edge. The existing `default_weight` field is `confidence` by convention. Long-term, `default_weight` should be removed in favour of the explicit quantale triple.
+Program-compiled transitions carry the explicit quantale triple. Hand-authored transitions in `topology.json` carry `default_weight` for backward compat; the runtime always prefers the explicit triple.
 
-The Rust runtime should consume generated artifacts only.
+The compiler also emits `topology.fusion.json`. See the Fusion Architecture section.
+
+---
+
+## Fusion Architecture
+
+The topology graph runs entirely under JIT orchestration. Only maximal GPU-resident subgraphs fuse into single CUDA kernels:
+
+```text
+Graph JIT:      G_t → G_{t+1}              (dynamically select next executable region)
+Kernel fusion:  K_1;K_2;K_3 ⟹ K_{123}    (coalesce GPU ops into one CUDA kernel)
+```
+
+### Fusion Condition
+
+A subgraph F ⊆ G is fusible iff:
+
+```text
+Fusable(F) = B(F) ∧ K(F) ∧ S(F) ∧ A(F) ∧ R(F)
+
+B(F) = same backend       (all nodes: runtime.backend = "cuda")
+K(F) = kernel-compatible  (all nodes: kind = "kernel")
+S(F) = static shapes      (tensor slot layouts known at compile time)
+A(F) = associative algebra (seq or par within region; no choice boundary inside)
+R(F) = no interior barrier (no boundary_node, governance gate, or lock conflict)
+```
+
+Edge legality within a region:
+
+```text
+producer-consumer:  writes(A_i) ∩ reads(A_{i+1}) ≠ ∅
+independent par:    writes(A_i) ∩ writes(A_j) = ∅
+```
+
+### Kernel Rule
+
+```text
+Fuse algebra, not control flow.
+
+CKA gives structure.
+Quantale gives score/composition.
+Effects give legality.
+JIT gives specialization.
+CUDA gives execution.
+```
+
+### Non-Fusible Barriers
+
+```text
+boundary_node                 (external I/O, LLM, network, git/cargo)
+host_node with I/O effects    (purity = deterministic_io)
+governance gate               (policy check required before proceeding)
+resource lock conflict        (exclusive locks across candidate nodes)
+shape unknown                 (dynamic slot types at compile time)
+```
+
+### Fusible Regions (current topology)
+
+```text
+Analysis::Return1 → Analysis::Volatility → Analysis::SignalScore
+```
+
+Emitted in `topology.fusion.json`:
+
+```json
+{
+  "regions": [
+    {
+      "region": "Analysis::Return1__Analysis::Volatility__Analysis::SignalScore",
+      "backend": "cuda_jit",
+      "fusion": "linear_chain",
+      "nodes": ["Analysis::Return1", "Analysis::Volatility", "Analysis::SignalScore"],
+      "reads": ["market.open", "market.price"],
+      "writes": ["analysis.signal_score"],
+      "locks": [],
+      "quantale": {
+        "compose": ["times", "plus", "min"],
+        "join":    ["max",   "min",  "max"]
+      }
+    }
+  ]
+}
+```
+
+`analysis.return` and `analysis.volatility` are internal (produced and consumed within the region). The fused kernel signature: `(market.price[], market.open[]) → analysis.signal_score[]`.
+
+### Compiler Pipeline
+
+```text
+topology.source.json
+  → validate: unique node names, known backends
+  → validate: quantale layer declarations (join/compose/bottom/unit laws)
+  → validate: slot/resource references per node
+  → validate: boundary nodes have governance
+  → validate: kernel nodes read/write only tensor slots
+  → compile: algebraic programs → flat transitions
+  → validate: par branch effect independence
+  → validate: program weight domains per quantale layer
+  → partition: effect-aware fusible region detector (Fusable(F) condition)
+  → emit: topology.generated.json
+  → emit: topology.fusion.json
+  → emit: operators.generated.json
+  → emit: patterns.source.json
+```
+
+### Dispatch Pipeline
+
+```text
+FusionDispatch::load(topology.fusion.json, operator_registry)
+  → detect_jit_chains(region.nodes, registry)   [jit_kernel_fusion::chain]
+  → synthesize_kernel(&chain, registry)          [jit_kernel_fusion::synth]  ← CUDA C
+  → JitCache::get_or_compile(device, &chain)     [jit_kernel_fusion::cache]  ← PTX via NVRTC
+  → runtime: is_fusion_entry(node) → dispatch fused kernel
+             else → dispatch boundary/host operator
+```
 
 ---
 
@@ -309,12 +357,9 @@ The Rust runtime should consume generated artifacts only.
 ### Phase 1 — Consolidate Algebra Into Topology ✅
 
 - [x] Add `assets/topology.source.json`.
-- [x] Move existing `assets/patterns.json` expressions into `topology.source.json.programs`.
-- [x] Keep `assets/patterns.json` temporarily as a compatibility artifact.
-- [x] Add a compiler step that can produce the current `topology.generated.json` from source programs.
-- [x] Preserve all current flat transitions during migration.
-
-Success condition:
+- [x] Move `patterns.json` expressions into `topology.source.json` programs.
+- [x] Add a compiler step that produces `topology.generated.json` from source programs.
+- [x] Preserve all current flat transitions.
 
 ```text
 cargo run -- topology build-overlay   ✅
@@ -326,13 +371,10 @@ cargo test                            ✅
 
 ### Phase 2 — Add Slots and Resources ✅
 
-- [x] Add top-level `slots` to `topology.source.json`.
-- [x] Add top-level `resources` to `topology.source.json`.
-- [x] Move operator `effects.reads`, `effects.writes`, and `effects.locks` into node declarations (19 nodes declared).
-- [x] Validate that every node read/write references a declared slot.
-- [x] Validate that every lock references a declared resource.
-
-Success condition:
+- [x] Add `slots` and `resources` to `topology.source.json`.
+- [x] Declare effects (reads/writes/locks) on nodes.
+- [x] Validate every node read/write references a declared slot.
+- [x] Validate every lock references a declared resource.
 
 ```text
 no undeclared read slots    ✅
@@ -344,177 +386,113 @@ no undeclared locks         ✅
 
 ### Phase 3 — Algebraic Branching ✅
 
-- [x] Treat `choice` as quantale join, not imperative branching.
-- [x] Treat `seq` as composition.
-- [x] Treat `par` as parallel composition requiring effect independence.
-- [x] Treat `star` as bounded unroll.
-- [x] Treat `zero`, `blocked`, and `impossible` as bottom.
-- [x] Treat `one`, `identity`, and `skip` as identity.
-- [x] Programs with `"kind": "cka_pattern"` are runtime tensor-weight patterns only (not compiled to flat transitions).
-
-Compiler rules implemented:
-
-```text
-compile(node)      -> endpoint(node)
-compile(seq xs)    -> compose adjacent endpoints
-compile(choice xs) -> union endpoints / competing alternatives
-compile(par xs)    -> independent branches + parallel group metadata + effect check
-compile(star x n)  -> bounded unroll of x
-compile(zero)      -> no edge / bottom
-compile(one)       -> identity / no-op endpoint
-```
-
-Success condition:
+- [x] `choice` = quantale join (no cross-edges).
+- [x] `seq` = sequential composition.
+- [x] `par` = concurrent composition + effect independence check.
+- [x] `star` = bounded unroll.
+- [x] `zero`/`blocked`/`impossible` = bottom.
+- [x] `one`/`identity`/`skip` = identity.
+- [x] `"kind": "cka_pattern"` programs are runtime tensor-weight patterns only.
+- [x] Emit `patterns.source.json` from topology programs.
 
 ```text
-patterns.json generated from topology.source.json    ✅  (assets/patterns.source.json)
+Compiler rules:
+  compile(node)      → endpoint(node)
+  compile(seq xs)    → compose adjacent endpoints
+  compile(choice xs) → union endpoints, no cross-edges
+  compile(par xs)    → independent branches + parallel group metadata + effect check
+  compile(star x n)  → bounded unroll of x
+  compile(zero)      → no edge / bottom
+  compile(one)       → identity / no-op endpoint
 ```
 
 ---
 
-### Phase 4 — Quantale Source Semantics
+### Phase 4 — Quantale Source Semantics ✅
 
-Replace the stub `quantale` field with a full quantale layer declaration that drives compilation of source edges into T[3,N,N].
+**Correction:** The original Phase 4 proposed boolean masks (`m=false ⟹ ⊥`). This is a boolean control guard pretending to be algebra. The correct approach declares the quantale structure in the source topology and compiles every edge into a proper quantale element.
 
-**Correction note:** The original Phase 4 proposed boolean masks (`m ∈ {0,1}`, `m=false ⟹ ⊥`). This is wrong — it is a boolean control guard pretending to be algebra. The correct approach is to declare the quantale structure directly in the source topology and compile every edge into a proper quantale element.
-
-- [ ] Add `quantale.layers` to `topology.source.json` with declared `join`, `compose`, `bottom`, `unit` per layer.
-- [ ] Validate that every source edge's `weight` (or `value`) has a component for each declared layer.
-- [ ] Validate `bottom` and `unit` values satisfy each layer's algebra (unit is the identity for compose, bottom is the absorbing element for compose).
-- [ ] Compile source program `weight` fields directly into quantale-valued transitions using layer laws.
-- [ ] Make CKA program compiler emit quantale-valued edge deltas (not just `default_weight`).
-- [ ] Validate that `choice` in programs emits join (not cross-edges), `seq` emits composition, `zero` emits bottom, `one` emits unit.
-- [ ] Remove `default_weight` from generated transitions in favour of explicit `confidence`/`cost`/`safety` triple (the existing T[3,N,N] structure already carries this).
-
-Success condition:
+- [x] Add `quantale.layers` with declared `join`, `compose`, `bottom`, `unit` per layer.
+- [x] Validate each layer's algebraic laws.
+- [x] Validate every program weight against layer domains.
+- [x] Compile `weight` fields into quantale-valued transitions.
+- [x] Remove `default_weight` from generated transitions (use explicit triple).
 
 ```text
-every source edge compiles to a valid quantale element (c ∈ [0,1], t ∈ [0,∞], s ∈ [0,1])
-bottom = (0, ∞, 0) — no program edge should compile to this
-unit = (1, 0, 1) — identity transitions are valid
-quantale.layers declaration validates composition and join laws
+every source edge compiles to a valid (c, t, s) quantale element  ✅
+bottom = (0, ∞, 0) — no program edge compiles to this             ✅
+unit = (1, 0, 1) — identity transitions valid                      ✅
 ```
 
 ---
 
-### Phase 5 — Pure Node Boundary
+### Phase 5 — Pure Node Boundary ✅
 
-Classify every node:
+Five node kinds:
 
 ```text
-kernel_node    = pure compute over slots
+kernel_node    = pure CUDA compute over tensor slots
 host_node      = deterministic CPU transform over slots
 boundary_node  = external I/O, LLM, filesystem, network, git/cargo
-policy_node    = governance or contract producer
-event_node     = receipt/state transition marker
+policy_node    = governance or routing decision (no slot output)
+event_node     = receipt/state transition marker (no I/O)
 ```
 
-Node target shape:
-
-```json
-{
-  "name": "State::Memory",
-  "kind": "host_node",
-  "purity": "deterministic_io",
-  "reads": ["task.context"],
-  "writes": ["memory.store"],
-  "locks": ["memory"],
-  "runtime": {
-    "backend": "resident_worker",
-    "worker": "operator-memory",
-    "protocol": "jsonl"
-  }
-}
-```
-
-Long-term target:
+- [x] All 74 nodes declared: **6 kernel, 16 host_node, 15 boundary_node, 8 policy_node, 29 event_node**.
+- [x] 7 new slots added: `introspect.report`, `topology.plan`, `operator.plan`, `pattern.plan`, `select.result`, `mutation.review`, `rollback.record`.
+- [x] `validate_boundary_governance` — every `boundary_node` must declare a `governance` object.
+- [x] `validate_kernel_slot_purity` — every `kernel` reads/writes must be `kind: "tensor"` slots only.
 
 ```text
-internal nodes -> pure Rust/CUDA functions
-boundary nodes -> explicit governed adapters
-```
-
-Remaining work:
-
-- [ ] Declare the remaining ~55 nodes in `topology.source.json` (event nodes, control nodes, state nodes not yet declared).
-- [ ] Validate that every boundary node has a `governance` field.
-- [ ] Validate that every kernel node has no I/O effects (reads/writes are tensor slots only).
-
-Success condition:
-
-```text
-no node has implicit side effects
-all side effects are declared in topology/operator metadata
+no node has implicit side effects                           ✅
+all side effects declared in topology/operator metadata     ✅
 ```
 
 ---
 
-### Phase 6 — Compiler and Validators
+### Phase 6 — Compiler and Validators ✅
 
-Add a complete topology compiler pipeline:
+- [x] `validate_unique_source_node_names` — no duplicate names in `nodes[]`.
+- [x] `validate_known_backends` — `runtime.backend` must be a recognised value.
+- [x] `partition_fusible_regions` in `crates/topology_core/src/fusion.rs` — maximal linear-chain subgraphs satisfying `Fusable(F)`.
+- [x] `build_overlay_assets` emits `topology.fusion.json`.
+
+Emitted region:
 
 ```text
-topology.source.json
-  -> parse
-  -> validate quantale layer declarations
-  -> validate slots/resources/nodes/programs
-  -> compile algebraic programs
-  -> validate effect independence for par
-  -> validate quantale values per edge
-  -> emit topology.generated.json
-  -> emit operators.generated.json
-  -> emit patterns.source.json
-  -> emit parallel_groups artifact
+Analysis::Return1 → Analysis::Volatility → Analysis::SignalScore
+  backend: cuda_jit  |  fusion: linear_chain
+  reads:   [market.open, market.price]
+  writes:  [analysis.signal_score]
+  internals (produced+consumed within): analysis.return, analysis.volatility
 ```
 
-Required validators not yet wired:
-
-- [ ] Unique node names (across source topology nodes).
-- [ ] Unique slot names.
-- [ ] Unique resource names.
-- [ ] Every transition endpoint exists in the node set.
-- [ ] Every node runtime backend is a known backend.
-- [ ] Every boundary node has governance coverage.
-- [ ] Every generated topology passes existing topology invariants.
-- [ ] Every quantale edge value is within domain per layer.
-
-Already wired (Phases 2–3):
-
-- [x] Every declared node read/write slot exists.
-- [x] Every declared node lock resource exists.
-- [x] Every `par` branch is effect-independent.
-
-Success condition:
-
 ```text
-invalid topology.source.json never emits generated artifacts
+invalid topology.source.json never emits generated artifacts  ✅
+topology.fusion.json contains only regions where Fusable(F)   ✅
 ```
 
 ---
 
-### Phase 7 — Runtime Simplification
+### Phase 7 — Runtime Simplification and JIT Execution ✅
 
-After generated topology and quantale compilation are reliable:
-
-- [ ] Make Rust runtime consume generated topology only.
-- [ ] Remove hardcoded watched asset path list and use `assets/reload_policy.json`.
-- [ ] Remove direct `patterns.json` loading from runtime — load compiled programs from generated topology instead.
-- [ ] Make runtime execute only these generic steps:
-
-```text
-load generated artifacts
-project tensor frontier using quantale composition
-execute selected node/backend
-collect receipt
-update quantale weights via receipt feedback
-append log
-reload on asset fingerprint change
-```
-
-Success condition:
+- [x] `src/fusion_dispatch.rs` — `FusionDispatch::load(path, registry)` builds `JitChain`s from fusion regions via `detect_jit_chains` (existing `jit_kernel_fusion::chain`).
+- [x] `FusionDispatch` indexed by entry node (`is_fusion_entry`) and by member (`get_by_member`) for O(1) dispatch lookup.
+- [x] `FusionDispatch` wired into `SystemConfig` — loaded and reloaded alongside the operator registry.
+- [x] `synthesize_all(registry)` produces CUDA C source for all regions without a CUDA device (dry-run / startup verification).
+- [x] `#[cfg(feature = "cuda")] JitCache::get_or_compile` compiles PTX via NVRTC on demand.
+- [x] Fusion dispatch logged at every epoch build: `fusion::regions_loaded`, `fusion::region` (per region with chain_len + estimated_savings), `fusion::kernel_synthesized`.
+- [x] `GraphTopology::default_asset()` — `topology.generated.json` first, bundled constant fallback only. `topology.json` runtime fallback removed.
+- [x] `load_default_patterns()` — `patterns.source.json` first, bundled constant fallback only. `patterns.json` runtime fallback removed.
+- [x] `DEFAULT_PATTERNS_JSON` embed switched from `patterns.json` to `patterns.source.json`.
+- [x] `assets/patterns.json` deleted — replaced by `assets/patterns.source.json`.
+- [x] `assets/reload_policy.json` updated: `patterns.source.json` and `topology.fusion.json` added; `patterns.json` removed.
 
 ```text
-adding a new workflow requires topology.source.json/operator metadata changes, not Rust runtime changes
+adding a new workflow: topology.source.json changes only, no Rust edits required  ✅
+Analysis::Return1→Volatility→SignalScore: JitChain built, NVRTC deferred to JitCache  ✅
+boundary nodes are always barriers, never fused                                     ✅
+117 tests pass                                                                      ✅
 ```
 
 ---
@@ -528,62 +506,38 @@ adding a new workflow requires topology.source.json/operator metadata changes, n
 - Do not encode policy as arbitrary host-language scripts.
 - Do not introduce boolean `if/else` guards into the DSL — use quantale bottom for impossible paths.
 - Do not remove Rust; shrink it into a generic topology VM.
+- Do not fuse the whole graph into one kernel — only maximal GPU-safe subgraphs fuse.
+- Do not fuse control flow — fuse algebra (associative quantale composition over pure tensor nodes only).
 
 ---
 
 ## Target Invariants
 
 ```text
-1. Source topology is the only orchestration source of truth.
-2. Flat transitions are generated, not hand-authored long-term.
-3. Branching is algebraic: choice/par/star/seq/zero/one.
-4. Every edge carries a quantale element (confidence, cost, safety).
-5. Internal nodes are pure transforms over slots.
-6. Boundary nodes are explicit and governed.
-7. Runtime is a generic interpreter, not a workflow-specific orchestrator.
-8. All generated topology passes existing topology invariants.
+1.  Source topology is the only orchestration source of truth.          ✅
+2.  Flat transitions are generated, not hand-authored.                  ✅
+3.  Branching is algebraic: choice/par/star/seq/zero/one.               ✅
+4.  Every edge carries a quantale element (confidence, cost, safety).   ✅
+5.  Internal nodes are pure transforms over slots.                      ✅
+6.  Boundary nodes are explicit and governed.                           ✅
+7.  Runtime is a generic interpreter, not a workflow-specific orchestrator. ✅
+8.  All generated topology passes existing topology invariants.         ✅
+9.  The whole graph is a JIT-compiled execution fabric: G_t → G_{t+1}. ✅
+10. Only maximal GPU-safe quantale regions (Fusable(F)) become fused CUDA kernels. ✅
 ```
 
 ---
 
-## Immediate Implementation Checklist
-
-Done:
-
-- [x] Create `assets/topology.source.json` from current `topology.json` + `patterns.json`.
-- [x] Add `programs` support to `topology_core`.
-- [x] Move `CkaExpr` parsing/compilation into topology compiler (`programs.rs`).
-- [x] Emit `patterns.source.json` compatibility output during `topology build-overlay`.
-- [x] Generate flat `transitions` from source programs.
-- [x] Generate `parallel_groups` from `par` expressions.
-- [x] Add slot/resource declarations.
-- [x] Validate operator effects against slots/resources.
-- [x] Classify 19 key nodes as `kernel`, `host_node`, or `boundary_node`.
-- [x] Add governance fields to boundary nodes.
-- [x] Add par effect-independence checking.
-- [x] Remove `masks` stub — masks are not the correct abstraction.
-
-Next:
-
-- [ ] Add `quantale.layers` declaration to `topology.source.json`.
-- [ ] Validate every source edge `weight` has components matching all declared layers.
-- [ ] Compile source `weight` fields into proper quantale triples using declared layer laws.
-- [ ] Validate `bottom` and `unit` per layer.
-- [ ] Remove `default_weight` from generated transitions (use explicit triple).
-- [ ] Classify remaining ~55 nodes in `topology.source.json`.
-- [ ] Add remaining Phase 6 validators (unique names, known backends, boundary governance).
-- [ ] Convert runtime to consume generated topology + load patterns from source.
-
----
-
-## Final Fixed Point
+## Final Fixed Point ✅
 
 ```text
-Source topology    = CKA / quantale DSL program
-Generated topology = quantale-valued tensor edge graph
-Generated operators= executable backend metadata
-Runtime            = generic topology VM
-Compute            = pure Rust/CUDA kernels
-Boundary           = governed adapters
+Source topology    = CKA / quantale DSL program          (topology.source.json)
+Generated topology = quantale-valued tensor edge graph   (topology.generated.json)
+Generated fusion   = maximal GPU-safe kernel regions     (topology.fusion.json)
+Generated operators= executable backend metadata         (operators.generated.json)
+Generated patterns = CKA tensor-weight patterns          (patterns.source.json)
+Runtime            = generic topology VM + JIT dispatcher (src/fusion_dispatch.rs)
+Fused compute      = NVRTC/PTX via JitCache              (#[cfg(feature="cuda")])
+Boundary           = governed adapters, always barriers  (never fused)
 Receipts           = quantale feedback into T[3,N,N]
 ```

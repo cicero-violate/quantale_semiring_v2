@@ -15,7 +15,7 @@ use crate::error::CudaError;
 use crate::tensor::TensorEdge;
 use crate::topology::{CompiledTopology, GraphTopology};
 
-pub const DEFAULT_PATTERNS_JSON: &str = include_str!("../assets/patterns.json");
+pub const DEFAULT_PATTERNS_JSON: &str = include_str!("../assets/patterns.source.json");
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub enum CkaExpr {
@@ -88,7 +88,19 @@ impl<'de> Deserialize<'de> for CkaExpr {
     }
 }
 
+/// Load the canonical CKA pattern set.
+///
+/// Preference order (first that exists wins):
+///   1. `assets/patterns.source.json` — generated from `topology.source.json` programs
+///   2. Embedded `assets/patterns.json` — compile-time bundled constant
+///
+/// The hand-authored `assets/patterns.json` is the build input for
+/// `topology build-overlay`; it is not a runtime fallback.
 pub fn load_default_patterns() -> Result<CkaPatternSet, CudaError> {
+    let source = Path::new("assets/patterns.source.json");
+    if source.exists() {
+        return load_patterns(source);
+    }
     parse_patterns_str(DEFAULT_PATTERNS_JSON)
 }
 

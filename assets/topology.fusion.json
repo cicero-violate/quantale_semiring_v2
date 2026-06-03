@@ -1,0 +1,34 @@
+{
+  "regions": [
+    {
+      "backend": "cuda_jit",
+      "fusion": "linear_chain",
+      "locks": [],
+      "nodes": [
+        "Analysis::Return1",
+        "Analysis::Volatility",
+        "Analysis::SignalScore"
+      ],
+      "quantale": {
+        "compose": [
+          "times",
+          "plus",
+          "min"
+        ],
+        "join": [
+          "max",
+          "min",
+          "max"
+        ]
+      },
+      "reads": [
+        "market.open",
+        "market.price"
+      ],
+      "region": "Analysis::Return1__Analysis::Volatility__Analysis::SignalScore",
+      "writes": [
+        "analysis.signal_score"
+      ]
+    }
+  ]
+}

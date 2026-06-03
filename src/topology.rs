@@ -19,7 +19,7 @@ pub fn load_default_tensor_topology_edges() -> Result<Vec<TensorEdge>, CudaError
 
 pub fn full_tensor_transition_edges() -> Vec<TensorEdge> {
     load_default_tensor_topology_edges()
-        .expect("bundled assets/topology.json tensor fields must compile")
+        .expect("topology.generated.json or bundled topology must compile")
 }
 
 impl From<CompiledTransition> for TensorEdge {
