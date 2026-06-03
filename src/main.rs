@@ -27,7 +27,6 @@ struct RuntimeEpoch {
     fingerprint: AssetFingerprint,
     topology: TopologyRuntime,
     executor: UniversalExecutor,
-    tensor_edges: Vec<quantale_semiring_v2::TensorEdge>,
     compiled_patterns: Vec<CompiledCkaPattern>,
     world: TensorQuantaleWorld,
     exploration_engine: ExplorationEngine,
@@ -231,6 +230,7 @@ fn main() {
                                     eprintln!("{error}");
                                     std::process::exit(1);
                                 }
+                                let _ = epoch.world.snapshot_base_tensor();
                                 if let Err(error) =
                                     tlog.append_tensor_edges("exploration:plan_tensor", &plan_edges)
                                 {
@@ -274,7 +274,6 @@ fn main() {
                 maybe_hard_reset_after_blocks(
                     &mut consecutive_blocks,
                     &mut epoch.world,
-                    &epoch.tensor_edges,
                     &mut current_payload,
                     std::time::Duration::from_millis(config.hard_reset_sleep_ms),
                     projection_bias,
@@ -384,6 +383,7 @@ fn main() {
                                                 eprintln!("{error}");
                                                 std::process::exit(1);
                                             }
+                                            let _ = epoch.world.snapshot_base_tensor();
                                             if let Err(error) = tlog.append_tensor_edges(
                                                 "plan:tensor_batch",
                                                 &plan_edges,
@@ -440,7 +440,6 @@ fn main() {
                     maybe_hard_reset_after_blocks(
                         &mut consecutive_blocks,
                         &mut epoch.world,
-                        &epoch.tensor_edges,
                         &mut current_payload,
                         std::time::Duration::from_millis(config.hard_reset_sleep_ms),
                         projection_bias,
@@ -517,7 +516,6 @@ fn main() {
                 maybe_hard_reset_after_blocks(
                     &mut consecutive_blocks,
                     &mut epoch.world,
-                    &epoch.tensor_edges,
                     &mut current_payload,
                     std::time::Duration::from_millis(config.hard_reset_sleep_ms),
                     projection_bias,
@@ -605,6 +603,7 @@ fn main() {
                                 eprintln!("{error}");
                                 std::process::exit(1);
                             }
+                            let _ = epoch.world.snapshot_base_tensor();
                             if let Err(error) =
                                 tlog.append_tensor_edges("plan:tensor_llm", &plan_edges)
                             {
@@ -653,7 +652,6 @@ fn main() {
             maybe_hard_reset_after_blocks(
                 &mut consecutive_blocks,
                 &mut epoch.world,
-                &epoch.tensor_edges,
                 &mut current_payload,
                 std::time::Duration::from_millis(config.hard_reset_sleep_ms),
                 projection_bias,
@@ -768,7 +766,6 @@ fn build_runtime_epoch(
         fingerprint: current_asset_fingerprint(),
         topology,
         executor,
-        tensor_edges,
         compiled_patterns,
         world,
         exploration_engine,
@@ -814,7 +811,6 @@ fn watched_asset_paths() -> Vec<PathBuf> {
 fn maybe_hard_reset_after_blocks(
     consecutive_blocks: &mut usize,
     world: &mut TensorQuantaleWorld,
-    tensor_edges: &[quantale_semiring_v2::TensorEdge],
     current_payload: &mut Value,
     hard_reset_sleep: std::time::Duration,
     projection_bias: ProjectionBias,
@@ -823,20 +819,15 @@ fn maybe_hard_reset_after_blocks(
         return;
     }
 
-    // Hard reset: decay alone does not restore a valid frontier because
-    // active[] tracks the current position and is not affected by decay or
-    // embed. world.reset() clears active[], consumed[], and the tensor to a
-    // known-good initial state. Re-embedding the topology edges then lifts the
-    // world above bottom.
+    // Hard reset: restore from the latest base snapshot (which includes all
+    // LLM-proposed edges accumulated so far) rather than re-embedding only the
+    // static topology. This preserves dev-chain weight across cycle restarts.
     eprintln!(
         "[WARN] {} consecutive blocked/failed steps; hard reset.",
         *consecutive_blocks
     );
-    if let Err(error) = world.reset() {
-        eprintln!("[WARN] hard reset world.reset() failed: {error}");
-    }
-    if let Err(error) = world.embed_tensor_edges(tensor_edges) {
-        eprintln!("[WARN] hard reset embed failed: {error}");
+    if let Err(error) = world.restore_base_tensor() {
+        eprintln!("[WARN] hard reset restore_base_tensor failed: {error}");
     }
     if let Err(error) = world.close() {
         eprintln!("[WARN] hard reset close failed: {error}");
