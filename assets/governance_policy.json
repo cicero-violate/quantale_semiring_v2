@@ -1,0 +1,45 @@
+{
+  "version": 1,
+  "mutation_limits": {
+    "max_topology_ops": 8,
+    "max_pattern_ops": 8,
+    "max_operator_contracts": 4,
+    "max_operator_contract_ops": 6,
+    "max_operator_source_bytes": 20000
+  },
+  "protected_nodes": [
+    "Control::Halt",
+    "Control::Retry",
+    "Control::Repair",
+    "Control::GateExecution"
+  ],
+  "protected_edges": [
+    {
+      "from": "State::Goal",
+      "to": "Control::GateInput"
+    },
+    {
+      "from": "State::Learn",
+      "to": "State::Introspect"
+    }
+  ],
+  "allowed_operator_file_prefixes": [
+    "crates/operators_lib/"
+  ],
+  "blocked_operator_filenames": [
+    "__init__.py",
+    "mutation_policy.py",
+    "apply_mutations.py"
+  ],
+  "operator_source": {
+    "blocked_imports": [
+      "subprocess",
+      "socket",
+      "requests",
+      "urllib",
+      "http.client",
+      "ftplib",
+      "paramiko"
+    ]
+  }
+}

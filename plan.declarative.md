@@ -84,10 +84,14 @@ Done in the first implementation slice:
   id through `crates/operators_lib/apply_mutations.py`.
 - Added read-only topology wiring for `State::MutationReview` and
   `Event::MutationReviewed`.
+- Added `assets/governance_policy.json` and governance checks for queued
+  topology, pattern, and operator mutations before apply.
 
 Still pending:
 
-- Richer governance policy beyond the current runtime and side-effect assets.
+- No implementation items remain in this plan. Future work should add new
+  policy assets or operators without changing Rust unless the interpreter itself
+  needs a new generic capability.
 
 ## Target Assets
 

@@ -1509,6 +1509,7 @@
         "reads": [
           "state/mutation_queue.jsonl",
           "assets/mutation_review_policy.json",
+          "assets/governance_policy.json",
           "assets/topology.json",
           "assets/operators.json",
           "assets/patterns.json"

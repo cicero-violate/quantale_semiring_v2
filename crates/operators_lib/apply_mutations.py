@@ -9,6 +9,7 @@ only when --apply is provided.
 from __future__ import annotations
 
 import argparse
+import ast
 import copy
 import difflib
 import json
@@ -27,6 +28,7 @@ SCRIPT_BY_KIND = {
     "pattern_patch": "pattern_mutate.py",
 }
 POLICY_PATH = mutation_policy.PROJECT_ROOT / "assets" / "mutation_review_policy.json"
+GOVERNANCE_PATH = mutation_policy.PROJECT_ROOT / "assets" / "governance_policy.json"
 OPERATORS_JSON = mutation_policy.PROJECT_ROOT / "assets" / "operators.json"
 
 
@@ -54,6 +56,13 @@ def _load_policy() -> dict:
         return {}
 
 
+def _load_governance_policy() -> dict:
+    try:
+        return json.loads(GOVERNANCE_PATH.read_text())
+    except Exception:
+        return {}
+
+
 def _json_text(data: dict) -> str:
     return json.dumps(data, indent=2, sort_keys=True) + "\n"
 
@@ -69,6 +78,109 @@ def _diff(path: str, before: str, after: str, max_chars: int) -> dict:
     if truncated:
         text = text[:max_chars] + "\n...[truncated]\n"
     return {"path": path, "diff": text, "truncated": truncated}
+
+
+def _edge_key(edge: dict) -> tuple[str, str]:
+    return (edge.get("from", ""), edge.get("to", ""))
+
+
+def _governance_findings(record: dict) -> list[dict]:
+    policy = _load_governance_policy()
+    limits = policy.get("mutation_limits", {})
+    protected_nodes = set(policy.get("protected_nodes", []))
+    protected_edges = {
+        (edge.get("from", ""), edge.get("to", ""))
+        for edge in policy.get("protected_edges", [])
+    }
+    findings = []
+    kind = record.get("kind", "")
+    payload = record.get("payload", {})
+
+    if kind == "operator_write":
+        filename = payload.get("filename", "")
+        source = payload.get("source", "")
+        source_bytes = len(source.encode())
+        max_source_bytes = int(limits.get("max_operator_source_bytes", 20000))
+        if source_bytes > max_source_bytes:
+            findings.append({
+                "severity": "block",
+                "reason": f"operator source is {source_bytes} bytes; max is {max_source_bytes}",
+            })
+        if filename in set(policy.get("blocked_operator_filenames", [])):
+            findings.append({
+                "severity": "block",
+                "reason": f"operator filename is protected: {filename}",
+            })
+        try:
+            tree = ast.parse(source)
+            blocked_imports = set(policy.get("operator_source", {}).get("blocked_imports", []))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    for alias in node.names:
+                        root = alias.name.split(".")[0]
+                        if alias.name in blocked_imports or root in blocked_imports:
+                            findings.append({
+                                "severity": "block",
+                                "reason": f"operator source imports blocked module: {alias.name}",
+                            })
+                elif isinstance(node, ast.ImportFrom):
+                    module = node.module or ""
+                    root = module.split(".")[0]
+                    if module in blocked_imports or root in blocked_imports:
+                        findings.append({
+                            "severity": "block",
+                            "reason": f"operator source imports blocked module: {module}",
+                        })
+        except SyntaxError as exc:
+            findings.append({"severity": "block", "reason": f"operator syntax error: {exc}"})
+
+    if kind == "topology_patch":
+        topology_ops = payload.get("topology_ops", [])
+        max_topology_ops = int(limits.get("max_topology_ops", 8))
+        if len(topology_ops) > max_topology_ops:
+            findings.append({
+                "severity": "block",
+                "reason": f"topology_ops count is {len(topology_ops)}; max is {max_topology_ops}",
+            })
+        for op in topology_ops:
+            op_kind = op.get("op", "")
+            node_name = op.get("name") or op.get("node", {}).get("name", "")
+            if op_kind in {"delete_node", "replace_node"} and node_name in protected_nodes:
+                findings.append({
+                    "severity": "block",
+                    "reason": f"{op_kind} targets protected node {node_name}",
+                })
+            edge = _edge_key(op)
+            if op_kind in {"delete_edge", "replace_edge"} and edge in protected_edges:
+                findings.append({
+                    "severity": "block",
+                    "reason": f"{op_kind} targets protected edge {edge[0]} -> {edge[1]}",
+                })
+        contracts = payload.get("operator_contracts", [])
+        contract_ops = payload.get("operator_contract_ops", [])
+        max_contracts = int(limits.get("max_operator_contracts", 4))
+        max_contract_ops = int(limits.get("max_operator_contract_ops", 6))
+        if len(contracts) > max_contracts:
+            findings.append({
+                "severity": "block",
+                "reason": f"operator_contracts count is {len(contracts)}; max is {max_contracts}",
+            })
+        if len(contract_ops) > max_contract_ops:
+            findings.append({
+                "severity": "block",
+                "reason": f"operator_contract_ops count is {len(contract_ops)}; max is {max_contract_ops}",
+            })
+
+    if kind == "pattern_patch":
+        pattern_ops = payload.get("pattern_ops", [])
+        max_pattern_ops = int(limits.get("max_pattern_ops", 8))
+        if len(pattern_ops) > max_pattern_ops:
+            findings.append({
+                "severity": "block",
+                "reason": f"pattern_ops count is {len(pattern_ops)}; max is {max_pattern_ops}",
+            })
+
+    return findings
 
 
 def _apply_operator_contract_ops(operators: dict, ops: list) -> tuple[list, str | None]:
@@ -187,10 +299,21 @@ def _preview_record(record: dict, policy: dict) -> dict:
         preview = {"error": f"unknown mutation kind: {kind!r}", "diffs": []}
     if policy.get("preview", {}).get("include_payload", False):
         preview["payload"] = record.get("payload", {})
+    preview["governance"] = _governance_findings(record)
     return preview
 
 
 def _apply_record(record: dict) -> dict:
+    findings = _governance_findings(record)
+    blockers = [finding for finding in findings if finding.get("severity") == "block"]
+    if blockers:
+        return {
+            "exit_code": 2,
+            "stdout": "",
+            "stderr": "governance policy blocked mutation",
+            "governance": blockers,
+        }
+
     script_name = SCRIPT_BY_KIND.get(record.get("kind", ""))
     if not script_name:
         return {"exit_code": 1, "stderr": f"unknown mutation kind: {record.get('kind')!r}"}
