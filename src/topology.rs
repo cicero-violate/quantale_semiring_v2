@@ -37,11 +37,20 @@ impl TopologyRuntime {
         let document = GraphTopology::default_asset()?;
         let invariants = TopologyInvariants::default_asset();
         let violations = check(&document, &invariants);
-        if !violations.is_empty() {
+        // ConsumedBlockPoint is a structural warning, not a startup blocker —
+        // the hard-reset path re-embeds accumulated edges and resets consumed[],
+        // which handles re-entry correctly at runtime.  Emit as warnings only.
+        let (warnings, fatal): (Vec<_>, Vec<_>) = violations
+            .into_iter()
+            .partition(|v| v.kind == ViolationKind::ConsumedBlockPoint);
+        for v in &warnings {
+            eprintln!("[topology] [WARN] {v}");
+        }
+        if !fatal.is_empty() {
             return Err(CudaError::invalid_input(format!(
                 "{}\n{} violation(s) found",
-                format_violations(&violations),
-                violations.len()
+                format_violations(&fatal),
+                fatal.len()
             )));
         }
         let compiled = document.compile()?;

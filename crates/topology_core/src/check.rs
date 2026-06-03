@@ -18,8 +18,13 @@
 //!   7.  Zero-confidence edge warn   (ZeroConfidenceEdge)
 //!  13.  Deterministic tie-break     (IndeterminateOrdering)
 //!
-//! Structural checks (original five):
+//! Structural checks (original five + invariant 14):
 //!   endpoint validity, dead-end, reachability, path-to-halt
+//!  14.  Consumed block point        (ConsumedBlockPoint)
+//!       A reachable non-halt node with exactly 1 outgoing edge but 2+
+//!       incoming edges.  The frontier-step kernel marks an edge consumed on
+//!       first use; any re-entry via a different predecessor produces
+//!       Unknown(-1) blocked until the next hard reset.
 //!
 //! Phase 3 — dominator and cycle checks (invariants 9–12)
 //!   9.  Gate dominance         (DominanceViolation)
@@ -141,6 +146,13 @@ pub enum ViolationKind {
     UnsafeSCC,
     /// A reachable SCC contains a cycle where every edge has cost = 0.
     ZeroCostCycle,
+
+    // ── Phase 1b: structural / runtime semantics ──────────────────────────────
+    /// A reachable non-halt node has exactly 1 outgoing edge but 2+ incoming
+    /// edges.  The frontier-step kernel's consumed[] array marks an edge used
+    /// on first traversal; a re-entry via any other predecessor finds the
+    /// only exit consumed and returns Unknown(-1) blocked.
+    ConsumedBlockPoint,
 }
 
 impl std::fmt::Display for ViolationKind {
@@ -166,6 +178,7 @@ impl std::fmt::Display for ViolationKind {
             Self::ReceiptCutsetViolation => write!(f, "receipt_cutset_violation"),
             Self::UnsafeSCC => write!(f, "unsafe_scc"),
             Self::ZeroCostCycle => write!(f, "zero_cost_cycle"),
+            Self::ConsumedBlockPoint => write!(f, "consumed_block_point"),
         }
     }
 }
@@ -553,6 +566,32 @@ fn check_structural(violations: &mut Vec<TopologyViolation>, topology: &GraphTop
                 detail: format!(
                     "'{}' is reachable but has no path to any halt node",
                     name
+                ),
+            });
+        }
+    }
+
+    // Pass 5: invariant 14 — consumed block point detection.
+    // The frontier-step CUDA kernel marks each traversed edge consumed[src*N+hop]=1
+    // and never clears it within a session.  A node with exactly one outgoing
+    // edge and two or more incoming edges can be reached after that edge was
+    // already consumed via a different predecessor, producing Unknown(-1) blocked.
+    for &nid in &reachable {
+        if halt_ids.contains(&nid) {
+            continue;
+        }
+        let out_count = forward.get(&nid).map(|v| v.len()).unwrap_or(0);
+        let in_count = reverse.get(&nid).map(|v| v.len()).unwrap_or(0);
+        if out_count == 1 && in_count >= 2 {
+            let name = id_to_name.get(&nid).copied().unwrap_or("?");
+            violations.push(TopologyViolation {
+                kind: ViolationKind::ConsumedBlockPoint,
+                node: name.to_string(),
+                detail: format!(
+                    "'{}' has 1 outgoing edge but {} incoming edges; the single exit \
+                     is consumed on first traversal — any re-entry via a different \
+                     predecessor produces Unknown(-1) blocked until hard reset",
+                    name, in_count
                 ),
             });
         }

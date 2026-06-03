@@ -221,20 +221,54 @@ fn check_reports_all_violations_not_just_first() {
 
 // ── 7. regression guard: current bundled topology must be clean ───────────────
 
+// Known ConsumedBlockPoint nodes in the current topology.  These are tracked
+// here so new violations are caught immediately; fix each node by adding a
+// second outgoing edge before removing it from this list.
+const KNOWN_CONSUMED_BLOCK_POINTS: &[&str] = &[
+    "Control::Block",
+    "Control::BuildTopologyOverlay",
+    "Control::Repair",
+    "Event::AnalysisFinished",
+    "State::Input",
+];
+
 #[test]
 fn current_topology_passes_all_checks() {
     let topo = GraphTopology::default_asset().expect("bundled topology");
     let violations = check(&topo, &TopologyInvariants::default());
-    if !violations.is_empty() {
-        for v in &violations {
+
+    let unexpected: Vec<_> = violations
+        .iter()
+        .filter(|v| {
+            v.kind != ViolationKind::ConsumedBlockPoint
+                || !KNOWN_CONSUMED_BLOCK_POINTS.contains(&v.node.as_str())
+        })
+        .collect();
+
+    if !unexpected.is_empty() {
+        for v in &unexpected {
             eprintln!("[topology_check] {v}");
         }
     }
     assert!(
-        violations.is_empty(),
-        "bundled topology.json has {} violation(s); fix before committing",
-        violations.len()
+        unexpected.is_empty(),
+        "bundled topology.json has {} unexpected violation(s); fix before committing",
+        unexpected.len()
     );
+
+    // Also assert that no NEW ConsumedBlockPoint nodes appeared beyond the known list.
+    let cbp_nodes: Vec<&str> = violations
+        .iter()
+        .filter(|v| v.kind == ViolationKind::ConsumedBlockPoint)
+        .map(|v| v.node.as_str())
+        .collect();
+    for node in &cbp_nodes {
+        assert!(
+            KNOWN_CONSUMED_BLOCK_POINTS.contains(node),
+            "new ConsumedBlockPoint '{}' — add a second outgoing edge or add to known list",
+            node
+        );
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -603,4 +637,56 @@ fn check_passes_cycle_with_nonzero_cost() {
         ],"pages":[]}"#);
     let vs = violations_of_kind(&topo, ViolationKind::ZeroCostCycle);
     assert!(vs.is_empty(), "non-zero-cost cycle must not be flagged: {vs:?}");
+}
+
+// ── 14. Consumed block point ──────────────────────────────────────────────────
+
+#[test]
+fn check_flags_consumed_block_point() {
+    // State::Funnel has 1 outgoing edge (→State::B) but 2 incoming edges.
+    // After the first traversal consumes State::Funnel→State::B, re-entry
+    // from State::A produces Unknown(-1) blocked.
+    let topo = parse(r#"{
+        "matrix_name":"t","nodes":[
+            {"id":0,"name":"State::Start", "type":"State"},
+            {"id":1,"name":"State::A",     "type":"State"},
+            {"id":2,"name":"State::Funnel","type":"State"},
+            {"id":3,"name":"State::B",     "type":"State"},
+            {"id":4,"name":"Control::Halt","type":"Control","action":"halt"}
+        ],
+        "transitions":[
+            {"from":"State::Start", "to":"State::A",     "default_weight":0.9},
+            {"from":"State::Start", "to":"State::Funnel","default_weight":0.8},
+            {"from":"State::A",     "to":"State::Funnel","default_weight":0.7},
+            {"from":"State::Funnel","to":"State::B",     "default_weight":0.9},
+            {"from":"State::B",     "to":"Control::Halt","default_weight":0.9}
+        ],"pages":[]}"#);
+    assert!(
+        has_violation(&topo, ViolationKind::ConsumedBlockPoint, "State::Funnel"),
+        "single-exit multi-entry node must be flagged as ConsumedBlockPoint"
+    );
+}
+
+#[test]
+fn check_passes_multi_exit_node() {
+    // State::Hub has 2 outgoing edges — not a block point even with multiple
+    // predecessors.
+    let topo = parse(r#"{
+        "matrix_name":"t","nodes":[
+            {"id":0,"name":"State::Start","type":"State"},
+            {"id":1,"name":"State::A",    "type":"State"},
+            {"id":2,"name":"State::Hub",  "type":"State"},
+            {"id":3,"name":"State::B",    "type":"State"},
+            {"id":4,"name":"Control::Halt","type":"Control","action":"halt"}
+        ],
+        "transitions":[
+            {"from":"State::Start","to":"State::A",      "default_weight":0.9},
+            {"from":"State::Start","to":"State::Hub",    "default_weight":0.8},
+            {"from":"State::A",    "to":"State::Hub",    "default_weight":0.7},
+            {"from":"State::Hub",  "to":"State::B",      "default_weight":0.9},
+            {"from":"State::Hub",  "to":"Control::Halt", "default_weight":0.5},
+            {"from":"State::B",    "to":"Control::Halt", "default_weight":0.9}
+        ],"pages":[]}"#);
+    let vs = violations_of_kind(&topo, ViolationKind::ConsumedBlockPoint);
+    assert!(vs.is_empty(), "multi-exit node must not be flagged: {vs:?}");
 }
