@@ -9,8 +9,9 @@ use std::sync::Mutex;
 use serde_json::Value;
 
 use crate::config::SystemConfig;
+use crate::fusion_dispatch::FusionEntry;
 #[cfg(feature = "cuda")]
-use crate::jit_kernel_fusion::{JitCache, SlotBuffers};
+use crate::jit_kernel_fusion::{JitCache, JitChain, SlotBuffers};
 use crate::topology::{GraphTopology, NodeRegistry};
 use crate::types::ProcessReceipt;
 
@@ -181,19 +182,65 @@ impl UniversalExecutor {
         }
     }
 
+    /// Execute a precomputed fusion region as one CUDA JIT chain.
+    ///
+    /// This is the normal runtime bridge from `FusionDispatch` into the same
+    /// JIT cache and slot-buffer machinery used by individual `jit_cuda` nodes.
+    pub fn execute_fusion_entry_blocking(
+        &self,
+        entry: &FusionEntry,
+        dynamic_payload: &Value,
+    ) -> ProcessReceipt {
+        self.execute_jit_chain_blocking(
+            &format!("Fusion::{}", entry.region),
+            &entry.chain,
+            dynamic_payload,
+        )
+    }
+
+    #[cfg(feature = "cuda")]
+    fn execute_jit_chain_blocking(
+        &self,
+        node_name: &str,
+        chain: &JitChain,
+        dynamic_payload: &Value,
+    ) -> ProcessReceipt {
+        execute_jit_chain_blocking(
+            node_name,
+            chain,
+            dynamic_payload,
+            &self.operator_registry,
+            &self.jit_cache,
+            &self.slot_buffers,
+        )
+    }
+
+    #[cfg(not(feature = "cuda"))]
+    fn execute_jit_chain_blocking(
+        &self,
+        node_name: &str,
+        _chain: &crate::jit_kernel_fusion::JitChain,
+        _dynamic_payload: &Value,
+    ) -> ProcessReceipt {
+        cuda_err_receipt(
+            node_name,
+            format!("jit_cuda fusion region '{node_name}' requires the cuda feature"),
+        )
+    }
+
     #[cfg(feature = "cuda")]
     fn execute_jit_cuda_blocking(
         &self,
         node_name: &str,
         dynamic_payload: &Value,
     ) -> ProcessReceipt {
-        execute_jit_chain_blocking(
-            node_name,
-            dynamic_payload,
-            &self.operator_registry,
-            &self.jit_cache,
-            &self.slot_buffers,
-        )
+        use crate::jit_kernel_fusion::chain_for_single_operator;
+
+        let chain = match chain_for_single_operator(node_name, &self.operator_registry) {
+            Ok(chain) => chain,
+            Err(error) => return cuda_err_receipt(node_name, error),
+        };
+        self.execute_jit_chain_blocking(node_name, &chain, dynamic_payload)
     }
 
     #[cfg(not(feature = "cuda"))]
@@ -212,12 +259,12 @@ impl UniversalExecutor {
 #[cfg(feature = "cuda")]
 fn execute_jit_chain_blocking(
     node_name: &str,
+    chain: &JitChain,
     dynamic_payload: &Value,
     registry: &HashMap<String, Value>,
     cache: &Mutex<JitCache>,
     slot_buffers: &Mutex<SlotBuffers>,
 ) -> ProcessReceipt {
-    use crate::jit_kernel_fusion::chain_for_single_operator;
     use cudarc::driver::{CudaDevice, LaunchAsync, LaunchConfig};
     use std::sync::{Arc, OnceLock};
 
@@ -228,10 +275,6 @@ fn execute_jit_chain_blocking(
         Err(e) => return cuda_err_receipt(node_name, e),
     };
 
-    let chain = match chain_for_single_operator(node_name, registry) {
-        Ok(chain) => chain,
-        Err(error) => return cuda_err_receipt(node_name, error),
-    };
     if chain.outputs.len() != 1 {
         return cuda_err_receipt(
             node_name,
@@ -275,7 +318,7 @@ fn execute_jit_chain_blocking(
         let Ok(ref mut cache) = cache else {
             return cache.err().unwrap();
         };
-        match cache.get_or_compile(&device, &chain, registry) {
+        match cache.get_or_compile(&device, chain, registry) {
             Ok(func) => func,
             Err(error) => return cuda_err_receipt(node_name, error),
         }

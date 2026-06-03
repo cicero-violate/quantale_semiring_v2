@@ -1,0 +1,100 @@
+{
+  "version": 1,
+  "schema": "quantale_semiring_v2.goal_policy.v1",
+  "default_decision": "stage",
+  "immutable_targets": [
+    "root_goal",
+    "root_goal.id",
+    "root_goal.mutable",
+    "root_goal.invariants",
+    "policy.require_human_authority",
+    "policy.require_receipts",
+    "policy.require_rollback"
+  ],
+  "allowed_ops": [
+    "create",
+    "update",
+    "replace",
+    "delete",
+    "reprioritize"
+  ],
+  "allowed_target_prefixes": [
+    "strategic_goals",
+    "tactical_goals"
+  ],
+  "denied_target_prefixes": [
+    "root_goal"
+  ],
+  "required_fields": {
+    "all_ops": [
+      "op",
+      "target",
+      "reason",
+      "expected_benefit",
+      "risk"
+    ],
+    "create": [
+      "goal"
+    ],
+    "update": [
+      "patch"
+    ],
+    "replace": [
+      "goal"
+    ],
+    "delete": [
+      "target"
+    ],
+    "reprioritize": [
+      "priority"
+    ]
+  },
+  "risk_limits": {
+    "max_alignment_drift": 0.05,
+    "max_execution_instability": 0.25,
+    "max_governance_weakening": 0.0,
+    "max_hidden_io_risk": 0.0
+  },
+  "benefit_requirements": {
+    "min_any_of": {
+      "correctness": 0.01,
+      "alignment": 0.01,
+      "speed": 0.01,
+      "robustness": 0.01,
+      "simplicity": 0.01
+    }
+  },
+  "hard_denies": [
+    {
+      "id": "deny_root_mutation",
+      "condition": "target starts_with root_goal",
+      "reason": "Root alignment is immutable."
+    },
+    {
+      "id": "deny_human_authority_removal",
+      "condition": "patch removes or lowers human authority",
+      "reason": "Human authority must be preserved."
+    },
+    {
+      "id": "deny_governance_removal",
+      "condition": "patch removes governance, receipts, policy checks, or rollback",
+      "reason": "Goal mutation must remain governed."
+    },
+    {
+      "id": "deny_hidden_io",
+      "condition": "mutation introduces undeclared IO",
+      "reason": "All IO must be declared in topology metadata."
+    },
+    {
+      "id": "deny_unbounded_self_modification",
+      "condition": "mutation grants unrestricted goal mutation",
+      "reason": "Self-modification must be bounded."
+    }
+  ],
+  "approval": {
+    "mode": "stage_by_default",
+    "auto_apply_allowed": false,
+    "requires_review_receipt": true,
+    "requires_rollback_record": true
+  }
+}

@@ -6,9 +6,9 @@ use std::time::SystemTime;
 use serde_json::{Value, json};
 
 use quantale_semiring_v2::{
-    CompiledCkaPattern, ContractContext, ContractViolation, ExecutionOutcome, ExplorationConfig,
-    ExplorationEngine, GraphTopology, LAYER_CONFIDENCE, LearningPolicy, Node, NodeContracts,
-    ProcessReceipt, ProjectionBias, ReloadPolicy, RuntimeContext, SystemConfig,
+    CompiledCkaPattern, ContractContext, ContractViolation, DecisionReport, ExecutionOutcome,
+    ExplorationConfig, ExplorationEngine, GraphTopology, LAYER_CONFIDENCE, LearningPolicy, Node,
+    NodeContracts, ProcessReceipt, ProjectionBias, ReloadPolicy, RuntimeContext, SystemConfig,
     TensorQuantaleWorld, TlogWriter, TopologyInvariants, TopologyRuntime, UniversalExecutor,
     ViolationKind, action_label, check, check_with_operators, compile_pattern, compile_tensor_plan,
     console, dispatch_decision_batch_blocking, format_quantale_value, format_violations,
@@ -34,6 +34,19 @@ struct RuntimeEpoch {
     compiled_patterns: Vec<CompiledCkaPattern>,
     world: TensorQuantaleWorld,
     exploration_engine: ExplorationEngine,
+}
+
+struct ActiveExecution {
+    receipt: ProcessReceipt,
+    fusion: Option<FusionLogicalAdvance>,
+}
+
+struct FusionLogicalAdvance {
+    entry: String,
+    exit: String,
+    region: String,
+    members: Vec<String>,
+    edges: Vec<(i32, i32)>,
 }
 
 macro_rules! fatal {
@@ -363,20 +376,27 @@ fn main() {
                 }
                 continue;
             }
-            let process_receipt = epoch
-                .executor
-                .execute_abstract_node_blocking(active_node_name, &current_payload);
-            let outcome = ExecutionOutcome::from(&process_receipt);
-            epoch
-                .world
-                .queue_lattice_update(decision.selected_src, decision.first_hop, outcome);
-            epoch
-                .exploration_engine
-                .update_receipt_prior(decision.first_hop, &process_receipt);
+            let execution = execute_active_node_blocking(
+                &epoch,
+                &config,
+                &decision,
+                active_node_name,
+                &current_payload,
+            );
+            let process_receipt = &execution.receipt;
+            let outcome = ExecutionOutcome::from(process_receipt);
+            queue_execution_lattice_updates(&mut epoch.world, &decision, &execution, outcome);
+            update_execution_receipt_priors(
+                &mut epoch.exploration_engine,
+                &decision,
+                &execution,
+                process_receipt,
+            );
             if let Err(error) = tlog.append_exploration_receipt(&json!({
                 "node": active_node_name,
                 "exit_code": process_receipt.exit_code,
                 "prior": epoch.exploration_engine.receipt_prior_for(decision.first_hop),
+                "fusion": execution.fusion.as_ref().map(FusionLogicalAdvance::receipt_json),
             })) {
                 fatal!("tlog", "append_exploration_receipt_failed", error);
             }
@@ -420,13 +440,14 @@ fn main() {
                     }
                 } else {
                     current_payload = json!({ "context": process_receipt.stdout_payload });
-                    current_payload_origin = Some(active_node_name.to_string());
+                    current_payload_origin =
+                        Some(execution.output_origin(active_node_name).to_string());
                 }
             }
             if let Err(error) = epoch.world.drain_lattice_queue() {
                 fatal!("tensor", "drain_lattice_queue_failed", error);
             }
-            if let Err(error) = tlog.log_step(&process_receipt, &decision) {
+            if let Err(error) = tlog.log_step(process_receipt, &decision) {
                 fatal!("tlog", "log_step_failed", error);
             }
             // Failed operators (e.g. jit_cuda without --features cuda) must not
@@ -851,10 +872,15 @@ fn main() {
             continue;
         }
 
-        let process_receipt = epoch
-            .executor
-            .execute_abstract_node_blocking(active_node_name, &current_payload);
-        let outcome = ExecutionOutcome::from(&process_receipt);
+        let execution = execute_active_node_blocking(
+            &epoch,
+            &config,
+            &decision,
+            active_node_name,
+            &current_payload,
+        );
+        let process_receipt = &execution.receipt;
+        let outcome = ExecutionOutcome::from(process_receipt);
 
         console::info(
             "operator",
@@ -894,16 +920,18 @@ fn main() {
             }
         }
 
-        epoch
-            .world
-            .queue_lattice_update(decision.selected_src, decision.first_hop, outcome);
-        epoch
-            .exploration_engine
-            .update_receipt_prior(decision.first_hop, &process_receipt);
+        queue_execution_lattice_updates(&mut epoch.world, &decision, &execution, outcome);
+        update_execution_receipt_priors(
+            &mut epoch.exploration_engine,
+            &decision,
+            &execution,
+            process_receipt,
+        );
         if let Err(error) = tlog.append_exploration_receipt(&json!({
             "node": active_node_name,
             "exit_code": process_receipt.exit_code,
             "prior": epoch.exploration_engine.receipt_prior_for(decision.first_hop),
+            "fusion": execution.fusion.as_ref().map(FusionLogicalAdvance::receipt_json),
         })) {
             fatal!("tlog", "append_exploration_receipt_failed", error);
         }
@@ -946,7 +974,8 @@ fn main() {
                 }
             } else {
                 current_payload = json!({ "context": process_receipt.stdout_payload });
-                current_payload_origin = Some(active_node_name.to_string());
+                current_payload_origin =
+                    Some(execution.output_origin(active_node_name).to_string());
             }
         }
 
@@ -958,7 +987,7 @@ fn main() {
             fatal!("tensor", "decay_failed", error);
         }
 
-        if let Err(error) = tlog.log_step(&process_receipt, &decision) {
+        if let Err(error) = tlog.log_step(process_receipt, &decision) {
             fatal!("tlog", "log_step_failed", error);
         }
 
@@ -1012,6 +1041,155 @@ fn filter_static_topology_edges(
         .into_iter()
         .filter(|edge| allowed.contains(&(edge.src, edge.dst)))
         .collect()
+}
+
+fn execute_active_node_blocking(
+    epoch: &RuntimeEpoch,
+    config: &SystemConfig,
+    decision: &DecisionReport,
+    active_node_name: &str,
+    current_payload: &Value,
+) -> ActiveExecution {
+    if let Some(entry) = config.fusion_dispatch.get_by_entry(active_node_name) {
+        console::info(
+            "fusion",
+            "dispatch",
+            &[
+                ("entry", active_node_name.to_string()),
+                ("region", entry.region.clone()),
+                ("nodes", entry.nodes.join(" -> ")),
+            ],
+        );
+        let receipt = epoch
+            .executor
+            .execute_fusion_entry_blocking(entry, current_payload);
+        let fusion = build_fusion_logical_advance(entry, decision, epoch.topology.registry());
+        return ActiveExecution { receipt, fusion };
+    }
+
+    let receipt = epoch
+        .executor
+        .execute_abstract_node_blocking(active_node_name, current_payload);
+    ActiveExecution {
+        receipt,
+        fusion: None,
+    }
+}
+
+fn build_fusion_logical_advance(
+    entry: &quantale_semiring_v2::FusionEntry,
+    decision: &DecisionReport,
+    registry: &quantale_semiring_v2::NodeRegistry,
+) -> Option<FusionLogicalAdvance> {
+    let mut member_ids = Vec::with_capacity(entry.nodes.len());
+    for member in &entry.nodes {
+        let id = registry.id_of(member)? as i32;
+        member_ids.push(id);
+    }
+
+    let first = *member_ids.first()?;
+    if first != decision.first_hop {
+        console::warn(
+            "fusion",
+            "logical_advance_skipped",
+            &[
+                ("region", entry.region.clone()),
+                (
+                    "reason",
+                    "entry does not match selected first_hop".to_string(),
+                ),
+                ("entry_id", first.to_string()),
+                ("first_hop", decision.first_hop.to_string()),
+            ],
+        );
+        return None;
+    }
+
+    let mut edges = Vec::with_capacity(member_ids.len());
+    edges.push((decision.selected_src, first));
+    for pair in member_ids.windows(2) {
+        edges.push((pair[0], pair[1]));
+    }
+
+    Some(FusionLogicalAdvance {
+        entry: entry.nodes.first().cloned().unwrap_or_default(),
+        exit: entry.nodes.last().cloned().unwrap_or_default(),
+        region: entry.region.clone(),
+        members: entry.nodes.clone(),
+        edges,
+    })
+}
+
+fn queue_execution_lattice_updates(
+    world: &mut TensorQuantaleWorld,
+    decision: &DecisionReport,
+    execution: &ActiveExecution,
+    outcome: ExecutionOutcome,
+) {
+    if outcome == ExecutionOutcome::Success {
+        if let Some(fusion) = &execution.fusion {
+            for (src, dst) in &fusion.edges {
+                world.queue_lattice_update(*src, *dst, outcome);
+            }
+            return;
+        }
+    }
+
+    world.queue_lattice_update(decision.selected_src, decision.first_hop, outcome);
+}
+
+fn update_execution_receipt_priors(
+    exploration_engine: &mut ExplorationEngine,
+    decision: &DecisionReport,
+    execution: &ActiveExecution,
+    receipt: &ProcessReceipt,
+) {
+    exploration_engine.update_receipt_prior(decision.first_hop, receipt);
+    if receipt.exit_code != 0 {
+        return;
+    }
+    if let Some(fusion) = &execution.fusion {
+        for (_, dst) in &fusion.edges {
+            if *dst != decision.first_hop {
+                exploration_engine.update_receipt_prior(*dst, receipt);
+            }
+        }
+    }
+}
+
+impl FusionLogicalAdvance {
+    fn receipt_json(&self) -> Value {
+        json!({
+            "kind": "fusion_region_executed",
+            "entry": self.entry,
+            "exit": self.exit,
+            "members": self.members,
+            "member_receipts": self.members.iter().map(|member| {
+                json!({
+                    "node": member,
+                    "exit_code": 0,
+                    "outcome": "success",
+                    "logical_backend": "fused_region",
+                })
+            }).collect::<Vec<_>>(),
+            "physical_backend": "cuda_jit",
+            "logical_advance": "region_atomic",
+            "region": self.region,
+            "edges": self.edges.iter().map(|(src, dst)| {
+                json!({ "src": src, "dst": dst })
+            }).collect::<Vec<_>>(),
+        })
+    }
+}
+
+impl ActiveExecution {
+    fn output_origin<'a>(&'a self, fallback: &'a str) -> &'a str {
+        self.fusion
+            .as_ref()
+            .filter(|_| self.receipt.exit_code == 0)
+            .map(|fusion| fusion.exit.as_str())
+            .unwrap_or(fallback)
+    }
 }
 
 fn build_runtime_epoch(

@@ -1537,6 +1537,119 @@
         ],
         "locks": []
       }
+    },
+    {
+      "node_name": "State::GoalIntrospect",
+      "executable": "python3",
+      "static_args": [
+        "crates/operators_lib/goal_introspect.py"
+      ],
+      "input_mapping": {
+        "stdin_mode": "json"
+      },
+      "description": "Read current goals and recent tensor log context; emit a compact goal report.",
+      "effects": {
+        "reads": [
+          "goals.source",
+          "state/quantale.tlog"
+        ],
+        "writes": [
+          "goal.report"
+        ],
+        "locks": []
+      }
+    },
+    {
+      "node_name": "State::GoalProposal",
+      "executable": "python3",
+      "static_args": [
+        "crates/operators_lib/call_llm.py",
+        "--template",
+        "goal_proposal"
+      ],
+      "input_mapping": {
+        "stdin_mode": "json"
+      },
+      "description": "Ask the LLM for bounded goal delta proposals under goal policy context.",
+      "effects": {
+        "reads": [
+          "goals.source",
+          "goal.policy",
+          "goal.report"
+        ],
+        "writes": [
+          "goal.proposal"
+        ],
+        "locks": []
+      }
+    },
+    {
+      "node_name": "Control::GoalReview",
+      "executable": "python3",
+      "static_args": [
+        "crates/operators_lib/goal_review.py"
+      ],
+      "input_mapping": {
+        "stdin_mode": "json"
+      },
+      "description": "Validate a proposed goal delta against goal_policy.json without applying it.",
+      "effects": {
+        "reads": [
+          "goals.source",
+          "goal.policy",
+          "goal.proposal"
+        ],
+        "writes": [
+          "goal.review"
+        ],
+        "locks": []
+      }
+    },
+    {
+      "node_name": "Control::GoalMutate",
+      "executable": "python3",
+      "static_args": [
+        "crates/operators_lib/goal_mutate.py"
+      ],
+      "input_mapping": {
+        "stdin_mode": "json"
+      },
+      "description": "Receipt staged or approved goal reviews and optionally apply governed goal deltas.",
+      "effects": {
+        "reads": [
+          "goals.source",
+          "goal.review"
+        ],
+        "writes": [
+          "goals.source",
+          "state/goal_mutations.jsonl"
+        ],
+        "locks": [
+          "goals"
+        ]
+      }
+    },
+    {
+      "node_name": "Event::GoalChanged",
+      "executable": "python3",
+      "static_args": [
+        "crates/operators_lib/event.py",
+        "--event",
+        "GoalChanged"
+      ],
+      "input_mapping": {
+        "stdin_mode": "json"
+      },
+      "description": "Signals that a governed goal mutation receipt was written.",
+      "effects": {
+        "reads": [
+          "state/goal_mutations.jsonl"
+        ],
+        "writes": [
+          "event.log"
+        ],
+        "locks": []
+      }
     }
   ]
 }

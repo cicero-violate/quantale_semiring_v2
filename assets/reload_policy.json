@@ -16,6 +16,8 @@
     "assets/learning_policy.json",
     "assets/patterns.source.json",
     "assets/topology.fusion.json",
-    "assets/reload_policy.json"
+    "assets/reload_policy.json",
+    "assets/goals.source.json",
+    "assets/goal_policy.json"
   ]
 }

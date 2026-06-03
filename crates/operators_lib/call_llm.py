@@ -614,6 +614,8 @@ def main() -> None:
         "analysis_schema": load_asset_json_str("analysis_decision_schema.json"),
         "trading_policy": load_asset_json_str("trading_policy.json"),
         "trade_schema": load_asset_json_str("trade_decision_schema.json"),
+        "goals_source": load_asset_json_str("goals.source.json"),
+        "goal_policy": load_asset_json_str("goal_policy.json"),
         "market_snapshot": load_latest_market_snapshot(),
         "goal_metrics": load_goal_metrics(),
         "system_context": load_system_context(),

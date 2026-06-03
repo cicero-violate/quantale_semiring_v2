@@ -1,0 +1,70 @@
+{
+  "version": 1,
+  "schema": "quantale_semiring_v2.goals.v1",
+  "root_goal": {
+    "id": "root.alignment",
+    "mutable": false,
+    "priority": 1.0,
+    "text": "Serve truth, correctness, alignment, usefulness, and preserve human authority.",
+    "invariants": [
+      "human_authority_preserved",
+      "truth_preserved",
+      "governance_preserved",
+      "receipts_required",
+      "rollback_required",
+      "no_hidden_io",
+      "no_unbounded_self_modification"
+    ]
+  },
+  "strategic_goals": [
+    {
+      "id": "strategy.execution_speed",
+      "mutable": true,
+      "priority": 0.9,
+      "text": "Improve execution speed by moving eligible work into declared tensor, CUDA, and fused JIT paths.",
+      "success_metric": {
+        "kind": "benchmark",
+        "target": "release tensor and full-loop latency improve without lowering correctness or safety"
+      }
+    },
+    {
+      "id": "strategy.architecture_cleanliness",
+      "mutable": true,
+      "priority": 0.95,
+      "text": "Keep orchestration declarative, governed, receipted, and topology-driven.",
+      "success_metric": {
+        "kind": "invariant",
+        "target": "no hidden orchestration side channels"
+      }
+    }
+  ],
+  "tactical_goals": [
+    {
+      "id": "tactical.fix_python_boundary",
+      "mutable": true,
+      "priority": 0.95,
+      "text": "Make Python boundary operators compatible with topology.source.json, topology.generated.json, operators.generated.json, and patterns.source.json.",
+      "blocked_by": [],
+      "receipts": []
+    },
+    {
+      "id": "tactical.clean_topology_warnings",
+      "mutable": true,
+      "priority": 0.9,
+      "text": "Resolve consumed-block-point warnings that can cause cyclic re-entry blockage.",
+      "blocked_by": [],
+      "receipts": []
+    },
+    {
+      "id": "tactical.expand_fusion_regions",
+      "mutable": true,
+      "priority": 0.75,
+      "text": "Increase CUDA/JIT fusible regions only after declared effects and topology warnings are clean.",
+      "blocked_by": [
+        "tactical.fix_python_boundary",
+        "tactical.clean_topology_warnings"
+      ],
+      "receipts": []
+    }
+  ]
+}

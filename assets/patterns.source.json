@@ -195,6 +195,22 @@
       },
       "name": "market_analysis_cycle",
       "safety": 0.98
+    },
+    {
+      "confidence": 0.85,
+      "cost": 1.0,
+      "expr": {
+        "seq": [
+          "State::GoalIntrospect",
+          "State::GoalProposal",
+          "Control::GoalReview",
+          "Control::GoalMutate",
+          "Event::GoalChanged",
+          "State::Plan"
+        ]
+      },
+      "name": "goal_self_revision_cycle",
+      "safety": 0.95
     }
   ]
 }

@@ -376,6 +376,31 @@
       "id": 73,
       "name": "Event::MutationReviewed",
       "type": "Event"
+    },
+    {
+      "id": 74,
+      "name": "State::GoalIntrospect",
+      "type": "State"
+    },
+    {
+      "id": 75,
+      "name": "State::GoalProposal",
+      "type": "State"
+    },
+    {
+      "id": 76,
+      "name": "Control::GoalReview",
+      "type": "Control"
+    },
+    {
+      "id": 77,
+      "name": "Control::GoalMutate",
+      "type": "Control"
+    },
+    {
+      "id": 78,
+      "name": "Event::GoalChanged",
+      "type": "Event"
     }
   ],
   "pages": [
@@ -440,7 +465,12 @@
         "Analysis::Volatility",
         "Analysis::SignalScore",
         "Control::BuildTopologyOverlay",
-        "Event::TopologyOverlayBuilt"
+        "Event::TopologyOverlayBuilt",
+        "State::GoalIntrospect",
+        "State::GoalProposal",
+        "Control::GoalReview",
+        "Control::GoalMutate",
+        "Event::GoalChanged"
       ]
     }
   ],
@@ -485,6 +515,10 @@
       "kind": "gpu"
     },
     "executor": {
+      "capacity": 1,
+      "kind": "lock"
+    },
+    "goals": {
       "capacity": 1,
       "kind": "lock"
     },
@@ -556,6 +590,26 @@
     },
     "execution.report": {
       "kind": "state",
+      "type": "json"
+    },
+    "goal.policy": {
+      "kind": "config",
+      "type": "json"
+    },
+    "goal.proposal": {
+      "kind": "state",
+      "type": "json"
+    },
+    "goal.report": {
+      "kind": "state",
+      "type": "json"
+    },
+    "goal.review": {
+      "kind": "state",
+      "type": "json"
+    },
+    "goals.source": {
+      "kind": "config",
       "type": "json"
     },
     "introspect.report": {
@@ -665,6 +719,10 @@
     "select.result": {
       "kind": "state",
       "type": "json"
+    },
+    "state/goal_mutations.jsonl": {
+      "kind": "receipt",
+      "type": "jsonl"
     },
     "state/learned_edges.jsonl": {
       "kind": "log",
@@ -1553,6 +1611,54 @@
       "policy_effect": "LearnAfterMutationReview",
       "safety": 0.98,
       "to": "Event::LearnUpdated"
+    },
+    {
+      "confidence": 0.35,
+      "cost": 0.65,
+      "from": "State::Learn",
+      "policy_effect": "GoalSelfRevisionEntry",
+      "safety": 0.95,
+      "to": "State::GoalIntrospect"
+    },
+    {
+      "confidence": 0.85,
+      "cost": 1.0,
+      "from": "State::GoalIntrospect",
+      "policy_effect": "goal_self_revision_cycle",
+      "safety": 0.95,
+      "to": "State::GoalProposal"
+    },
+    {
+      "confidence": 0.85,
+      "cost": 1.0,
+      "from": "State::GoalProposal",
+      "policy_effect": "goal_self_revision_cycle",
+      "safety": 0.95,
+      "to": "Control::GoalReview"
+    },
+    {
+      "confidence": 0.85,
+      "cost": 1.0,
+      "from": "Control::GoalReview",
+      "policy_effect": "goal_self_revision_cycle",
+      "safety": 0.95,
+      "to": "Control::GoalMutate"
+    },
+    {
+      "confidence": 0.85,
+      "cost": 1.0,
+      "from": "Control::GoalMutate",
+      "policy_effect": "goal_self_revision_cycle",
+      "safety": 0.95,
+      "to": "Event::GoalChanged"
+    },
+    {
+      "confidence": 0.85,
+      "cost": 1.0,
+      "from": "Event::GoalChanged",
+      "policy_effect": "goal_self_revision_cycle",
+      "safety": 0.95,
+      "to": "State::Plan"
     },
     {
       "confidence": 0.95,

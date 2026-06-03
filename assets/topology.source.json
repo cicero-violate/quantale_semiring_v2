@@ -209,6 +209,30 @@
     "rollback.record": {
       "type": "json",
       "kind": "state"
+    },
+    "goals.source": {
+      "type": "json",
+      "kind": "config"
+    },
+    "goal.policy": {
+      "type": "json",
+      "kind": "config"
+    },
+    "goal.report": {
+      "type": "json",
+      "kind": "state"
+    },
+    "goal.proposal": {
+      "type": "json",
+      "kind": "state"
+    },
+    "goal.review": {
+      "type": "json",
+      "kind": "state"
+    },
+    "state/goal_mutations.jsonl": {
+      "type": "jsonl",
+      "kind": "receipt"
     }
   },
   "resources": {
@@ -253,6 +277,10 @@
       "capacity": 1
     },
     "patterns": {
+      "kind": "lock",
+      "capacity": 1
+    },
+    "goals": {
       "kind": "lock",
       "capacity": 1
     }
@@ -1326,6 +1354,104 @@
       "reads": [],
       "writes": [],
       "locks": []
+    },
+    {
+      "name": "State::GoalIntrospect",
+      "kind": "host_node",
+      "runtime": {
+        "backend": "python",
+        "script": "crates/operators_lib/goal_introspect.py"
+      },
+      "reads": [
+        "goals.source",
+        "state/quantale.tlog"
+      ],
+      "writes": [
+        "goal.report"
+      ],
+      "locks": []
+    },
+    {
+      "name": "State::GoalProposal",
+      "kind": "boundary_node",
+      "runtime": {
+        "backend": "python",
+        "script": "crates/operators_lib/call_llm.py",
+        "template": "goal_proposal"
+      },
+      "reads": [
+        "goals.source",
+        "goal.policy",
+        "goal.report"
+      ],
+      "writes": [
+        "goal.proposal"
+      ],
+      "locks": [],
+      "governance": {
+        "network": true,
+        "allowed_hosts": [
+          "browser-router",
+          "chatgpt"
+        ],
+        "purpose": "propose bounded goal deltas only"
+      }
+    },
+    {
+      "name": "Control::GoalReview",
+      "kind": "policy_node",
+      "runtime": {
+        "backend": "python",
+        "script": "crates/operators_lib/goal_review.py"
+      },
+      "reads": [
+        "goals.source",
+        "goal.policy",
+        "goal.proposal"
+      ],
+      "writes": [
+        "goal.review"
+      ],
+      "locks": []
+    },
+    {
+      "name": "Control::GoalMutate",
+      "kind": "boundary_node",
+      "runtime": {
+        "backend": "python",
+        "script": "crates/operators_lib/goal_mutate.py"
+      },
+      "reads": [
+        "goals.source",
+        "goal.review"
+      ],
+      "writes": [
+        "goals.source",
+        "state/goal_mutations.jsonl"
+      ],
+      "locks": [
+        "goals"
+      ],
+      "governance": {
+        "filesystem": true,
+        "allowed_paths": [
+          "assets/goals.source.json",
+          "state/goal_mutations.jsonl"
+        ],
+        "purpose": "apply reviewed goal deltas with receipt logging"
+      }
+    },
+    {
+      "name": "Event::GoalChanged",
+      "kind": "event_node",
+      "runtime": {
+        "backend": "noop"
+      },
+      "reads": [
+        "state/goal_mutations.jsonl"
+      ],
+      "writes": [],
+      "locks": []
     }
   ],
   "programs": [
@@ -1527,6 +1653,23 @@
         "confidence": 0.95,
         "cost": 1.0,
         "safety": 0.98
+      }
+    },
+    {
+      "name": "goal_self_revision_cycle",
+      "kind": "cka_pattern",
+      "confidence": 0.85,
+      "cost": 1.0,
+      "safety": 0.95,
+      "expr": {
+        "seq": [
+          "State::GoalIntrospect",
+          "State::GoalProposal",
+          "Control::GoalReview",
+          "Control::GoalMutate",
+          "Event::GoalChanged",
+          "State::Plan"
+        ]
       }
     }
   ],
@@ -2352,6 +2495,54 @@
       "cost": 0.1,
       "safety": 0.98,
       "policy_effect": "LearnAfterMutationReview"
+    },
+    {
+      "from": "State::Learn",
+      "to": "State::GoalIntrospect",
+      "confidence": 0.35,
+      "cost": 0.65,
+      "safety": 0.95,
+      "policy_effect": "GoalSelfRevisionEntry"
+    },
+    {
+      "from": "State::GoalIntrospect",
+      "to": "State::GoalProposal",
+      "confidence": 0.85,
+      "cost": 1.0,
+      "safety": 0.95,
+      "policy_effect": "goal_self_revision_cycle"
+    },
+    {
+      "from": "State::GoalProposal",
+      "to": "Control::GoalReview",
+      "confidence": 0.85,
+      "cost": 1.0,
+      "safety": 0.95,
+      "policy_effect": "goal_self_revision_cycle"
+    },
+    {
+      "from": "Control::GoalReview",
+      "to": "Control::GoalMutate",
+      "confidence": 0.85,
+      "cost": 1.0,
+      "safety": 0.95,
+      "policy_effect": "goal_self_revision_cycle"
+    },
+    {
+      "from": "Control::GoalMutate",
+      "to": "Event::GoalChanged",
+      "confidence": 0.85,
+      "cost": 1.0,
+      "safety": 0.95,
+      "policy_effect": "goal_self_revision_cycle"
+    },
+    {
+      "from": "Event::GoalChanged",
+      "to": "State::Plan",
+      "confidence": 0.85,
+      "cost": 1.0,
+      "safety": 0.95,
+      "policy_effect": "goal_self_revision_cycle"
     }
   ],
   "pages": [
@@ -2416,7 +2607,12 @@
         "Analysis::Volatility",
         "Analysis::SignalScore",
         "Control::BuildTopologyOverlay",
-        "Event::TopologyOverlayBuilt"
+        "Event::TopologyOverlayBuilt",
+        "State::GoalIntrospect",
+        "State::GoalProposal",
+        "Control::GoalReview",
+        "Control::GoalMutate",
+        "Event::GoalChanged"
       ]
     }
   ]
