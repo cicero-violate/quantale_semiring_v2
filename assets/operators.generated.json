@@ -1247,7 +1247,7 @@
           "topology_assets"
         ],
         "reads": [
-          "assets/topology.json",
+          "assets/topology.source.json",
           "assets/operators.json",
           "overlays/topology",
           "overlays/operators"
@@ -1296,11 +1296,11 @@
           "topology"
         ],
         "reads": [
-          "topology.json",
+          "topology.source.json",
           "operators.json"
         ],
         "writes": [
-          "topology.json",
+          "topology.source.json",
           "operators.json"
         ]
       },
@@ -1336,7 +1336,7 @@
       "effects": {
         "locks": [],
         "reads": [
-          "topology.json",
+          "topology.generated.json",
           "state/quantale.tlog"
         ],
         "writes": [
@@ -1361,7 +1361,8 @@
           "state/quantale.tlog",
           "state/learned_edges.jsonl",
           "state/topology_mutations.jsonl",
-          "assets/operators.json"
+          "assets/operators.generated.json",
+          "assets/topology.generated.json"
         ],
         "writes": []
       },
@@ -1432,11 +1433,11 @@
       ]
     },
     {
-      "description": "LLM proposes CKA pattern mutations based on execution metrics",
+      "description": "LLM proposes topology.source.json CKA program mutations based on execution metrics",
       "effects": {
         "locks": [],
         "reads": [
-          "assets/patterns.json",
+          "assets/topology.source.json",
           "state/quantale.tlog"
         ],
         "writes": []
@@ -1453,16 +1454,16 @@
       ]
     },
     {
-      "description": "Apply CRUD operations to assets/patterns.json",
+      "description": "Apply CRUD operations to topology.source.json programs",
       "effects": {
         "locks": [
           "patterns"
         ],
         "reads": [
-          "assets/patterns.json"
+          "assets/topology.source.json"
         ],
         "writes": [
-          "assets/patterns.json"
+          "assets/topology.source.json"
         ]
       },
       "executable": "python3",
@@ -1475,7 +1476,7 @@
       ]
     },
     {
-      "description": "Signals that assets/patterns.json was successfully updated",
+      "description": "Signals that topology.source.json programs were successfully updated",
       "effects": {
         "locks": [],
         "reads": [],
@@ -1502,9 +1503,8 @@
           "state/mutation_queue.jsonl",
           "assets/mutation_review_policy.json",
           "assets/governance_policy.json",
-          "assets/topology.json",
-          "assets/operators.json",
-          "assets/patterns.json"
+          "assets/topology.source.json",
+          "assets/operators.json"
         ],
         "writes": []
       },
