@@ -64,8 +64,6 @@
     "patterns":       { "kind": "lock", "capacity": 1 }
   },
 
-  "masks": [],
-
   "nodes": [
     {
       "name": "Analysis::Return1",
