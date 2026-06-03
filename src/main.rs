@@ -27,6 +27,9 @@ struct RuntimeEpoch {
     fingerprint: AssetFingerprint,
     topology: TopologyRuntime,
     executor: UniversalExecutor,
+    /// Accumulates static topology edges plus every LLM-proposed edge so that
+    /// hard reset re-embeds the full learned set, not just the static baseline.
+    accumulated_edges: Vec<quantale_semiring_v2::TensorEdge>,
     compiled_patterns: Vec<CompiledCkaPattern>,
     world: TensorQuantaleWorld,
     exploration_engine: ExplorationEngine,
@@ -230,7 +233,7 @@ fn main() {
                                     eprintln!("{error}");
                                     std::process::exit(1);
                                 }
-                                let _ = epoch.world.snapshot_base_tensor();
+                                epoch.accumulated_edges.extend(plan_edges.clone());
                                 if let Err(error) =
                                     tlog.append_tensor_edges("exploration:plan_tensor", &plan_edges)
                                 {
@@ -274,6 +277,7 @@ fn main() {
                 maybe_hard_reset_after_blocks(
                     &mut consecutive_blocks,
                     &mut epoch.world,
+                    &epoch.accumulated_edges,
                     &mut current_payload,
                     std::time::Duration::from_millis(config.hard_reset_sleep_ms),
                     projection_bias,
@@ -383,7 +387,7 @@ fn main() {
                                                 eprintln!("{error}");
                                                 std::process::exit(1);
                                             }
-                                            let _ = epoch.world.snapshot_base_tensor();
+                                            epoch.accumulated_edges.extend(plan_edges.clone());
                                             if let Err(error) = tlog.append_tensor_edges(
                                                 "plan:tensor_batch",
                                                 &plan_edges,
@@ -440,6 +444,7 @@ fn main() {
                     maybe_hard_reset_after_blocks(
                         &mut consecutive_blocks,
                         &mut epoch.world,
+                        &epoch.accumulated_edges,
                         &mut current_payload,
                         std::time::Duration::from_millis(config.hard_reset_sleep_ms),
                         projection_bias,
@@ -516,6 +521,7 @@ fn main() {
                 maybe_hard_reset_after_blocks(
                     &mut consecutive_blocks,
                     &mut epoch.world,
+                    &epoch.accumulated_edges,
                     &mut current_payload,
                     std::time::Duration::from_millis(config.hard_reset_sleep_ms),
                     projection_bias,
@@ -603,7 +609,7 @@ fn main() {
                                 eprintln!("{error}");
                                 std::process::exit(1);
                             }
-                            let _ = epoch.world.snapshot_base_tensor();
+                            epoch.accumulated_edges.extend(plan_edges.clone());
                             if let Err(error) =
                                 tlog.append_tensor_edges("plan:tensor_llm", &plan_edges)
                             {
@@ -652,6 +658,7 @@ fn main() {
             maybe_hard_reset_after_blocks(
                 &mut consecutive_blocks,
                 &mut epoch.world,
+                &epoch.accumulated_edges,
                 &mut current_payload,
                 std::time::Duration::from_millis(config.hard_reset_sleep_ms),
                 projection_bias,
@@ -766,6 +773,7 @@ fn build_runtime_epoch(
         fingerprint: current_asset_fingerprint(),
         topology,
         executor,
+        accumulated_edges: tensor_edges,
         compiled_patterns,
         world,
         exploration_engine,
@@ -811,6 +819,7 @@ fn watched_asset_paths() -> Vec<PathBuf> {
 fn maybe_hard_reset_after_blocks(
     consecutive_blocks: &mut usize,
     world: &mut TensorQuantaleWorld,
+    accumulated_edges: &[quantale_semiring_v2::TensorEdge],
     current_payload: &mut Value,
     hard_reset_sleep: std::time::Duration,
     projection_bias: ProjectionBias,
@@ -819,15 +828,20 @@ fn maybe_hard_reset_after_blocks(
         return;
     }
 
-    // Hard reset: restore from the latest base snapshot (which includes all
-    // LLM-proposed edges accumulated so far) rather than re-embedding only the
-    // static topology. This preserves dev-chain weight across cycle restarts.
+    // Hard reset: re-embed the full accumulated edge set (static topology +
+    // all LLM-proposed edges collected since startup) so learned dev-chain
+    // weights survive cycle restarts.  reset() zeros the tensor to BOTTOM and
+    // re-initialises the witness via embed, which is required for close() to
+    // build a correct transitive closure.
     eprintln!(
         "[WARN] {} consecutive blocked/failed steps; hard reset.",
         *consecutive_blocks
     );
-    if let Err(error) = world.restore_base_tensor() {
-        eprintln!("[WARN] hard reset restore_base_tensor failed: {error}");
+    if let Err(error) = world.reset() {
+        eprintln!("[WARN] hard reset world.reset() failed: {error}");
+    }
+    if let Err(error) = world.embed_tensor_edges(accumulated_edges) {
+        eprintln!("[WARN] hard reset embed failed: {error}");
     }
     if let Err(error) = world.close() {
         eprintln!("[WARN] hard reset close failed: {error}");
