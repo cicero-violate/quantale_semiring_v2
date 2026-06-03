@@ -1,4 +1,27 @@
 {
+  "policy": {
+    "seed_anchor_node": "State::Goal",
+    "exclusive_locks": [
+      "workspace",
+      "executor",
+      "memory",
+      "learning"
+    ],
+    "exploration_lock_allowlist": [
+      "Control::GateExecution",
+      "State::Validate"
+    ],
+    "fallback_novelty": {
+      "modulus": 7,
+      "offset": 1,
+      "scale": 10.0
+    },
+    "fallback_entropy": {
+      "modulus": 5,
+      "offset": 1,
+      "scale": 10.0
+    }
+  },
   "engine": {
     "beam_width": 8,
     "max_depth": 4,

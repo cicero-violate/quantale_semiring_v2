@@ -8,7 +8,8 @@ use serde_json::{Value, json};
 use quantale_semiring_v2::{
     CompiledCkaPattern, ContractContext, ContractViolation, ExecutionOutcome, ExplorationConfig,
     ExplorationEngine, GraphTopology, LAYER_CONFIDENCE, LearningPolicy, Node, NodeContracts,
-    ProcessReceipt, ProjectionBias, SystemConfig, TensorQuantaleWorld, TlogWriter,
+    ProcessReceipt, ProjectionBias, ReloadPolicy, RuntimeContext, SystemConfig,
+    TensorQuantaleWorld, TlogWriter,
     TopologyInvariants, TopologyRuntime, UniversalExecutor, ViolationKind, action_label, check,
     check_with_operators, compile_pattern, compile_tensor_plan, dispatch_decision_batch_blocking,
     format_quantale_value, format_violations, load_default_patterns, load_learned_tensor_edges,
@@ -91,6 +92,20 @@ fn main() {
     }
 
     let mut config = SystemConfig::default();
+    let mut runtime_context = match RuntimeContext::default_asset() {
+        Ok(context) => context,
+        Err(error) => {
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
+    };
+    let mut runtime_invariants = match runtime_check::RuntimeInvariantPolicy::default_asset() {
+        Ok(policy) => policy,
+        Err(error) => {
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
+    };
     let projection_bias = ProjectionBias::default();
     let learning_policy = LearningPolicy::default_asset();
 
@@ -117,7 +132,7 @@ fn main() {
 
     let sleep_dur =
         (config.tick_sleep_ms > 0).then(|| std::time::Duration::from_millis(config.tick_sleep_ms));
-    let mut current_payload = json!({ "context": "market_analysis_loop" });
+    let mut current_payload = runtime_context.default_payload();
     let mut current_payload_origin: Option<String> = None;
     let mut tick: usize = 0;
     let mut consecutive_blocks: usize = 0;
@@ -130,6 +145,21 @@ fn main() {
         if let Some(next_fingerprint) = changed_asset_fingerprint(&epoch.fingerprint) {
             match build_runtime_epoch(epoch.id + 1, &mut config, &learning_policy, &mut tlog) {
                 Ok(next_epoch) => {
+                    runtime_context = match RuntimeContext::default_asset() {
+                        Ok(context) => context,
+                        Err(error) => {
+                            eprintln!("{error}");
+                            std::process::exit(1);
+                        }
+                    };
+                    runtime_invariants = match runtime_check::RuntimeInvariantPolicy::default_asset()
+                    {
+                        Ok(policy) => policy,
+                        Err(error) => {
+                            eprintln!("{error}");
+                            std::process::exit(1);
+                        }
+                    };
                     println!(
                         "[TOPOLOGY] reloaded epoch {} -> {} ({} nodes, {} transitions)",
                         epoch.id,
@@ -138,7 +168,7 @@ fn main() {
                         next_epoch.topology.document.transitions.len()
                     );
                     epoch = next_epoch;
-                    current_payload = json!({ "context": "market_analysis_loop" });
+                    current_payload = runtime_context.default_payload();
                     current_payload_origin = None;
                     consecutive_blocks = 0;
                 }
@@ -269,6 +299,7 @@ fn main() {
                     &mut current_payload,
                     std::time::Duration::from_millis(config.hard_reset_sleep_ms),
                     projection_bias,
+                    &runtime_context,
                 );
                 if consecutive_blocks == 0 {
                     current_payload_origin = None;
@@ -356,6 +387,7 @@ fn main() {
                     &mut current_payload,
                     std::time::Duration::from_millis(config.hard_reset_sleep_ms),
                     projection_bias,
+                    &runtime_context,
                 );
                 if consecutive_blocks == 0 {
                     current_payload_origin = None;
@@ -529,6 +561,7 @@ fn main() {
                         &mut current_payload,
                         std::time::Duration::from_millis(config.hard_reset_sleep_ms),
                         projection_bias,
+                        &runtime_context,
                     );
                     if consecutive_blocks == 0 {
                         current_payload_origin = None;
@@ -592,7 +625,7 @@ fn main() {
                 );
                 let _ = epoch.world.drain_lattice_queue();
                 let _ = epoch.world.decay(config.decay_blocked);
-                current_payload = json!({ "context": "market_analysis_loop" });
+                current_payload = runtime_context.reset_payload();
                 current_payload_origin = None;
                 if let Some(dur) = sleep_dur {
                     std::thread::sleep(dur);
@@ -613,6 +646,7 @@ fn main() {
                     &mut current_payload,
                     std::time::Duration::from_millis(config.hard_reset_sleep_ms),
                     projection_bias,
+                    &runtime_context,
                 );
                 if consecutive_blocks == 0 {
                     current_payload_origin = None;
@@ -645,7 +679,11 @@ fn main() {
         };
 
         // Invariants 18 + 19: validate decision report before running executor.
-        for v in runtime_check::check_decision(&decision, active_node_name) {
+        for v in runtime_check::check_decision_with_policy(
+            &decision,
+            active_node_name,
+            &runtime_invariants,
+        ) {
             eprintln!("[runtime_check] {v}");
         }
 
@@ -692,6 +730,7 @@ fn main() {
                 &mut current_payload,
                 std::time::Duration::from_millis(config.hard_reset_sleep_ms),
                 projection_bias,
+                &runtime_context,
             );
             if consecutive_blocks == 0 {
                 current_payload_origin = None;
@@ -714,9 +753,14 @@ fn main() {
         if !process_receipt.stderr_payload.is_empty() {
             eprintln!("[STEP] stderr: {}", process_receipt.stderr_payload.trim());
         }
-        // Invariant 24: Control::Block must result in blocked or halted state.
-        if active_node_name.contains("Control::Block") && outcome == ExecutionOutcome::Success {
-            for v in runtime_check::check_decision(&decision, active_node_name) {
+        // Invariant 24: declared block nodes must result in blocked or halted state.
+        if runtime_invariants.is_block_node(active_node_name) && outcome == ExecutionOutcome::Success
+        {
+            for v in runtime_check::check_decision_with_policy(
+                &decision,
+                active_node_name,
+                &runtime_invariants,
+            ) {
                 if v.kind == runtime_check::RuntimeViolationKind::BlockNodeNotBlocked {
                     eprintln!("[runtime_check] {v}");
                 }
@@ -807,6 +851,7 @@ fn main() {
                 &mut current_payload,
                 std::time::Duration::from_millis(config.hard_reset_sleep_ms),
                 projection_bias,
+                &runtime_context,
             );
             if consecutive_blocks == 0 {
                 current_payload_origin = None;
@@ -957,19 +1002,12 @@ fn current_asset_fingerprint() -> AssetFingerprint {
 }
 
 fn watched_asset_paths() -> Vec<PathBuf> {
-    [
-        "assets/topology.generated.json",
-        "assets/topology.json",
-        "assets/operators.generated.json",
-        "assets/operators.json",
-        "assets/node_contracts.json",
-        "assets/runtime_policy.json",
-        "assets/side_effect_policy.json",
-        "assets/patterns.json",
-    ]
-    .into_iter()
-    .map(PathBuf::from)
-    .collect()
+    ReloadPolicy::default_asset()
+        .map(|policy| policy.watched_asset_paths)
+        .unwrap_or_else(|error| {
+            eprintln!("[WARN] reload policy unavailable: {error}");
+            Vec::new()
+        })
 }
 
 fn maybe_hard_reset_after_blocks(
@@ -979,6 +1017,7 @@ fn maybe_hard_reset_after_blocks(
     current_payload: &mut Value,
     hard_reset_sleep: std::time::Duration,
     projection_bias: ProjectionBias,
+    runtime_context: &RuntimeContext,
 ) {
     if *consecutive_blocks == 0 {
         return;
@@ -1002,7 +1041,7 @@ fn maybe_hard_reset_after_blocks(
     if let Err(error) = world.close() {
         eprintln!("[WARN] hard reset close failed: {error}");
     }
-    *current_payload = json!({ "context": "market_analysis_loop" });
+    *current_payload = runtime_context.reset_payload();
     *consecutive_blocks = 0;
     std::thread::sleep(hard_reset_sleep);
 

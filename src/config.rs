@@ -4,12 +4,14 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use serde::Deserialize;
-use serde_json::Value;
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
 
 use crate::topology::GraphTopology;
 
 pub const DEFAULT_OPERATORS_JSON: &str = include_str!("../assets/operators.json");
+pub const DEFAULT_RUNTIME_CONTEXT_JSON: &str = include_str!("../assets/runtime_context.json");
+pub const DEFAULT_RELOAD_POLICY_JSON: &str = include_str!("../assets/reload_policy.json");
 pub const DEFAULT_BLOCK_SIZE: usize = 512;
 
 pub type OperatorRegistry = HashMap<String, Value>;
@@ -28,6 +30,18 @@ struct RuntimePolicyFile {
     decay_blocked: Option<f32>,
     hard_reset_blocks: Option<usize>,
     hard_reset_sleep_ms: Option<u64>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct RuntimeContext {
+    pub default_context: Value,
+    pub start_node: String,
+    pub reset_context: Value,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+pub struct ReloadPolicy {
+    pub watched_asset_paths: Vec<PathBuf>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -52,6 +66,83 @@ pub struct SystemConfig {
     pub hard_reset_blocks: usize,
     /// Milliseconds to sleep during a hard reset.
     pub hard_reset_sleep_ms: u64,
+}
+
+impl RuntimeContext {
+    pub fn from_json_str(input: &str) -> Result<Self, String> {
+        let context: Self =
+            serde_json::from_str(input).map_err(|error| format!("parse runtime context: {error}"))?;
+        context.validate()?;
+        Ok(context)
+    }
+
+    pub fn from_json_file(path: impl AsRef<Path>) -> Result<Self, String> {
+        let input = fs::read_to_string(path.as_ref()).map_err(|error| {
+            format!("read runtime context '{}': {error}", path.as_ref().display())
+        })?;
+        Self::from_json_str(&input)
+    }
+
+    pub fn default_asset() -> Result<Self, String> {
+        Self::from_json_file("assets/runtime_context.json")
+            .or_else(|_| Self::from_json_str(DEFAULT_RUNTIME_CONTEXT_JSON))
+    }
+
+    pub fn default_payload(&self) -> Value {
+        json!({ "context": self.default_context.clone() })
+    }
+
+    pub fn reset_payload(&self) -> Value {
+        json!({ "context": self.reset_context.clone() })
+    }
+
+    fn validate(&self) -> Result<(), String> {
+        if invalid_context_value(&self.default_context) {
+            return Err("runtime_context default_context must not be null".to_string());
+        }
+        if invalid_context_value(&self.reset_context) {
+            return Err("runtime_context reset_context must not be null".to_string());
+        }
+        if self.start_node.trim().is_empty() {
+            return Err("runtime_context start_node must be non-empty".to_string());
+        }
+        Ok(())
+    }
+}
+
+impl ReloadPolicy {
+    pub fn from_json_str(input: &str) -> Result<Self, String> {
+        let policy: Self =
+            serde_json::from_str(input).map_err(|error| format!("parse reload policy: {error}"))?;
+        policy.validate()?;
+        Ok(policy)
+    }
+
+    pub fn from_json_file(path: impl AsRef<Path>) -> Result<Self, String> {
+        let input = fs::read_to_string(path.as_ref()).map_err(|error| {
+            format!("read reload policy '{}': {error}", path.as_ref().display())
+        })?;
+        Self::from_json_str(&input)
+    }
+
+    pub fn default_asset() -> Result<Self, String> {
+        Self::from_json_file("assets/reload_policy.json")
+            .or_else(|_| Self::from_json_str(DEFAULT_RELOAD_POLICY_JSON))
+    }
+
+    fn validate(&self) -> Result<(), String> {
+        if self.watched_asset_paths.is_empty() {
+            return Err("reload policy watched_asset_paths must not be empty".to_string());
+        }
+        if self
+            .watched_asset_paths
+            .iter()
+            .any(|path| path.as_os_str().is_empty())
+        {
+            return Err("reload policy watched_asset_paths must not contain empty paths".to_string());
+        }
+        Ok(())
+    }
 }
 
 impl Default for SystemConfig {
@@ -164,6 +255,10 @@ fn load_runtime_policy(path: impl AsRef<Path>) -> RuntimePolicyFile {
         .ok()
         .and_then(|input| serde_json::from_str(&input).ok())
         .unwrap_or_default()
+}
+
+fn invalid_context_value(value: &Value) -> bool {
+    value.is_null()
 }
 
 fn max_ticks_from_env(default: usize) -> usize {

@@ -1,0 +1,5 @@
+{
+  "default_context": "market_analysis_loop",
+  "start_node": "State::Goal",
+  "reset_context": "market_analysis_loop"
+}

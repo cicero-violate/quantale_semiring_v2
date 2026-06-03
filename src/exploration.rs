@@ -60,6 +60,7 @@ pub struct NodeFeatures {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ExplorationConfig {
+    pub policy: ExplorationPolicy,
     pub beam_width: usize,
     pub max_depth: usize,
     pub max_batches: usize,
@@ -77,7 +78,25 @@ pub struct ExplorationConfig {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ExplorationPolicy {
+    pub seed_anchor_node: String,
+    pub exclusive_locks: Vec<String>,
+    pub exploration_lock_allowlist: Vec<String>,
+    pub fallback_novelty: FeatureFallbackPolicy,
+    pub fallback_entropy: FeatureFallbackPolicy,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct FeatureFallbackPolicy {
+    pub modulus: i32,
+    pub offset: i32,
+    pub scale: f32,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 struct ExplorationConfigFile {
+    #[serde(default = "bundled_exploration_policy")]
+    policy: ExplorationPolicy,
     engine: ExplorationEngineConfig,
     strategies: Vec<ExplorationStrategy>,
     #[serde(default)]
@@ -171,6 +190,7 @@ impl ExplorationConfig {
             CudaError::invalid_input(format!("parse exploration config: {error}"))
         })?;
         let config = Self {
+            policy: file.policy,
             beam_width: file.engine.beam_width,
             max_depth: file.engine.max_depth,
             max_batches: file.engine.max_batches,
@@ -246,6 +266,13 @@ impl ExplorationConfig {
                 "exploration requires at least one strategy",
             ));
         }
+        if self.policy.seed_anchor_node.trim().is_empty() {
+            return Err(CudaError::invalid_input(
+                "exploration policy seed_anchor_node must be non-empty",
+            ));
+        }
+        validate_feature_fallback("fallback_novelty", &self.policy.fallback_novelty)?;
+        validate_feature_fallback("fallback_entropy", &self.policy.fallback_entropy)?;
         for strategy in &self.strategies {
             if strategy.name.trim().is_empty() || strategy.start.trim().is_empty() {
                 return Err(CudaError::invalid_input(
@@ -376,7 +403,7 @@ impl ExplorationEngine {
 
     pub fn seed_tokens(&mut self, tensor: &[f32]) -> Result<&[ExplorationToken], CudaError> {
         self.tokens.clear();
-        let start = self.node_id_from_name("State::Goal")?;
+        let start = self.node_id_from_name(&self.config.policy.seed_anchor_node)?;
         for (strategy_id, strategy) in self.config.strategies.iter().enumerate() {
             let node = self.node_id_from_name(&strategy.start)?;
             let confidence = tensor_value(tensor, LAYER_CONFIDENCE, start, node, 0.0);
@@ -417,12 +444,14 @@ impl ExplorationEngine {
         let has_exclusive_lock = locks
             .iter()
             .filter_map(Value::as_str)
-            .any(|lock| matches!(lock, "workspace" | "executor" | "memory" | "learning"));
+            .any(|lock| self.config.policy.exclusive_locks.iter().any(|item| item == lock));
         if has_exclusive_lock
-            && !matches!(
-                terminal.as_str(),
-                "Control::GateExecution" | "State::Validate"
-            )
+            && !self
+                .config
+                .policy
+                .exploration_lock_allowlist
+                .iter()
+                .any(|node| node == &terminal)
         {
             return Err(CudaError::invalid_input(format!(
                 "exploration candidate '{}' requires exclusive unsafe lock",
@@ -499,7 +528,7 @@ impl ExplorationEngine {
         if let Some(features) = self.config.node_features.get(&name) {
             return features.novelty;
         }
-        ((node.rem_euclid(7) + 1) as f32) / 10.0
+        feature_fallback(node, &self.config.policy.fallback_novelty)
     }
 
     fn entropy_for_node(&self, node: i32) -> f32 {
@@ -507,7 +536,7 @@ impl ExplorationEngine {
         if let Some(features) = self.config.node_features.get(&name) {
             return features.entropy;
         }
-        ((node.rem_euclid(5) + 1) as f32) / 10.0
+        feature_fallback(node, &self.config.policy.fallback_entropy)
     }
 
     fn node_id_from_name(&self, name: &str) -> Result<i32, CudaError> {
@@ -531,6 +560,35 @@ fn default_repeat_penalty() -> f32 {
 
 fn default_max_visits() -> usize {
     1
+}
+
+fn bundled_exploration_policy() -> ExplorationPolicy {
+    serde_json::from_str::<Value>(DEFAULT_EXPLORATION_JSON)
+        .ok()
+        .and_then(|value| value.get("policy").cloned())
+        .and_then(|value| serde_json::from_value(value).ok())
+        .expect("embedded exploration.json contains a valid policy")
+}
+
+fn validate_feature_fallback(
+    name: &str,
+    fallback: &FeatureFallbackPolicy,
+) -> Result<(), CudaError> {
+    if fallback.modulus <= 0 {
+        return Err(CudaError::invalid_input(format!(
+            "exploration policy {name}.modulus must be > 0"
+        )));
+    }
+    if fallback.scale <= 0.0 || !fallback.scale.is_finite() {
+        return Err(CudaError::invalid_input(format!(
+            "exploration policy {name}.scale must be finite and > 0"
+        )));
+    }
+    Ok(())
+}
+
+fn feature_fallback(node: i32, fallback: &FeatureFallbackPolicy) -> f32 {
+    ((node.rem_euclid(fallback.modulus) + fallback.offset) as f32) / fallback.scale
 }
 
 fn visit_vector(visits: &HashMap<i32, i32>, node_count: usize) -> Vec<i32> {

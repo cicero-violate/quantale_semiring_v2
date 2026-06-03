@@ -11,7 +11,7 @@ use cudarc::driver::{CudaDevice, CudaSlice, DeviceRepr, LaunchAsync, LaunchConfi
 use cudarc::nvrtc::compile_ptx;
 use serde::{Deserialize, Serialize};
 
-use crate::config::DEFAULT_BLOCK_SIZE;
+use crate::config::{DEFAULT_BLOCK_SIZE, RuntimeContext};
 use crate::error::CudaError;
 use crate::exploration::{ExplorationCandidate, ExplorationEngine, ExplorationToken};
 use crate::graph::{DecisionReport, Node, reconstruct_path_from_witness_matrix};
@@ -909,7 +909,11 @@ fn kernel_config() -> LaunchConfig {
 pub fn tensor_start_node() -> i32 {
     GraphTopology::bundled_registry()
         .ok()
-        .and_then(|registry| registry.id_of("State::Goal"))
+        .and_then(|registry| {
+            RuntimeContext::default_asset()
+                .ok()
+                .and_then(|context| registry.id_of(&context.start_node))
+        })
         .unwrap_or(0) as i32
 }
 

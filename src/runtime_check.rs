@@ -9,11 +9,17 @@
 //!  18. score=⊥  ⟹  blocked=1  ∧  first_hop < 0   (ScoreBottomNotBlocked)
 //!  19. s≠⊥, blocked=0  ⟹  first_hop = selected_dst  (ProjectionFirstHopMismatch)
 //!  20. s=⊥ with blocked=0  →  skip executor call    (enforced by decision_is_safe)
-//!  24. Control::Block executing  ⟹  blocked=1 ∨ halted=1  (BlockNodeNotBlocked)
+//!  24. Declared block-node pattern executing ⟹ blocked=1 ∨ halted=1 (BlockNodeNotBlocked)
 
 use crate::graph::DecisionReport;
 use crate::tensor::TENSOR_NODE_COUNT;
 use crate::types::BOTTOM;
+use serde::Deserialize;
+use std::fs;
+use std::path::Path;
+
+pub const DEFAULT_RUNTIME_INVARIANTS_JSON: &str =
+    include_str!("../assets/runtime_invariants.json");
 
 /// A runtime tensor invariant violation.
 #[derive(Clone, Debug)]
@@ -37,6 +43,60 @@ pub enum RuntimeViolationKind {
     ProjectionFirstHopMismatch,
     /// Invariant 24: Control::Block node produced blocked=0 and halted=0.
     BlockNodeNotBlocked,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+pub struct RuntimeInvariantPolicy {
+    pub block_node_patterns: Vec<String>,
+}
+
+impl RuntimeInvariantPolicy {
+    pub fn from_json_str(input: &str) -> Result<Self, String> {
+        let policy: Self = serde_json::from_str(input)
+            .map_err(|error| format!("parse runtime invariants: {error}"))?;
+        policy.validate()?;
+        Ok(policy)
+    }
+
+    pub fn from_json_file(path: impl AsRef<Path>) -> Result<Self, String> {
+        let input = fs::read_to_string(path.as_ref()).map_err(|error| {
+            format!(
+                "read runtime invariants '{}': {error}",
+                path.as_ref().display()
+            )
+        })?;
+        Self::from_json_str(&input)
+    }
+
+    pub fn default_asset() -> Result<Self, String> {
+        Self::from_json_file("assets/runtime_invariants.json")
+            .or_else(|_| Self::from_json_str(DEFAULT_RUNTIME_INVARIANTS_JSON))
+    }
+
+    pub fn is_block_node(&self, node_name: &str) -> bool {
+        self.block_node_patterns
+            .iter()
+            .any(|pattern| node_name.contains(pattern))
+    }
+
+    fn validate(&self) -> Result<(), String> {
+        if self.block_node_patterns.is_empty() {
+            return Err(
+                "runtime invariants block_node_patterns must not be empty".to_string(),
+            );
+        }
+        if self
+            .block_node_patterns
+            .iter()
+            .any(|pattern| pattern.trim().is_empty())
+        {
+            return Err(
+                "runtime invariants block_node_patterns must not contain empty patterns"
+                    .to_string(),
+            );
+        }
+        Ok(())
+    }
 }
 
 impl std::fmt::Display for RuntimeViolationKind {
@@ -71,6 +131,19 @@ pub fn decision_is_safe(report: &DecisionReport) -> bool {
 ///
 /// Returns all violations found; caller decides whether to abort or log.
 pub fn check_decision(report: &DecisionReport, executing_node_name: &str) -> Vec<RuntimeViolation> {
+    let fallback_policy = RuntimeInvariantPolicy::default_asset().unwrap_or_else(|_| {
+        RuntimeInvariantPolicy {
+            block_node_patterns: Vec::new(),
+        }
+    });
+    check_decision_with_policy(report, executing_node_name, &fallback_policy)
+}
+
+pub fn check_decision_with_policy(
+    report: &DecisionReport,
+    executing_node_name: &str,
+    policy: &RuntimeInvariantPolicy,
+) -> Vec<RuntimeViolation> {
     let mut violations = Vec::new();
 
     // Invariant 18: s_t = ⊥  ⟹  blocked = 1  ∧  first_hop < 0
@@ -102,8 +175,8 @@ pub fn check_decision(report: &DecisionReport, executing_node_name: &str) -> Vec
         });
     }
 
-    // Invariant 24: Control::Block executing  ⟹  blocked = 1  ∨  halted = 1
-    if executing_node_name.contains("Control::Block") && report.blocked == 0 && report.halted == 0 {
+    // Invariant 24: declared block node executing ⟹ blocked = 1 ∨ halted = 1
+    if policy.is_block_node(executing_node_name) && report.blocked == 0 && report.halted == 0 {
         violations.push(RuntimeViolation {
             kind: RuntimeViolationKind::BlockNodeNotBlocked,
             detail: format!(
