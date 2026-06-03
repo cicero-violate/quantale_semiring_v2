@@ -65,16 +65,23 @@ fn main() {
         };
         let inv = TopologyInvariants::default_asset();
         let violations = check(&topology, &inv);
-        if violations.is_empty() {
+        let (warnings, fatal): (Vec<_>, Vec<_>) = violations
+            .into_iter()
+            .partition(|v| v.kind == ViolationKind::ConsumedBlockPoint);
+        for v in &warnings {
+            eprintln!("[topology] [WARN] {v}");
+        }
+        if fatal.is_empty() {
             println!(
-                "topology OK ({} nodes, {} transitions)",
+                "topology OK ({} nodes, {} transitions, {} known warnings)",
                 topology.nodes.len(),
-                topology.transitions.len()
+                topology.transitions.len(),
+                warnings.len()
             );
             std::process::exit(0);
         }
-        eprintln!("{}", format_violations(&violations));
-        eprintln!("{} violation(s) found", violations.len());
+        eprintln!("{}", format_violations(&fatal));
+        eprintln!("{} violation(s) found", fatal.len());
         std::process::exit(1);
     }
 

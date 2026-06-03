@@ -827,15 +827,6 @@
       "to": "State::Learn"
     },
     {
-      "confidence": 0.91,
-      "cost": 0.09,
-      "default_weight": 0.91,
-      "from": "State::Learn",
-      "policy_effect": "LearnUpdated",
-      "safety": 0.91,
-      "to": "Event::LearnUpdated"
-    },
-    {
       "confidence": 0.34,
       "cost": 0.66,
       "default_weight": 0.34,
@@ -1124,9 +1115,9 @@
       "to": "Control::TopologyMutate"
     },
     {
-      "confidence": 0.6,
-      "cost": 0.4,
-      "default_weight": 0.6,
+      "confidence": 0.97,
+      "cost": 0.03,
+      "default_weight": 0.97,
       "from": "State::Learn",
       "policy_effect": "Introspect",
       "safety": 0.95,
@@ -1210,6 +1201,15 @@
       "default_weight": 0.9,
       "from": "Event::PatternMutated",
       "policy_effect": "ResumeAfterPatternMutate",
+      "safety": 0.95,
+      "to": "Event::LearnUpdated"
+    },
+    {
+      "confidence": 0.5,
+      "cost": 0.5,
+      "default_weight": 0.5,
+      "from": "State::Introspect",
+      "policy_effect": "IntrospectBypass",
       "safety": 0.95,
       "to": "Event::LearnUpdated"
     }
