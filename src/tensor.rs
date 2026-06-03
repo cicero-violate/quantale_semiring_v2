@@ -19,9 +19,7 @@ use crate::types::ProcessReceipt;
 use crate::topology::{GraphTopology, NodeRegistry};
 
 pub const TENSOR_LAYER_COUNT: usize = 3;
-// Must match N in cuda/quantale_world.cu.
-// 47 original + 13 market-trading nodes + 2 topology command nodes = 62.
-pub const TENSOR_NODE_COUNT: usize = 62;
+include!(concat!(env!("OUT_DIR"), "/topology_constants.rs"));
 pub const MATRIX_LEN: usize = TENSOR_NODE_COUNT * TENSOR_NODE_COUNT;
 pub const TENSOR_LEN: usize = TENSOR_LAYER_COUNT * MATRIX_LEN;
 pub const COST_INFINITY: f32 = 1.0e20;
@@ -50,7 +48,7 @@ const JIT_CHAIN_SCORE_KERNEL: &str = "jit_chain_score_embed";
 
 pub const EXPLORATION_MAX_TOKENS: usize = TENSOR_NODE_COUNT * TENSOR_NODE_COUNT;
 pub const EXPLORATION_MAX_SELECTED: usize = TENSOR_NODE_COUNT;
-const KERNEL_SOURCE: &str = include_str!("../cuda/quantale_world.cu");
+const KERNEL_SOURCE_TEMPLATE: &str = include_str!("../cuda/quantale_world.cu");
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
@@ -163,8 +161,9 @@ pub struct TensorQuantaleWorld {
 impl TensorQuantaleWorld {
     pub fn empty() -> Result<Self, CudaError> {
         let dev = CudaDevice::new(0).map_err(|error| CudaError::new("CudaDevice::new", error))?;
+        let kernel_source = format!("{CUDA_TENSOR_NODE_COUNT_DEFINE}{KERNEL_SOURCE_TEMPLATE}");
         let ptx =
-            compile_ptx(KERNEL_SOURCE).map_err(|error| CudaError::new("compile_ptx", error))?;
+            compile_ptx(kernel_source).map_err(|error| CudaError::new("compile_ptx", error))?;
         dev.load_ptx(
             ptx,
             MODULE_NAME,

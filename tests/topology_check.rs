@@ -1,4 +1,6 @@
-use quantale_semiring_v2::{GraphTopology, TopologyInvariants, ViolationKind, check};
+use quantale_semiring_v2::{
+    GraphTopology, TopologyInvariants, TENSOR_NODE_COUNT, ViolationKind, check,
+};
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -269,6 +271,18 @@ fn current_topology_passes_all_checks() {
             node
         );
     }
+}
+
+#[test]
+fn current_topology_fits_tensor_universe() {
+    let topo = GraphTopology::default_asset().expect("bundled topology");
+    let compiled = topo.compile().expect("compile topology");
+    assert!(
+        compiled.node_count <= TENSOR_NODE_COUNT,
+        "topology has {} nodes but generated tensor capacity is {}; rebuild after updating topology assets",
+        compiled.node_count,
+        TENSOR_NODE_COUNT
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

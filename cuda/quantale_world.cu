@@ -18,8 +18,9 @@ struct DecisionReport {
     int blocked;
 };
 
-// Node universe size — must match TENSOR_NODE_COUNT in src/tensor.rs. Currently 62.
-#define N 62
+#ifndef N
+#error "N must be generated from the topology asset by build.rs"
+#endif
 #define MATRIX_LEN (N * N)
 
 #define BOTTOM   0.0f
@@ -240,22 +241,9 @@ extern "C" __global__ void tensor_quantale_closure(
     float* scratch,  // unused; retained so tensor_quantale_tick can call with same args
     int*   witness
 ) {
-    // Three float layers cached in L1/shared: 3 × 3600 × 4 = 43,200 bytes < 48 KB.
-    __shared__ float s_conf[MATRIX_LEN];
-    __shared__ float s_cost[MATRIX_LEN];
-    __shared__ float s_safe[MATRIX_LEN];
-
     int tid = threadIdx.x;
 
-    // Coalesced load from global memory into shared memory.
-    for (int idx = tid; idx < MATRIX_LEN; idx += blockDim.x) {
-        s_conf[idx] = tensor[idx + 0 * MATRIX_LEN];
-        s_cost[idx] = tensor[idx + 1 * MATRIX_LEN];
-        s_safe[idx] = tensor[idx + 2 * MATRIX_LEN];
-    }
-    __syncthreads();
-
-    // Floyd-Warshall transitive closure executing from shared memory.
+    // Floyd-Warshall transitive closure.
     // Invariant: during step k, row k and column k are unchanged (diagonal = identity),
     // so parallel reads within a step are data-race-free.
     for (int k = 0; k < N; ++k) {
@@ -266,39 +254,37 @@ extern "C" __global__ void tensor_quantale_closure(
             int kj = k * N + j;
 
             // Layer 0: confidence (max-times)
-            float c_cand = s_conf[ik] * s_conf[kj];
+            float c_cand = tensor[ik + LAYER_CONFIDENCE * MATRIX_LEN]
+                         * tensor[kj + LAYER_CONFIDENCE * MATRIX_LEN];
             if (c_cand > 1.0f) c_cand = 1.0f;
-            if (c_cand > s_conf[ij]) {
-                s_conf[ij] = c_cand;
+            if (c_cand > tensor[ij + LAYER_CONFIDENCE * MATRIX_LEN]) {
+                tensor[ij + LAYER_CONFIDENCE * MATRIX_LEN] = c_cand;
                 witness[tensor_idx(LAYER_CONFIDENCE, i, j)] =
                     witness[tensor_idx(LAYER_CONFIDENCE, i, k)];
             }
 
             // Layer 1: cost (min-plus)
-            float e_cand = (s_cost[ik] >= COST_INFINITY || s_cost[kj] >= COST_INFINITY)
-                           ? COST_INFINITY : s_cost[ik] + s_cost[kj];
-            if (e_cand < s_cost[ij]) {
-                s_cost[ij] = e_cand;
+            float ik_cost = tensor[ik + LAYER_COST * MATRIX_LEN];
+            float kj_cost = tensor[kj + LAYER_COST * MATRIX_LEN];
+            float e_cand = (ik_cost >= COST_INFINITY || kj_cost >= COST_INFINITY)
+                           ? COST_INFINITY : ik_cost + kj_cost;
+            if (e_cand < tensor[ij + LAYER_COST * MATRIX_LEN]) {
+                tensor[ij + LAYER_COST * MATRIX_LEN] = e_cand;
                 witness[tensor_idx(LAYER_COST, i, j)] =
                     witness[tensor_idx(LAYER_COST, i, k)];
             }
 
             // Layer 2: safety (max-min)
-            float s_cand = s_safe[ik] < s_safe[kj] ? s_safe[ik] : s_safe[kj];
-            if (s_cand > s_safe[ij]) {
-                s_safe[ij] = s_cand;
+            float ik_safe = tensor[ik + LAYER_SAFETY * MATRIX_LEN];
+            float kj_safe = tensor[kj + LAYER_SAFETY * MATRIX_LEN];
+            float s_cand = ik_safe < kj_safe ? ik_safe : kj_safe;
+            if (s_cand > tensor[ij + LAYER_SAFETY * MATRIX_LEN]) {
+                tensor[ij + LAYER_SAFETY * MATRIX_LEN] = s_cand;
                 witness[tensor_idx(LAYER_SAFETY, i, j)] =
                     witness[tensor_idx(LAYER_SAFETY, i, k)];
             }
         }
         __syncthreads();
-    }
-
-    // Flush shared memory back to global tensor.
-    for (int idx = tid; idx < MATRIX_LEN; idx += blockDim.x) {
-        tensor[idx + 0 * MATRIX_LEN] = s_conf[idx];
-        tensor[idx + 1 * MATRIX_LEN] = s_cost[idx];
-        tensor[idx + 2 * MATRIX_LEN] = s_safe[idx];
     }
 }
 

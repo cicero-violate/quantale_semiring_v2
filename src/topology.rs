@@ -1,7 +1,7 @@
 //! Topology facade: re-exports, runtime loader, and tensor edge adapter.
 
 use crate::error::CudaError;
-use crate::tensor::TensorEdge;
+use crate::tensor::{TensorEdge, TENSOR_NODE_COUNT};
 
 pub use topology_core::{
     CompiledTopology, CompiledTransition, GraphTopology, NodeRegistry, TopologyError, TopologyNode,
@@ -54,6 +54,13 @@ impl TopologyRuntime {
             )));
         }
         let compiled = document.compile()?;
+        if compiled.node_count > TENSOR_NODE_COUNT {
+            return Err(CudaError::invalid_input(format!(
+                "topology has {} nodes but generated tensor capacity is {}; rebuild after updating topology assets",
+                compiled.node_count,
+                TENSOR_NODE_COUNT
+            )));
+        }
         let tensor_edges = compiled
             .transitions
             .iter()

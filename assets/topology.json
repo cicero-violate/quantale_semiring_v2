@@ -319,45 +319,55 @@
       "type": "Event"
     },
     {
+      "id": 62,
       "name": "Control::TopologyMutate",
       "type": "Control",
       "action": "topology_mutate"
     },
     {
+      "id": 63,
       "name": "Event::TopologyMutated",
       "type": "Event"
     },
     {
+      "id": 64,
       "name": "State::TopologyPlan",
       "type": "State"
     },
     {
+      "id": 65,
       "name": "State::Introspect",
       "type": "State"
     },
     {
+      "id": 66,
       "name": "State::OperatorPlan",
       "type": "State"
     },
     {
+      "id": 67,
       "name": "Control::WriteOperator",
       "type": "Control",
       "action": "write_operator"
     },
     {
+      "id": 68,
       "name": "Event::OperatorWritten",
       "type": "Event"
     },
     {
+      "id": 69,
       "name": "State::PatternPlan",
       "type": "State"
     },
     {
+      "id": 70,
       "name": "Control::PatternMutate",
       "type": "Control",
       "action": "pattern_mutate"
     },
     {
+      "id": 71,
       "name": "Event::PatternMutated",
       "type": "Event"
     }
