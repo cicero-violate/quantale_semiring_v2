@@ -64,6 +64,14 @@
     "patterns":       { "kind": "lock", "capacity": 1 }
   },
 
+  "quantale": {
+    "layers": [
+      { "name": "confidence", "join": "max", "compose": "times", "bottom": 0.0,   "unit": 1.0 },
+      { "name": "cost",       "join": "min", "compose": "plus",  "bottom": "inf", "unit": 0.0 },
+      { "name": "safety",     "join": "max", "compose": "min",   "bottom": 0.0,   "unit": 1.0 }
+    ]
+  },
+
   "nodes": [
     {
       "name": "Analysis::Return1",
