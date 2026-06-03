@@ -1,5 +1,6 @@
 pub mod batch;
 pub mod config;
+pub mod console;
 pub mod contracts;
 pub mod egress;
 pub mod error;
@@ -17,6 +18,7 @@ pub mod types;
 
 pub use batch::*;
 pub use config::*;
+pub use console::*;
 pub use contracts::*;
 pub use egress::*;
 pub use error::*;

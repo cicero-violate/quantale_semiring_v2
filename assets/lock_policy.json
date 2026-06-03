@@ -1,0 +1,39 @@
+{
+  "locks": {
+    "workspace": {
+      "mode": "exclusive",
+      "exploration": "deny",
+      "exploration_allow_nodes": [
+        "Control::GateExecution"
+      ]
+    },
+    "executor": {
+      "mode": "exclusive",
+      "exploration": "deny"
+    },
+    "memory": {
+      "mode": "exclusive",
+      "exploration": "deny"
+    },
+    "learning": {
+      "mode": "exclusive",
+      "exploration": "deny"
+    },
+    "workspace.diff": {
+      "mode": "shared",
+      "exploration": "allow"
+    },
+    "workspace.files": {
+      "mode": "shared",
+      "exploration": "allow"
+    },
+    "memory.store": {
+      "mode": "shared",
+      "exploration": "allow"
+    },
+    "learning.tensor": {
+      "mode": "shared",
+      "exploration": "allow"
+    }
+  }
+}

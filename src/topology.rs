@@ -1,5 +1,6 @@
 //! Topology facade: re-exports, runtime loader, and tensor edge adapter.
 
+use crate::console;
 use crate::error::CudaError;
 use crate::tensor::{TENSOR_NODE_COUNT, TensorEdge};
 
@@ -46,7 +47,7 @@ impl TopologyRuntime {
             .into_iter()
             .partition(|v| v.kind == ViolationKind::ConsumedBlockPoint);
         for v in &warnings {
-            eprintln!("[topology] [WARN] {v}");
+            console::warn("topology", "violation", &[("detail", v.to_string())]);
         }
         if !fatal.is_empty() {
             return Err(CudaError::invalid_input(format!(

@@ -18,8 +18,7 @@ use serde::Deserialize;
 use std::fs;
 use std::path::Path;
 
-pub const DEFAULT_RUNTIME_INVARIANTS_JSON: &str =
-    include_str!("../assets/runtime_invariants.json");
+pub const DEFAULT_RUNTIME_INVARIANTS_JSON: &str = include_str!("../assets/runtime_invariants.json");
 
 /// A runtime tensor invariant violation.
 #[derive(Clone, Debug)]
@@ -47,7 +46,31 @@ pub enum RuntimeViolationKind {
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 pub struct RuntimeInvariantPolicy {
+    #[serde(default)]
+    pub rules: Vec<RuntimeInvariantRule>,
+    #[serde(default)]
     pub block_node_patterns: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+pub struct RuntimeInvariantRule {
+    pub kind: RuntimeInvariantRuleKind,
+    #[serde(rename = "match")]
+    pub matcher: RuntimeInvariantMatcher,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeInvariantRuleKind {
+    NodeRequiresBlockedOrHalted,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]
+pub struct RuntimeInvariantMatcher {
+    #[serde(default)]
+    pub nodes: Vec<String>,
+    #[serde(default)]
+    pub node_patterns: Vec<String>,
 }
 
 impl RuntimeInvariantPolicy {
@@ -74,16 +97,18 @@ impl RuntimeInvariantPolicy {
     }
 
     pub fn is_block_node(&self, node_name: &str) -> bool {
-        self.block_node_patterns
+        self.rules.iter().any(|rule| {
+            rule.kind == RuntimeInvariantRuleKind::NodeRequiresBlockedOrHalted
+                && rule.matcher.matches_node(node_name)
+        }) || self
+            .block_node_patterns
             .iter()
             .any(|pattern| node_name.contains(pattern))
     }
 
     fn validate(&self) -> Result<(), String> {
-        if self.block_node_patterns.is_empty() {
-            return Err(
-                "runtime invariants block_node_patterns must not be empty".to_string(),
-            );
+        if self.rules.is_empty() && self.block_node_patterns.is_empty() {
+            return Err("runtime invariants rules must not be empty".to_string());
         }
         if self
             .block_node_patterns
@@ -95,7 +120,40 @@ impl RuntimeInvariantPolicy {
                     .to_string(),
             );
         }
+        for rule in &self.rules {
+            rule.validate()?;
+        }
         Ok(())
+    }
+}
+
+impl RuntimeInvariantRule {
+    fn validate(&self) -> Result<(), String> {
+        if self.matcher.nodes.is_empty() && self.matcher.node_patterns.is_empty() {
+            return Err(
+                "runtime invariant rule match must name nodes or node_patterns".to_string(),
+            );
+        }
+        if self.matcher.nodes.iter().any(|node| node.trim().is_empty())
+            || self
+                .matcher
+                .node_patterns
+                .iter()
+                .any(|pattern| pattern.trim().is_empty())
+        {
+            return Err("runtime invariant rule match values must not be empty".to_string());
+        }
+        Ok(())
+    }
+}
+
+impl RuntimeInvariantMatcher {
+    fn matches_node(&self, node_name: &str) -> bool {
+        self.nodes.iter().any(|node| node == node_name)
+            || self
+                .node_patterns
+                .iter()
+                .any(|pattern| node_name.contains(pattern))
     }
 }
 
@@ -131,11 +189,11 @@ pub fn decision_is_safe(report: &DecisionReport) -> bool {
 ///
 /// Returns all violations found; caller decides whether to abort or log.
 pub fn check_decision(report: &DecisionReport, executing_node_name: &str) -> Vec<RuntimeViolation> {
-    let fallback_policy = RuntimeInvariantPolicy::default_asset().unwrap_or_else(|_| {
-        RuntimeInvariantPolicy {
+    let fallback_policy =
+        RuntimeInvariantPolicy::default_asset().unwrap_or_else(|_| RuntimeInvariantPolicy {
+            rules: Vec::new(),
             block_node_patterns: Vec::new(),
-        }
-    });
+        });
     check_decision_with_policy(report, executing_node_name, &fallback_policy)
 }
 

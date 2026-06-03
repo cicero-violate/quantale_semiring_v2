@@ -8,6 +8,7 @@
     "assets/runtime_policy.json",
     "assets/runtime_context.json",
     "assets/runtime_invariants.json",
+    "assets/lock_policy.json",
     "assets/side_effect_policy.json",
     "assets/governance_policy.json",
     "assets/mutation_review_policy.json",

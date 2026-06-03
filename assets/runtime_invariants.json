@@ -1,5 +1,12 @@
 {
-  "block_node_patterns": [
-    "Control::Block"
+  "rules": [
+    {
+      "kind": "node_requires_blocked_or_halted",
+      "match": {
+        "nodes": [
+          "Control::Block"
+        ]
+      }
+    }
   ]
 }

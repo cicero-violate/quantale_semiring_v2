@@ -23,6 +23,7 @@ use crate::topology::{GraphTopology, NodeRegistry};
 use crate::types::ProcessReceipt;
 
 pub const DEFAULT_EXPLORATION_JSON: &str = include_str!("../assets/exploration.json");
+pub const DEFAULT_LOCK_POLICY_JSON: &str = include_str!("../assets/lock_policy.json");
 
 /// Per-exit-code observation values for the receipt EMA update rule.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -80,8 +81,6 @@ pub struct ExplorationConfig {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ExplorationPolicy {
     pub seed_anchor_node: String,
-    pub exclusive_locks: Vec<String>,
-    pub exploration_lock_allowlist: Vec<String>,
     pub fallback_novelty: FeatureFallbackPolicy,
     pub fallback_entropy: FeatureFallbackPolicy,
 }
@@ -171,9 +170,37 @@ pub struct ExplorationCommitRecord {
     pub path: Vec<String>,
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LockPolicy {
+    pub locks: HashMap<String, LockRule>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LockRule {
+    pub mode: LockMode,
+    pub exploration: ExplorationLockAccess,
+    #[serde(default)]
+    pub exploration_allow_nodes: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LockMode {
+    Shared,
+    Exclusive,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExplorationLockAccess {
+    Allow,
+    Deny,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct ExplorationEngine {
     config: ExplorationConfig,
+    lock_policy: LockPolicy,
     node_count: usize,
     node_registry: NodeRegistry,
     operator_registry: OperatorRegistry,
@@ -299,9 +326,11 @@ impl ExplorationEngine {
         operator_registry: OperatorRegistry,
     ) -> Result<Self, CudaError> {
         config.validate_against_topology(topology)?;
+        let lock_policy = LockPolicy::default_asset().map_err(CudaError::invalid_input)?;
         let compiled = topology.compile()?;
         Ok(Self {
             config,
+            lock_policy,
             node_count: compiled.registry.len(),
             node_registry: compiled.registry,
             operator_registry,
@@ -444,17 +473,10 @@ impl ExplorationEngine {
         let has_exclusive_lock = locks
             .iter()
             .filter_map(Value::as_str)
-            .any(|lock| self.config.policy.exclusive_locks.iter().any(|item| item == lock));
-        if has_exclusive_lock
-            && !self
-                .config
-                .policy
-                .exploration_lock_allowlist
-                .iter()
-                .any(|node| node == &terminal)
-        {
+            .any(|lock| self.lock_policy.denies_exploration(lock, &terminal));
+        if has_exclusive_lock {
             return Err(CudaError::invalid_input(format!(
-                "exploration candidate '{}' requires exclusive unsafe lock",
+                "exploration candidate '{}' requires exclusive unsafe lock denied by lock policy",
                 terminal
             )));
         }
@@ -551,6 +573,59 @@ impl ExplorationEngine {
             .and_then(|node| node.name(&self.node_registry))
             .map(str::to_string)
             .unwrap_or_else(|| format!("Unknown({node_id})"))
+    }
+}
+
+impl LockPolicy {
+    pub fn from_json_str(input: &str) -> Result<Self, String> {
+        let policy: Self =
+            serde_json::from_str(input).map_err(|error| format!("parse lock policy: {error}"))?;
+        policy.validate()?;
+        Ok(policy)
+    }
+
+    pub fn from_json_file(path: impl AsRef<Path>) -> Result<Self, String> {
+        let input = fs::read_to_string(path.as_ref())
+            .map_err(|error| format!("read lock policy '{}': {error}", path.as_ref().display()))?;
+        Self::from_json_str(&input)
+    }
+
+    pub fn default_asset() -> Result<Self, String> {
+        Self::from_json_file("assets/lock_policy.json")
+            .or_else(|_| Self::from_json_str(DEFAULT_LOCK_POLICY_JSON))
+    }
+
+    fn denies_exploration(&self, lock: &str, node: &str) -> bool {
+        self.locks
+            .get(lock)
+            .map(|rule| {
+                rule.exploration == ExplorationLockAccess::Deny
+                    && !rule
+                        .exploration_allow_nodes
+                        .iter()
+                        .any(|allowed| allowed == node)
+            })
+            .unwrap_or(false)
+    }
+
+    fn validate(&self) -> Result<(), String> {
+        if self.locks.is_empty() {
+            return Err("lock policy locks must not be empty".to_string());
+        }
+        if self.locks.keys().any(|lock| lock.trim().is_empty()) {
+            return Err("lock policy lock ids must not be empty".to_string());
+        }
+        if self
+            .locks
+            .values()
+            .flat_map(|rule| &rule.exploration_allow_nodes)
+            .any(|node| node.trim().is_empty())
+        {
+            return Err(
+                "lock policy exploration_allow_nodes must not contain empty values".to_string(),
+            );
+        }
+        Ok(())
     }
 }
 

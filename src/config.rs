@@ -70,15 +70,18 @@ pub struct SystemConfig {
 
 impl RuntimeContext {
     pub fn from_json_str(input: &str) -> Result<Self, String> {
-        let context: Self =
-            serde_json::from_str(input).map_err(|error| format!("parse runtime context: {error}"))?;
+        let context: Self = serde_json::from_str(input)
+            .map_err(|error| format!("parse runtime context: {error}"))?;
         context.validate()?;
         Ok(context)
     }
 
     pub fn from_json_file(path: impl AsRef<Path>) -> Result<Self, String> {
         let input = fs::read_to_string(path.as_ref()).map_err(|error| {
-            format!("read runtime context '{}': {error}", path.as_ref().display())
+            format!(
+                "read runtime context '{}': {error}",
+                path.as_ref().display()
+            )
         })?;
         Self::from_json_str(&input)
     }
@@ -139,7 +142,9 @@ impl ReloadPolicy {
             .iter()
             .any(|path| path.as_os_str().is_empty())
         {
-            return Err("reload policy watched_asset_paths must not contain empty paths".to_string());
+            return Err(
+                "reload policy watched_asset_paths must not contain empty paths".to_string(),
+            );
         }
         Ok(())
     }

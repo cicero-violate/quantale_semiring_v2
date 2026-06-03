@@ -9,11 +9,10 @@ use quantale_semiring_v2::{
     CompiledCkaPattern, ContractContext, ContractViolation, ExecutionOutcome, ExplorationConfig,
     ExplorationEngine, GraphTopology, LAYER_CONFIDENCE, LearningPolicy, Node, NodeContracts,
     ProcessReceipt, ProjectionBias, ReloadPolicy, RuntimeContext, SystemConfig,
-    TensorQuantaleWorld, TlogWriter,
-    TopologyInvariants, TopologyRuntime, UniversalExecutor, ViolationKind, action_label, check,
-    check_with_operators, compile_pattern, compile_tensor_plan, dispatch_decision_batch_blocking,
-    format_quantale_value, format_violations, load_default_patterns, load_learned_tensor_edges,
-    project_ready_batch_plan, runtime_check,
+    TensorQuantaleWorld, TlogWriter, TopologyInvariants, TopologyRuntime, UniversalExecutor,
+    ViolationKind, action_label, check, check_with_operators, compile_pattern, compile_tensor_plan,
+    console, dispatch_decision_batch_blocking, format_quantale_value, format_violations,
+    load_default_patterns, load_learned_tensor_edges, project_ready_batch_plan, runtime_check,
 };
 
 use topology_core::build_overlay_assets;
@@ -37,6 +36,13 @@ struct RuntimeEpoch {
     exploration_engine: ExplorationEngine,
 }
 
+macro_rules! fatal {
+    ($scope:expr, $message:expr, $error:expr) => {{
+        console::error($scope, $message, &[("error", $error.to_string())]);
+        std::process::exit(1);
+    }};
+}
+
 fn main() {
     let args = std::env::args().collect::<Vec<_>>();
     if args.get(1).map(String::as_str) == Some("mutations") {
@@ -48,14 +54,18 @@ fn main() {
     {
         match build_overlay_assets(".") {
             Ok(()) => {
-                println!(
-                    "wrote assets/topology.generated.json and assets/operators.generated.json"
+                console::info(
+                    "topology",
+                    "overlay_written",
+                    &[
+                        ("topology", "assets/topology.generated.json".to_string()),
+                        ("operators", "assets/operators.generated.json".to_string()),
+                    ],
                 );
                 std::process::exit(0);
             }
             Err(error) => {
-                eprintln!("[topology] build-overlay failed: {error}");
-                std::process::exit(1);
+                fatal!("topology", "build_overlay_failed", error);
             }
         }
     }
@@ -65,8 +75,7 @@ fn main() {
         let topology = match GraphTopology::default_asset() {
             Ok(t) => t,
             Err(error) => {
-                eprintln!("[topology] parse failed: {error}");
-                std::process::exit(1);
+                fatal!("topology", "parse_failed", error);
             }
         };
         let inv = TopologyInvariants::default_asset();
@@ -75,19 +84,28 @@ fn main() {
             .into_iter()
             .partition(|v| v.kind == ViolationKind::ConsumedBlockPoint);
         for v in &warnings {
-            eprintln!("[topology] [WARN] {v}");
+            console::warn("topology", "violation", &[("detail", v.to_string())]);
         }
         if fatal.is_empty() {
-            println!(
-                "topology OK ({} nodes, {} transitions, {} known warnings)",
-                topology.nodes.len(),
-                topology.transitions.len(),
-                warnings.len()
+            console::info(
+                "topology",
+                "ok",
+                &[
+                    ("nodes", topology.nodes.len().to_string()),
+                    ("transitions", topology.transitions.len().to_string()),
+                    ("warnings", warnings.len().to_string()),
+                ],
             );
             std::process::exit(0);
         }
-        eprintln!("{}", format_violations(&fatal));
-        eprintln!("{} violation(s) found", fatal.len());
+        console::error(
+            "topology",
+            "violations",
+            &[
+                ("count", fatal.len().to_string()),
+                ("detail", format_violations(&fatal)),
+            ],
+        );
         std::process::exit(1);
     }
 
@@ -95,15 +113,13 @@ fn main() {
     let mut runtime_context = match RuntimeContext::default_asset() {
         Ok(context) => context,
         Err(error) => {
-            eprintln!("{error}");
-            std::process::exit(1);
+            fatal!("runtime", "load_runtime_context_failed", error);
         }
     };
     let mut runtime_invariants = match runtime_check::RuntimeInvariantPolicy::default_asset() {
         Ok(policy) => policy,
         Err(error) => {
-            eprintln!("{error}");
-            std::process::exit(1);
+            fatal!("runtime", "load_runtime_invariants_failed", error);
         }
     };
     let projection_bias = ProjectionBias::default();
@@ -112,23 +128,34 @@ fn main() {
     let mut tlog = match TlogWriter::open(&config.tlog_path) {
         Ok(tlog) => tlog,
         Err(error) => {
-            eprintln!("{error}");
-            std::process::exit(1);
+            fatal!("tlog", "open_failed", error);
         }
     };
 
     let mut epoch = match build_runtime_epoch(0, &mut config, &learning_policy, &mut tlog) {
         Ok(epoch) => epoch,
         Err(error) => {
-            eprintln!("{error}");
-            std::process::exit(1);
+            fatal!("runtime", "build_epoch_failed", error);
         }
     };
 
-    println!("Starting Tensor Quantale Neuro-Symbolic Agent Loop...");
-    if config.max_ticks == 0 {
-        println!("Continuous mode: running until halt or signal.");
-    }
+    console::info(
+        "runtime",
+        "starting",
+        &[
+            (
+                "mode",
+                if config.max_ticks == 0 {
+                    "continuous"
+                } else {
+                    "bounded"
+                }
+                .to_string(),
+            ),
+            ("max_ticks", config.max_ticks.to_string()),
+            ("tick_sleep_ms", config.tick_sleep_ms.to_string()),
+        ],
+    );
 
     let sleep_dur =
         (config.tick_sleep_ms > 0).then(|| std::time::Duration::from_millis(config.tick_sleep_ms));
@@ -148,24 +175,31 @@ fn main() {
                     runtime_context = match RuntimeContext::default_asset() {
                         Ok(context) => context,
                         Err(error) => {
-                            eprintln!("{error}");
-                            std::process::exit(1);
+                            fatal!("runtime", "reload_runtime_context_failed", error);
                         }
                     };
-                    runtime_invariants = match runtime_check::RuntimeInvariantPolicy::default_asset()
-                    {
-                        Ok(policy) => policy,
-                        Err(error) => {
-                            eprintln!("{error}");
-                            std::process::exit(1);
-                        }
-                    };
-                    println!(
-                        "[TOPOLOGY] reloaded epoch {} -> {} ({} nodes, {} transitions)",
-                        epoch.id,
-                        next_epoch.id,
-                        next_epoch.topology.document.nodes.len(),
-                        next_epoch.topology.document.transitions.len()
+                    runtime_invariants =
+                        match runtime_check::RuntimeInvariantPolicy::default_asset() {
+                            Ok(policy) => policy,
+                            Err(error) => {
+                                fatal!("runtime", "reload_runtime_invariants_failed", error);
+                            }
+                        };
+                    console::info(
+                        "topology",
+                        "reloaded",
+                        &[
+                            ("from_epoch", epoch.id.to_string()),
+                            ("to_epoch", next_epoch.id.to_string()),
+                            (
+                                "nodes",
+                                next_epoch.topology.document.nodes.len().to_string(),
+                            ),
+                            (
+                                "transitions",
+                                next_epoch.topology.document.transitions.len().to_string(),
+                            ),
+                        ],
                     );
                     epoch = next_epoch;
                     current_payload = runtime_context.default_payload();
@@ -173,9 +207,13 @@ fn main() {
                     consecutive_blocks = 0;
                 }
                 Err(error) => {
-                    eprintln!(
-                        "[TOPOLOGY] reload rejected; continuing epoch {}: {error}",
-                        epoch.id
+                    console::warn(
+                        "topology",
+                        "reload_rejected",
+                        &[
+                            ("epoch", epoch.id.to_string()),
+                            ("error", error.to_string()),
+                        ],
                     );
                     epoch.fingerprint = next_fingerprint;
                 }
@@ -183,8 +221,7 @@ fn main() {
         }
 
         if let Err(error) = epoch.world.close() {
-            eprintln!("{error}");
-            std::process::exit(1);
+            fatal!("tensor", "close_failed", error);
         }
 
         let exploration_candidates = match epoch
@@ -193,7 +230,14 @@ fn main() {
         {
             Ok(candidates) => candidates,
             Err(error) => {
-                eprintln!("[WARN] exploration unavailable; falling back to CKA/frontier: {error}");
+                console::warn(
+                    "exploration",
+                    "unavailable",
+                    &[
+                        ("fallback", "cka_frontier".to_string()),
+                        ("error", error.to_string()),
+                    ],
+                );
                 Vec::new()
             }
         };
@@ -201,60 +245,69 @@ fn main() {
             "token_count": epoch.exploration_engine.tokens().len(),
             "strategy_count": epoch.exploration_engine.config().strategies.len(),
         })) {
-            eprintln!("{error}");
-            std::process::exit(1);
+            fatal!("tlog", "append_exploration_seed_failed", error);
         }
         if let Err(error) = tlog.append_exploration_topk(&json!({
             "candidate_count": exploration_candidates.len(),
             "candidates": exploration_candidates,
         })) {
-            eprintln!("{error}");
-            std::process::exit(1);
+            fatal!("tlog", "append_exploration_topk_failed", error);
         }
         let exploration_winner = epoch.exploration_engine.best_commit_candidate();
         if let Some(candidate) = exploration_winner {
             let commit_record = epoch.exploration_engine.commit_record(candidate);
             if let Err(error) = tlog.append_exploration_commit(&commit_record) {
-                eprintln!("{error}");
-                std::process::exit(1);
+                fatal!("tlog", "append_exploration_commit_failed", error);
             }
             let decision = match epoch.world.commit_exploration_candidate(&candidate) {
                 Ok(decision) => decision,
                 Err(error) => {
-                    eprintln!("{error}");
-                    std::process::exit(1);
+                    fatal!("exploration", "commit_candidate_failed", error);
                 }
             };
             if let Err(error) = tlog.append_decision(&decision) {
-                eprintln!("{error}");
-                std::process::exit(1);
+                fatal!("tlog", "append_decision_failed", error);
             }
             epoch
                 .exploration_engine
                 .mark_candidate_committed(&candidate);
-            println!(
-                "exploration projection=({}->{}) first_hop={} score={} path={:?}",
-                node_name(decision.selected_src, epoch.topology.registry()),
-                node_name(decision.selected_dst, epoch.topology.registry()),
-                node_name(decision.first_hop, epoch.topology.registry()),
-                format_quantale_value(decision.selected_value),
-                commit_record.path,
+            console::info(
+                "exploration",
+                "projection",
+                &[
+                    (
+                        "src",
+                        node_name(decision.selected_src, epoch.topology.registry()),
+                    ),
+                    (
+                        "dst",
+                        node_name(decision.selected_dst, epoch.topology.registry()),
+                    ),
+                    (
+                        "first_hop",
+                        node_name(decision.first_hop, epoch.topology.registry()),
+                    ),
+                    ("score", format_quantale_value(decision.selected_value)),
+                    ("path", format!("{:?}", commit_record.path)),
+                ],
             );
             if decision.blocked != 0 {
                 continue;
             }
             let Some(active_node) = Node::decode(decision.first_hop, epoch.topology.registry())
             else {
-                eprintln!(
-                    "Invalid exploration first_hop index: {}",
-                    decision.first_hop
+                console::error(
+                    "exploration",
+                    "invalid_first_hop",
+                    &[("first_hop", decision.first_hop.to_string())],
                 );
                 break;
             };
             let Some(active_node_name) = active_node.name(epoch.topology.registry()) else {
-                eprintln!(
-                    "Invalid exploration first_hop index: {}",
-                    decision.first_hop
+                console::error(
+                    "exploration",
+                    "invalid_first_hop",
+                    &[("first_hop", decision.first_hop.to_string())],
                 );
                 break;
             };
@@ -264,7 +317,14 @@ fn main() {
                 current_payload_origin.as_deref(),
                 ContractContext::Exploration,
             ) {
-                eprintln!("[contract] {violation}; skipping exploration executor call");
+                console::warn(
+                    "contract",
+                    "exploration_skipped",
+                    &[
+                        ("node", active_node_name.to_string()),
+                        ("reason", violation.reason.clone()),
+                    ],
+                );
                 let process_receipt = contract_violation_receipt(active_node_name, &violation);
                 epoch.world.queue_lattice_update(
                     decision.selected_src,
@@ -280,16 +340,13 @@ fn main() {
                     "contract_violation": violation.reason,
                     "prior": epoch.exploration_engine.receipt_prior_for(decision.first_hop),
                 })) {
-                    eprintln!("{error}");
-                    std::process::exit(1);
+                    fatal!("tlog", "append_exploration_receipt_failed", error);
                 }
                 if let Err(error) = epoch.world.drain_lattice_queue() {
-                    eprintln!("{error}");
-                    std::process::exit(1);
+                    fatal!("tensor", "drain_lattice_queue_failed", error);
                 }
                 if let Err(error) = tlog.log_step(&process_receipt, &decision) {
-                    eprintln!("{error}");
-                    std::process::exit(1);
+                    fatal!("tlog", "log_step_failed", error);
                 }
                 consecutive_blocks += 1;
                 maybe_hard_reset_after_blocks(
@@ -321,8 +378,7 @@ fn main() {
                 "exit_code": process_receipt.exit_code,
                 "prior": epoch.exploration_engine.receipt_prior_for(decision.first_hop),
             })) {
-                eprintln!("{error}");
-                std::process::exit(1);
+                fatal!("tlog", "append_exploration_receipt_failed", error);
             }
 
             if process_receipt.exit_code == 0 && !process_receipt.stdout_payload.is_empty() {
@@ -335,15 +391,13 @@ fn main() {
                             );
                             if !plan_edges.is_empty() {
                                 if let Err(error) = epoch.world.embed_tensor_edges(&plan_edges) {
-                                    eprintln!("{error}");
-                                    std::process::exit(1);
+                                    fatal!("tensor", "embed_tensor_edges_failed", error);
                                 }
                                 epoch.accumulated_edges.extend(plan_edges.clone());
                                 if let Err(error) =
                                     tlog.append_tensor_edges("exploration:plan_tensor", &plan_edges)
                                 {
-                                    eprintln!("{error}");
-                                    std::process::exit(1);
+                                    fatal!("tlog", "append_tensor_edges_failed", error);
                                 }
                             }
                             // Tensor plan edges are now in the GPU world — do not
@@ -352,8 +406,10 @@ fn main() {
                             // JSON on each iteration that call_llm.py must unwrap.
                         }
                         Err(reason) => {
-                            println!(
-                                "[WARN] Exploration tensor plan invalid ({reason}); dampening selected edge"
+                            console::warn(
+                                "tensor",
+                                "exploration_plan_invalid",
+                                &[("reason", reason)],
                             );
                             epoch.world.queue_lattice_update(
                                 decision.selected_src,
@@ -368,12 +424,10 @@ fn main() {
                 }
             }
             if let Err(error) = epoch.world.drain_lattice_queue() {
-                eprintln!("{error}");
-                std::process::exit(1);
+                fatal!("tensor", "drain_lattice_queue_failed", error);
             }
             if let Err(error) = tlog.log_step(&process_receipt, &decision) {
-                eprintln!("{error}");
-                std::process::exit(1);
+                fatal!("tlog", "log_step_failed", error);
             }
             // Failed operators (e.g. jit_cuda without --features cuda) must not
             // count as normal progress — treat them as blocked steps so repeated
@@ -396,8 +450,7 @@ fn main() {
             }
             consecutive_blocks = 0;
             if let Err(error) = epoch.world.decay(config.decay_normal) {
-                eprintln!("{error}");
-                std::process::exit(1);
+                fatal!("tensor", "decay_failed", error);
             }
             continue;
         }
@@ -410,31 +463,46 @@ fn main() {
         ) {
             Ok(Some(batch_plan)) => {
                 if let Err(error) = tlog.append_batch_plan("scheduler:cka_parallel", &batch_plan) {
-                    eprintln!("{error}");
-                    std::process::exit(1);
+                    fatal!("tlog", "append_batch_plan_failed", error);
                 }
 
                 let mut batch_failure_count = 0usize;
                 let mut plan_stdout = Vec::new();
                 for batch in &batch_plan.batches {
                     if let Err(error) = epoch.world.commit_decision_batch(&batch.decisions) {
-                        eprintln!("{error}");
-                        std::process::exit(1);
+                        fatal!("tensor", "commit_decision_batch_failed", error);
                     }
 
                     for decision in &batch.decisions {
                         if let Err(error) = tlog.append_decision(decision) {
-                            eprintln!("{error}");
-                            std::process::exit(1);
+                            fatal!("tlog", "append_decision_failed", error);
                         }
-                        println!(
-                            "batch_step={} projection=({}->{}) first_hop={} score={} action={:?}",
-                            decision.step,
-                            node_name(decision.selected_src, epoch.topology.registry()),
-                            node_name(decision.selected_dst, epoch.topology.registry()),
-                            node_name(decision.first_hop, epoch.topology.registry()),
-                            format_quantale_value(decision.selected_value),
-                            action_label(decision.first_hop, epoch.topology.registry()),
+                        console::info(
+                            "batch",
+                            "projection",
+                            &[
+                                ("step", decision.step.to_string()),
+                                (
+                                    "src",
+                                    node_name(decision.selected_src, epoch.topology.registry()),
+                                ),
+                                (
+                                    "dst",
+                                    node_name(decision.selected_dst, epoch.topology.registry()),
+                                ),
+                                (
+                                    "first_hop",
+                                    node_name(decision.first_hop, epoch.topology.registry()),
+                                ),
+                                ("score", format_quantale_value(decision.selected_value)),
+                                (
+                                    "action",
+                                    format!(
+                                        "{:?}",
+                                        action_label(decision.first_hop, epoch.topology.registry())
+                                    ),
+                                ),
+                            ],
                         );
                     }
 
@@ -445,17 +513,30 @@ fn main() {
                     for scheduled in scheduled_receipts {
                         let active_node_name = scheduled.receipt.node_name.clone();
                         let outcome = ExecutionOutcome::from(&scheduled.receipt);
-                        println!(
-                            "[BATCH] operator={} exit={} outcome={:?} stdout_len={}",
-                            active_node_name,
-                            scheduled.receipt.exit_code,
-                            outcome,
-                            scheduled.receipt.stdout_payload.len(),
+                        console::info(
+                            "batch",
+                            "operator_receipt",
+                            &[
+                                ("operator", active_node_name.clone()),
+                                ("exit", scheduled.receipt.exit_code.to_string()),
+                                ("outcome", format!("{outcome:?}")),
+                                (
+                                    "stdout_len",
+                                    scheduled.receipt.stdout_payload.len().to_string(),
+                                ),
+                            ],
                         );
                         if !scheduled.receipt.stderr_payload.is_empty() {
-                            eprintln!(
-                                "[BATCH] stderr: {}",
-                                scheduled.receipt.stderr_payload.trim()
+                            console::warn(
+                                "batch",
+                                "operator_stderr",
+                                &[
+                                    ("operator", active_node_name.clone()),
+                                    (
+                                        "stderr",
+                                        scheduled.receipt.stderr_payload.trim().to_string(),
+                                    ),
+                                ],
                             );
                         }
 
@@ -473,8 +554,7 @@ fn main() {
                             "exit_code": scheduled.receipt.exit_code,
                             "prior": epoch.exploration_engine.receipt_prior_for(scheduled.decision.first_hop),
                         })) {
-                            eprintln!("{error}");
-                            std::process::exit(1);
+                            fatal!("tlog", "append_exploration_receipt_failed", error);
                         }
 
                         if scheduled.receipt.exit_code == 0
@@ -489,29 +569,34 @@ fn main() {
                                             epoch.topology.tensor_edges(),
                                         );
                                         if !plan_edges.is_empty() {
-                                            println!(
-                                                "[ALGEBRA] Tensor batch plan: {} edge(s) → VRAM",
-                                                plan_edges.len()
+                                            console::info(
+                                                "tensor",
+                                                "batch_plan_embedded",
+                                                &[("edges", plan_edges.len().to_string())],
                                             );
                                             if let Err(error) =
                                                 epoch.world.embed_tensor_edges(&plan_edges)
                                             {
-                                                eprintln!("{error}");
-                                                std::process::exit(1);
+                                                fatal!(
+                                                    "tensor",
+                                                    "embed_tensor_edges_failed",
+                                                    error
+                                                );
                                             }
                                             epoch.accumulated_edges.extend(plan_edges.clone());
                                             if let Err(error) = tlog.append_tensor_edges(
                                                 "plan:tensor_batch",
                                                 &plan_edges,
                                             ) {
-                                                eprintln!("{error}");
-                                                std::process::exit(1);
+                                                fatal!("tlog", "append_tensor_edges_failed", error);
                                             }
                                         }
                                     }
                                     Err(reason) => {
-                                        println!(
-                                            "[WARN] Tensor batch plan invalid ({reason}); dampening selected edge"
+                                        console::warn(
+                                            "tensor",
+                                            "batch_plan_invalid",
+                                            &[("reason", reason)],
                                         );
                                         epoch.world.queue_lattice_update(
                                             scheduled.decision.selected_src,
@@ -534,8 +619,7 @@ fn main() {
                         }
 
                         if let Err(error) = tlog.log_step(&scheduled.receipt, &scheduled.decision) {
-                            eprintln!("{error}");
-                            std::process::exit(1);
+                            fatal!("tlog", "log_step_failed", error);
                         }
                         if scheduled.receipt.exit_code != 0 {
                             batch_failure_count += 1;
@@ -543,8 +627,7 @@ fn main() {
                     }
 
                     if let Err(error) = epoch.world.drain_lattice_queue() {
-                        eprintln!("{error}");
-                        std::process::exit(1);
+                        fatal!("tensor", "drain_lattice_queue_failed", error);
                     }
 
                     if !batch_stdout.is_empty() {
@@ -575,8 +658,7 @@ fn main() {
                 }
 
                 if let Err(error) = epoch.world.decay(config.decay_normal) {
-                    eprintln!("{error}");
-                    std::process::exit(1);
+                    fatal!("tensor", "decay_failed", error);
                 }
                 let _ = epoch
                     .world
@@ -585,34 +667,49 @@ fn main() {
             }
             Ok(None) => {}
             Err(error) => {
-                eprintln!("{error}");
-                std::process::exit(1);
+                fatal!("batch", "project_ready_plan_failed", error);
             }
         }
 
         let decision = match epoch.world.frontier_step(projection_bias) {
             Ok(decision) => decision,
             Err(error) => {
-                eprintln!("{error}");
-                std::process::exit(1);
+                fatal!("frontier", "step_failed", error);
             }
         };
 
         if let Err(error) = tlog.append_decision(&decision) {
-            eprintln!("{error}");
-            std::process::exit(1);
+            fatal!("tlog", "append_decision_failed", error);
         }
 
-        println!(
-            "step={} projection=({}->{}) first_hop={} score={} action={:?} halted={} blocked={}",
-            decision.step,
-            node_name(decision.selected_src, epoch.topology.registry()),
-            node_name(decision.selected_dst, epoch.topology.registry()),
-            node_name(decision.first_hop, epoch.topology.registry()),
-            format_quantale_value(decision.selected_value),
-            action_label(decision.first_hop, epoch.topology.registry()),
-            decision.halted,
-            decision.blocked,
+        console::info(
+            "frontier",
+            "projection",
+            &[
+                ("step", decision.step.to_string()),
+                (
+                    "src",
+                    node_name(decision.selected_src, epoch.topology.registry()),
+                ),
+                (
+                    "dst",
+                    node_name(decision.selected_dst, epoch.topology.registry()),
+                ),
+                (
+                    "first_hop",
+                    node_name(decision.first_hop, epoch.topology.registry()),
+                ),
+                ("score", format_quantale_value(decision.selected_value)),
+                (
+                    "action",
+                    format!(
+                        "{:?}",
+                        action_label(decision.first_hop, epoch.topology.registry())
+                    ),
+                ),
+                ("halted", decision.halted.to_string()),
+                ("blocked", decision.blocked.to_string()),
+            ],
         );
 
         if decision.halted != 0 {
@@ -632,7 +729,7 @@ fn main() {
                 }
                 continue;
             }
-            println!("Tensor execution chain reached terminal halt safely.");
+            console::info("frontier", "halted", &[]);
             break;
         }
 
@@ -658,10 +755,10 @@ fn main() {
         // Check BEFORE resetting consecutive_blocks so that score=⊥ steps
         // accumulate toward the hard-reset threshold alongside blocked steps.
         if !runtime_check::decision_is_safe(&decision) {
-            eprintln!(
-                "[WARN] invariant 20: score=⊥ with blocked=0 (first_hop={}); \
-                 skipping executor call",
-                decision.first_hop
+            console::warn(
+                "runtime_check",
+                "unsafe_decision_skipped",
+                &[("first_hop", decision.first_hop.to_string())],
             );
             consecutive_blocks += 1;
             continue;
@@ -670,11 +767,19 @@ fn main() {
         consecutive_blocks = 0;
 
         let Some(active_node) = Node::decode(decision.first_hop, epoch.topology.registry()) else {
-            eprintln!("Invalid first_hop index: {}", decision.first_hop);
+            console::error(
+                "frontier",
+                "invalid_first_hop",
+                &[("first_hop", decision.first_hop.to_string())],
+            );
             break;
         };
         let Some(active_node_name) = active_node.name(epoch.topology.registry()) else {
-            eprintln!("Invalid first_hop index: {}", decision.first_hop);
+            console::error(
+                "frontier",
+                "invalid_first_hop",
+                &[("first_hop", decision.first_hop.to_string())],
+            );
             break;
         };
 
@@ -684,10 +789,14 @@ fn main() {
             active_node_name,
             &runtime_invariants,
         ) {
-            eprintln!("[runtime_check] {v}");
+            console::warn("runtime_check", "violation", &[("detail", v.to_string())]);
         }
 
-        println!("[STEP] Tensor frontier advanced to node: {active_node_name}");
+        console::info(
+            "frontier",
+            "advanced",
+            &[("node", active_node_name.to_string())],
+        );
 
         if let Err(violation) = epoch.contracts.validate(
             active_node_name,
@@ -695,7 +804,14 @@ fn main() {
             current_payload_origin.as_deref(),
             ContractContext::Frontier,
         ) {
-            eprintln!("[contract] {violation}; skipping executor call");
+            console::warn(
+                "contract",
+                "frontier_skipped",
+                &[
+                    ("node", active_node_name.to_string()),
+                    ("reason", violation.reason.clone()),
+                ],
+            );
             let process_receipt = contract_violation_receipt(active_node_name, &violation);
             epoch.world.queue_lattice_update(
                 decision.selected_src,
@@ -711,16 +827,13 @@ fn main() {
                 "contract_violation": violation.reason,
                 "prior": epoch.exploration_engine.receipt_prior_for(decision.first_hop),
             })) {
-                eprintln!("{error}");
-                std::process::exit(1);
+                fatal!("tlog", "append_exploration_receipt_failed", error);
             }
             if let Err(error) = epoch.world.drain_lattice_queue() {
-                eprintln!("{error}");
-                std::process::exit(1);
+                fatal!("tensor", "drain_lattice_queue_failed", error);
             }
             if let Err(error) = tlog.log_step(&process_receipt, &decision) {
-                eprintln!("{error}");
-                std::process::exit(1);
+                fatal!("tlog", "log_step_failed", error);
             }
             consecutive_blocks += 1;
             maybe_hard_reset_after_blocks(
@@ -743,18 +856,32 @@ fn main() {
             .execute_abstract_node_blocking(active_node_name, &current_payload);
         let outcome = ExecutionOutcome::from(&process_receipt);
 
-        println!(
-            "[STEP] operator={} exit={} outcome={:?} stdout_len={}",
-            active_node_name,
-            process_receipt.exit_code,
-            outcome,
-            process_receipt.stdout_payload.len(),
+        console::info(
+            "operator",
+            "receipt",
+            &[
+                ("node", active_node_name.to_string()),
+                ("exit", process_receipt.exit_code.to_string()),
+                ("outcome", format!("{outcome:?}")),
+                (
+                    "stdout_len",
+                    process_receipt.stdout_payload.len().to_string(),
+                ),
+            ],
         );
         if !process_receipt.stderr_payload.is_empty() {
-            eprintln!("[STEP] stderr: {}", process_receipt.stderr_payload.trim());
+            console::warn(
+                "operator",
+                "stderr",
+                &[
+                    ("node", active_node_name.to_string()),
+                    ("stderr", process_receipt.stderr_payload.trim().to_string()),
+                ],
+            );
         }
         // Invariant 24: declared block nodes must result in blocked or halted state.
-        if runtime_invariants.is_block_node(active_node_name) && outcome == ExecutionOutcome::Success
+        if runtime_invariants.is_block_node(active_node_name)
+            && outcome == ExecutionOutcome::Success
         {
             for v in runtime_check::check_decision_with_policy(
                 &decision,
@@ -762,7 +889,7 @@ fn main() {
                 &runtime_invariants,
             ) {
                 if v.kind == runtime_check::RuntimeViolationKind::BlockNodeNotBlocked {
-                    eprintln!("[runtime_check] {v}");
+                    console::warn("runtime_check", "violation", &[("detail", v.to_string())]);
                 }
             }
         }
@@ -778,8 +905,7 @@ fn main() {
             "exit_code": process_receipt.exit_code,
             "prior": epoch.exploration_engine.receipt_prior_for(decision.first_hop),
         })) {
-            eprintln!("{error}");
-            std::process::exit(1);
+            fatal!("tlog", "append_exploration_receipt_failed", error);
         }
 
         if process_receipt.exit_code == 0 && !process_receipt.stdout_payload.is_empty() {
@@ -789,20 +915,19 @@ fn main() {
                         let plan_edges =
                             filter_static_topology_edges(plan_edges, epoch.topology.tensor_edges());
                         if !plan_edges.is_empty() {
-                            println!(
-                                "[ALGEBRA] Tensor LLM plan: {} edge(s) → VRAM",
-                                plan_edges.len()
+                            console::info(
+                                "tensor",
+                                "llm_plan_embedded",
+                                &[("edges", plan_edges.len().to_string())],
                             );
                             if let Err(error) = epoch.world.embed_tensor_edges(&plan_edges) {
-                                eprintln!("{error}");
-                                std::process::exit(1);
+                                fatal!("tensor", "embed_tensor_edges_failed", error);
                             }
                             epoch.accumulated_edges.extend(plan_edges.clone());
                             if let Err(error) =
                                 tlog.append_tensor_edges("plan:tensor_llm", &plan_edges)
                             {
-                                eprintln!("{error}");
-                                std::process::exit(1);
+                                fatal!("tlog", "append_tensor_edges_failed", error);
                             }
                         }
                         // Tensor plan edges are now in the GPU world — do not
@@ -811,9 +936,7 @@ fn main() {
                         // JSON on each iteration that call_llm.py must unwrap.
                     }
                     Err(reason) => {
-                        println!(
-                            "[WARN] Tensor LLM plan invalid ({reason}); dampening selected edge"
-                        );
+                        console::warn("tensor", "llm_plan_invalid", &[("reason", reason)]);
                         epoch.world.queue_lattice_update(
                             decision.selected_src,
                             decision.first_hop,
@@ -828,18 +951,15 @@ fn main() {
         }
 
         if let Err(error) = epoch.world.drain_lattice_queue() {
-            eprintln!("{error}");
-            std::process::exit(1);
+            fatal!("tensor", "drain_lattice_queue_failed", error);
         }
 
         if let Err(error) = epoch.world.decay(config.decay_normal) {
-            eprintln!("{error}");
-            std::process::exit(1);
+            fatal!("tensor", "decay_failed", error);
         }
 
         if let Err(error) = tlog.log_step(&process_receipt, &decision) {
-            eprintln!("{error}");
-            std::process::exit(1);
+            fatal!("tlog", "log_step_failed", error);
         }
 
         if process_receipt.exit_code != 0 {
@@ -869,8 +989,7 @@ fn main() {
     }
 
     if let Err(error) = tlog.flush() {
-        eprintln!("{error}");
-        std::process::exit(1);
+        fatal!("tlog", "flush_failed", error);
     }
 }
 
@@ -1005,7 +1124,11 @@ fn watched_asset_paths() -> Vec<PathBuf> {
     ReloadPolicy::default_asset()
         .map(|policy| policy.watched_asset_paths)
         .unwrap_or_else(|error| {
-            eprintln!("[WARN] reload policy unavailable: {error}");
+            console::warn(
+                "reload",
+                "policy_unavailable",
+                &[("error", error.to_string())],
+            );
             Vec::new()
         })
 }
@@ -1028,18 +1151,31 @@ fn maybe_hard_reset_after_blocks(
     // weights survive cycle restarts.  reset() zeros the tensor to BOTTOM and
     // re-initialises the witness via embed, which is required for close() to
     // build a correct transitive closure.
-    eprintln!(
-        "[WARN] {} consecutive blocked/failed steps; hard reset.",
-        *consecutive_blocks
+    console::warn(
+        "runtime",
+        "hard_reset",
+        &[("consecutive_blocks", consecutive_blocks.to_string())],
     );
     if let Err(error) = world.reset() {
-        eprintln!("[WARN] hard reset world.reset() failed: {error}");
+        console::warn(
+            "runtime",
+            "hard_reset_world_reset_failed",
+            &[("error", error.to_string())],
+        );
     }
     if let Err(error) = world.embed_tensor_edges(accumulated_edges) {
-        eprintln!("[WARN] hard reset embed failed: {error}");
+        console::warn(
+            "runtime",
+            "hard_reset_embed_failed",
+            &[("error", error.to_string())],
+        );
     }
     if let Err(error) = world.close() {
-        eprintln!("[WARN] hard reset close failed: {error}");
+        console::warn(
+            "runtime",
+            "hard_reset_close_failed",
+            &[("error", error.to_string())],
+        );
     }
     *current_payload = runtime_context.reset_payload();
     *consecutive_blocks = 0;
@@ -1049,10 +1185,10 @@ fn maybe_hard_reset_after_blocks(
     // (read-only) so active[] is not advanced.
     if let Ok(post_reset) = world.project(projection_bias) {
         if post_reset.blocked != 0 {
-            eprintln!(
-                "[WARN] hard reset did not restore a valid frontier \
-                 (first_hop={}); reset+embed may have failed",
-                post_reset.first_hop
+            console::warn(
+                "runtime",
+                "hard_reset_frontier_invalid",
+                &[("first_hop", post_reset.first_hop.to_string())],
             );
         }
     }
@@ -1069,7 +1205,14 @@ fn contract_violation_receipt(node_name: &str, violation: &ContractViolation) ->
 
 fn run_mutations_cli(args: &[String]) -> i32 {
     let Some(command) = args.first().map(String::as_str) else {
-        eprintln!("usage: quantale_semiring_v2 mutations <list|apply> [mutation_id]");
+        console::error(
+            "mutations",
+            "usage",
+            &[(
+                "command",
+                "quantale_semiring_v2 mutations <list|apply> [mutation_id]".to_string(),
+            )],
+        );
         return 2;
     };
 
@@ -1084,7 +1227,14 @@ fn run_mutations_cli(args: &[String]) -> i32 {
             }
         }
         _ => {
-            eprintln!("usage: quantale_semiring_v2 mutations <list|apply> [mutation_id]");
+            console::error(
+                "mutations",
+                "usage",
+                &[(
+                    "command",
+                    "quantale_semiring_v2 mutations <list|apply> [mutation_id]".to_string(),
+                )],
+            );
             return 2;
         }
     }
@@ -1092,7 +1242,11 @@ fn run_mutations_cli(args: &[String]) -> i32 {
     match Command::new("python3").args(&child_args).status() {
         Ok(status) => status.code().unwrap_or(1),
         Err(error) => {
-            eprintln!("failed to run mutation queue command: {error}");
+            console::error(
+                "mutations",
+                "command_failed",
+                &[("error", error.to_string())],
+            );
             1
         }
     }
