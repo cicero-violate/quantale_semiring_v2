@@ -76,12 +76,16 @@ Done in the first implementation slice:
   writing repo assets.
 - Added `crates/operators_lib/apply_mutations.py` as the explicit apply path for
   pending queue records.
+- Added `quantale_semiring_v2 mutations list|apply [mutation_id]` CLI wiring.
+- Added `assets/runtime_policy.json` for runtime tick, decay, and hard-reset
+  thresholds.
 
 Still pending:
 
-- Runtime node/CLI wiring for apply/review commands.
 - Queue listing, diff preview, and selective approval ergonomics.
-- Moving retry/reset and governance thresholds out of `src`.
+- Runtime node wiring for mutation review/apply if it should be part of the
+  topology itself.
+- Richer governance policy beyond the current runtime and side-effect assets.
 
 ## Target Assets
 

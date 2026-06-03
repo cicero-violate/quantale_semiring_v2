@@ -1,5 +1,6 @@
 use std::collections::BTreeSet;
 use std::path::PathBuf;
+use std::process::Command;
 use std::time::SystemTime;
 
 use serde_json::{Value, json};
@@ -37,6 +38,10 @@ struct RuntimeEpoch {
 
 fn main() {
     let args = std::env::args().collect::<Vec<_>>();
+    if args.get(1).map(String::as_str) == Some("mutations") {
+        std::process::exit(run_mutations_cli(&args[2..]));
+    }
+
     if args.get(1).map(String::as_str) == Some("topology")
         && args.get(2).map(String::as_str) == Some("build-overlay")
     {
@@ -958,6 +963,8 @@ fn watched_asset_paths() -> Vec<PathBuf> {
         "assets/operators.generated.json",
         "assets/operators.json",
         "assets/node_contracts.json",
+        "assets/runtime_policy.json",
+        "assets/side_effect_policy.json",
         "assets/patterns.json",
     ]
     .into_iter()
@@ -1018,5 +1025,36 @@ fn contract_violation_receipt(node_name: &str, violation: &ContractViolation) ->
         exit_code: 125,
         stdout_payload: String::new(),
         stderr_payload: format!("contract violation: {}", violation.reason),
+    }
+}
+
+fn run_mutations_cli(args: &[String]) -> i32 {
+    let Some(command) = args.first().map(String::as_str) else {
+        eprintln!("usage: quantale_semiring_v2 mutations <list|apply> [mutation_id]");
+        return 2;
+    };
+
+    let mut child_args = vec!["crates/operators_lib/apply_mutations.py".to_string()];
+    match command {
+        "list" => child_args.push("--list".to_string()),
+        "apply" => {
+            child_args.push("--apply".to_string());
+            if let Some(mutation_id) = args.get(1) {
+                child_args.push("--id".to_string());
+                child_args.push(mutation_id.to_string());
+            }
+        }
+        _ => {
+            eprintln!("usage: quantale_semiring_v2 mutations <list|apply> [mutation_id]");
+            return 2;
+        }
+    }
+
+    match Command::new("python3").args(&child_args).status() {
+        Ok(status) => status.code().unwrap_or(1),
+        Err(error) => {
+            eprintln!("failed to run mutation queue command: {error}");
+            1
+        }
     }
 }

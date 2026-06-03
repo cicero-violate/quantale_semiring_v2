@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Apply pending records from state/mutation_queue.jsonl.
+"""Review or apply pending records from state/mutation_queue.jsonl.
 
 This is the explicit escape hatch for queued repo mutations. It replays each
-pending record through the original operator with QUANTALE_MUTATION_MODE=apply.
+pending record through the original operator with QUANTALE_MUTATION_MODE=apply
+only when --apply is provided.
 """
 
 from __future__ import annotations
@@ -64,14 +65,42 @@ def _apply_record(record: dict) -> dict:
     }
 
 
+def _list_records(records: list[dict], mutation_id: str = "") -> dict:
+    pending = []
+    for record in records:
+        if mutation_id and record.get("id") != mutation_id:
+            continue
+        if record.get("status") != "pending":
+            continue
+        pending.append({
+            "id": record.get("id", ""),
+            "ts": record.get("ts", ""),
+            "kind": record.get("kind", ""),
+            "source_node": record.get("source_node", ""),
+            "effects": record.get("effects", []),
+            "target_paths": record.get("target_paths", []),
+            "summary": record.get("summary", {}),
+        })
+    return {"pending": pending, "pending_count": len(pending)}
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--id", dest="mutation_id", default="")
     parser.add_argument("--queue", default=str(mutation_policy.DEFAULT_QUEUE_PATH))
+    parser.add_argument("--list", action="store_true")
+    parser.add_argument("--apply", action="store_true")
     args = parser.parse_args()
 
     queue_path = pathlib.Path(args.queue)
     records = _load_records(queue_path)
+
+    if args.list or not args.apply:
+        listed = _list_records(records, args.mutation_id)
+        listed["queue_path"] = str(queue_path)
+        print(json.dumps({"mutation_queue": listed}))
+        return
+
     applied = []
     for record in records:
         if record.get("status") != "pending":

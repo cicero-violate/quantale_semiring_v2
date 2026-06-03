@@ -1,0 +1,9 @@
+{
+  "ingress_capacity_hint": 1024,
+  "max_ticks": 64,
+  "tick_sleep_ms": 0,
+  "decay_normal": 0.995,
+  "decay_blocked": 0.97,
+  "hard_reset_blocks": 3,
+  "hard_reset_sleep_ms": 200
+}

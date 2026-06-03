@@ -19,6 +19,17 @@ struct OperatorRegistryFile {
     operators: Vec<Value>,
 }
 
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+struct RuntimePolicyFile {
+    ingress_capacity_hint: Option<usize>,
+    max_ticks: Option<usize>,
+    tick_sleep_ms: Option<u64>,
+    decay_normal: Option<f32>,
+    decay_blocked: Option<f32>,
+    hard_reset_blocks: Option<usize>,
+    hard_reset_sleep_ms: Option<u64>,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct SystemConfig {
     pub matrix_dim: usize,
@@ -52,6 +63,7 @@ impl Default for SystemConfig {
         let (matrix_dim, matrix_len) = GraphTopology::bundled_registry()
             .map(|registry| (registry.len(), registry.matrix_len()))
             .unwrap_or((0, 0));
+        let runtime_policy = load_runtime_policy("assets/runtime_policy.json");
 
         Self {
             matrix_dim,
@@ -61,13 +73,13 @@ impl Default for SystemConfig {
             learned_edges_path: PathBuf::from("state/learned_edges.jsonl"),
             operators_path,
             operator_registry,
-            ingress_capacity_hint: 1024,
-            max_ticks: max_ticks_from_env(),
-            tick_sleep_ms: tick_sleep_ms_from_env(),
-            decay_normal: 0.995,
-            decay_blocked: 0.97,
-            hard_reset_blocks: 3,
-            hard_reset_sleep_ms: 200,
+            ingress_capacity_hint: runtime_policy.ingress_capacity_hint.unwrap_or(1024),
+            max_ticks: max_ticks_from_env(runtime_policy.max_ticks.unwrap_or(64)),
+            tick_sleep_ms: tick_sleep_ms_from_env(runtime_policy.tick_sleep_ms.unwrap_or(0)),
+            decay_normal: runtime_policy.decay_normal.unwrap_or(0.995),
+            decay_blocked: runtime_policy.decay_blocked.unwrap_or(0.97),
+            hard_reset_blocks: runtime_policy.hard_reset_blocks.unwrap_or(3),
+            hard_reset_sleep_ms: runtime_policy.hard_reset_sleep_ms.unwrap_or(200),
         }
     }
 }
@@ -128,6 +140,18 @@ impl SystemConfig {
         if self.block_size == 0 {
             return Err("block_size must be nonzero".to_string());
         }
+        if self.ingress_capacity_hint == 0 {
+            return Err("ingress_capacity_hint must be nonzero".to_string());
+        }
+        if self.decay_normal <= 0.0 || self.decay_normal > 1.0 {
+            return Err("decay_normal must be in (0, 1]".to_string());
+        }
+        if self.decay_blocked <= 0.0 || self.decay_blocked > 1.0 {
+            return Err("decay_blocked must be in (0, 1]".to_string());
+        }
+        if self.hard_reset_blocks == 0 {
+            return Err("hard_reset_blocks must be nonzero".to_string());
+        }
         if self.operator_registry.is_empty() {
             return Err("operator_registry must contain at least one operator".to_string());
         }
@@ -135,21 +159,28 @@ impl SystemConfig {
     }
 }
 
-fn max_ticks_from_env() -> usize {
+fn load_runtime_policy(path: impl AsRef<Path>) -> RuntimePolicyFile {
+    fs::read_to_string(path.as_ref())
+        .ok()
+        .and_then(|input| serde_json::from_str(&input).ok())
+        .unwrap_or_default()
+}
+
+fn max_ticks_from_env(default: usize) -> usize {
     if std::env::var("QUANTALE_LOOP_FOREVER").as_deref() == Ok("1") {
         return 0;
     }
     std::env::var("QUANTALE_MAX_TICKS")
         .ok()
         .and_then(|s| s.parse::<usize>().ok())
-        .unwrap_or(64)
+        .unwrap_or(default)
 }
 
-fn tick_sleep_ms_from_env() -> u64 {
+fn tick_sleep_ms_from_env(default: u64) -> u64 {
     std::env::var("QUANTALE_TICK_SLEEP_MS")
         .ok()
         .and_then(|s| s.parse::<u64>().ok())
-        .unwrap_or(0)
+        .unwrap_or(default)
 }
 
 pub fn load_operator_registry(path: impl AsRef<Path>) -> Result<OperatorRegistry, String> {
