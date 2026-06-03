@@ -1,0 +1,252 @@
+{
+  "matrix_name": "quantale_semiring_v2",
+  "version": 1,
+
+  "slots": {
+    "env.task":                     { "type": "json",   "kind": "input"   },
+    "task.context":                 { "type": "json",   "kind": "state"   },
+    "market.config":                { "type": "json",   "kind": "config"  },
+    "market.feed":                  { "type": "json",   "kind": "state"   },
+    "market.price":                 { "type": "f32[]",  "kind": "tensor"  },
+    "market.open":                  { "type": "f32[]",  "kind": "tensor"  },
+    "analysis.config":              { "type": "json",   "kind": "config"  },
+    "analysis.plan":                { "type": "json",   "kind": "state"   },
+    "analysis.return":              { "type": "f32[]",  "kind": "tensor"  },
+    "analysis.volatility":          { "type": "f32[]",  "kind": "tensor"  },
+    "analysis.signal_score":        { "type": "f32[]",  "kind": "tensor"  },
+    "trade.decision":               { "type": "json",   "kind": "state"   },
+    "trading.policy":               { "type": "json",   "kind": "config"  },
+    "trade.receipt":                { "type": "json",   "kind": "receipt" },
+    "plan.tensor":                  { "type": "json",   "kind": "state"   },
+    "optimized.tensor":             { "type": "json",   "kind": "state"   },
+    "execution.report":             { "type": "json",   "kind": "state"   },
+    "validation.report":            { "type": "json",   "kind": "state"   },
+    "commit.record":                { "type": "json",   "kind": "state"   },
+    "memory.store":                 { "type": "json",   "kind": "state"   },
+    "learning.tensor":              { "type": "json",   "kind": "state"   },
+    "repair.intent":                { "type": "json",   "kind": "state"   },
+    "retry.intent":                 { "type": "json",   "kind": "state"   },
+    "map.candidates":               { "type": "json",   "kind": "state"   },
+    "search.results":               { "type": "json",   "kind": "state"   },
+    "parse.tree":                   { "type": "json",   "kind": "state"   },
+    "score.report":                 { "type": "json",   "kind": "state"   },
+    "workspace.diff":               { "type": "bytes",  "kind": "state"   },
+    "workspace.files":              { "type": "bytes",  "kind": "state"   },
+    "receipt.report":               { "type": "json",   "kind": "receipt" },
+    "math.a":                       { "type": "f32[]",  "kind": "tensor"  },
+    "math.b":                       { "type": "f32[]",  "kind": "tensor"  },
+    "math.scale":                   { "type": "f32[]",  "kind": "tensor"  },
+    "math.add_out":                 { "type": "f32[]",  "kind": "tensor"  },
+    "math.out":                     { "type": "f32[]",  "kind": "tensor"  },
+    "portfolio.state":              { "type": "json",   "kind": "state"   },
+    "trading.signals":              { "type": "f32[]",  "kind": "tensor"  },
+    "execution.gpu.results":        { "type": "f32[]",  "kind": "tensor"  },
+    "state/quantale.tlog":          { "type": "jsonl",  "kind": "log"     },
+    "state/learned_edges.jsonl":    { "type": "jsonl",  "kind": "log"     },
+    "state/market_feed.jsonl":      { "type": "jsonl",  "kind": "log"     },
+    "state/paper_orders.jsonl":     { "type": "jsonl",  "kind": "log"     },
+    "state/paper_positions.json":   { "type": "json",   "kind": "state"   },
+    "state/topology_mutations.jsonl":{ "type": "jsonl", "kind": "log"     },
+    "state/mutation_queue.jsonl":   { "type": "jsonl",  "kind": "log"     }
+  },
+
+  "resources": {
+    "cuda":           { "kind": "gpu",  "capacity": 1 },
+    "workspace":      { "kind": "lock", "capacity": 1 },
+    "memory":         { "kind": "lock", "capacity": 1 },
+    "executor":       { "kind": "lock", "capacity": 1 },
+    "commit":         { "kind": "lock", "capacity": 1 },
+    "learning":       { "kind": "lock", "capacity": 1 },
+    "topology":       { "kind": "lock", "capacity": 1 },
+    "topology_assets":{ "kind": "lock", "capacity": 1 },
+    "paper_broker":   { "kind": "lock", "capacity": 1 },
+    "operators_lib":  { "kind": "lock", "capacity": 1 },
+    "patterns":       { "kind": "lock", "capacity": 1 }
+  },
+
+  "masks": [],
+
+  "programs": [
+    {
+      "name": "plan_optimize_execute",
+      "expr": {
+        "seq": [
+          "State::Plan",
+          "State::Optimize",
+          "State::Execute"
+        ]
+      },
+      "confidence": 0.95,
+      "cost": 1.0,
+      "safety": 0.9
+    },
+    {
+      "name": "choose_repair_or_retry",
+      "expr": {
+        "choice": [
+          {
+            "seq": [
+              "Control::Repair",
+              "State::Optimize"
+            ]
+          },
+          {
+            "seq": [
+              "Control::Retry",
+              "State::Optimize"
+            ]
+          }
+        ]
+      },
+      "confidence": 0.8,
+      "cost": 2.0,
+      "safety": 0.85
+    },
+    {
+      "name": "parallel_prepare",
+      "expr": {
+        "seq": [
+          "Event::InputAccepted",
+          {
+            "par": [
+              {
+                "seq": [
+                  "State::Map",
+                  "State::Search"
+                ]
+              },
+              {
+                "seq": [
+                  "State::Parse",
+                  "State::Score"
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "confidence": 0.99,
+      "cost": 0.01,
+      "safety": 0.99
+    },
+    {
+      "name": "identity_skip_marker",
+      "expr": "one",
+      "confidence": 1.0,
+      "cost": 0.0,
+      "safety": 1.0
+    },
+    {
+      "name": "blocked_marker",
+      "expr": "zero",
+      "confidence": 0.0,
+      "cost": 0.0,
+      "safety": 0.0
+    },
+    {
+      "name": "market_analysis_trade_seq",
+      "expr": {
+        "seq": [
+          "State::Input",
+          "State::MarketFeed",
+          "Event::MarketFeedUpdated",
+          "State::AnalysisPlan",
+          "Event::AnalysisPlanReady",
+          "Analysis::Return1",
+          "Analysis::Volatility",
+          "Analysis::SignalScore",
+          "Event::AnalysisFinished",
+          "State::Plan",
+          "State::TradePlan",
+          "Event::TradeDecisionReady",
+          "State::PaperTrade"
+        ]
+      },
+      "confidence": 0.91,
+      "cost": 1.0,
+      "safety": 0.9
+    },
+    {
+      "name": "paper_trade_retry_bounded",
+      "expr": {
+        "star": {
+          "body": {
+            "seq": [
+              "State::PaperTrade",
+              "Event::PaperTradeRejected",
+              "Control::Repair",
+              "Control::Retry"
+            ]
+          },
+          "max_unroll": 3
+        }
+      },
+      "confidence": 0.72,
+      "cost": 1.0,
+      "safety": 0.86
+    },
+    {
+      "name": "market_analysis_loop_seq",
+      "expr": {
+        "seq": [
+          "State::Input",
+          "State::MarketFeed",
+          "Event::MarketFeedUpdated",
+          "State::AnalysisPlan",
+          "Event::AnalysisPlanReady",
+          "Analysis::Return1",
+          "Analysis::Volatility",
+          "Analysis::SignalScore",
+          "Event::AnalysisFinished",
+          "State::Plan",
+          "State::TradePlan",
+          "Event::TradeDecisionReady",
+          "State::PaperTrade"
+        ]
+      },
+      "confidence": 0.91,
+      "cost": 1.0,
+      "safety": 0.9
+    },
+    {
+      "name": "paper_trade_repair_retry_star",
+      "expr": {
+        "star": {
+          "body": {
+            "seq": [
+              "Event::PaperTradeRejected",
+              "Control::Repair",
+              "Control::Retry",
+              "State::PaperTrade"
+            ]
+          },
+          "max_unroll": 3
+        }
+      },
+      "confidence": 0.74,
+      "cost": 1.0,
+      "safety": 0.86
+    },
+    {
+      "name": "market_analysis_cycle",
+      "entry": "State::Input",
+      "expr": {
+        "seq": [
+          "State::Input",
+          "State::MarketFeed",
+          "State::AnalysisPlan",
+          "Analysis::Return1",
+          "Analysis::Volatility",
+          "Analysis::SignalScore",
+          "State::Plan",
+          "State::TradePlan"
+        ]
+      },
+      "weight": {
+        "confidence": 0.95,
+        "cost": 1.0,
+        "safety": 0.98
+      }
+    }
+  ]
+}

@@ -4,6 +4,7 @@ pub mod delta;
 pub mod error;
 pub mod model;
 pub mod overlay;
+pub mod programs;
 pub mod registry;
 
 pub use check::{

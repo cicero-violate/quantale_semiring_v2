@@ -448,6 +448,12 @@
       ]
     }
   ],
+  "parallel_groups": [
+    [
+      "State::Map",
+      "State::Parse"
+    ]
+  ],
   "transitions": [
     {
       "confidence": 0.99,
@@ -1292,6 +1298,123 @@
       "policy_effect": "LearnAfterMutationReview",
       "safety": 0.98,
       "to": "Event::LearnUpdated"
+    },
+    {
+      "confidence": 0.95,
+      "cost": 1.0,
+      "default_weight": 0.95,
+      "from": "State::Plan",
+      "policy_effect": "plan_optimize_execute",
+      "safety": 0.9,
+      "to": "State::Optimize"
+    },
+    {
+      "confidence": 0.95,
+      "cost": 1.0,
+      "default_weight": 0.95,
+      "from": "State::Optimize",
+      "policy_effect": "plan_optimize_execute",
+      "safety": 0.9,
+      "to": "State::Execute"
+    },
+    {
+      "confidence": 0.8,
+      "cost": 2.0,
+      "default_weight": 0.8,
+      "from": "Control::Repair",
+      "policy_effect": "choose_repair_or_retry",
+      "safety": 0.85,
+      "to": "State::Optimize"
+    },
+    {
+      "confidence": 0.8,
+      "cost": 2.0,
+      "default_weight": 0.8,
+      "from": "Control::Retry",
+      "policy_effect": "choose_repair_or_retry",
+      "safety": 0.85,
+      "to": "State::Optimize"
+    },
+    {
+      "confidence": 0.99,
+      "cost": 0.01,
+      "default_weight": 0.99,
+      "from": "State::Map",
+      "policy_effect": "parallel_prepare",
+      "safety": 0.99,
+      "to": "State::Search"
+    },
+    {
+      "confidence": 0.99,
+      "cost": 0.01,
+      "default_weight": 0.99,
+      "from": "State::Parse",
+      "policy_effect": "parallel_prepare",
+      "safety": 0.99,
+      "to": "State::Score"
+    },
+    {
+      "confidence": 0.99,
+      "cost": 0.01,
+      "default_weight": 0.99,
+      "from": "Event::InputAccepted",
+      "policy_effect": "parallel_prepare",
+      "safety": 0.99,
+      "to": "State::Map"
+    },
+    {
+      "confidence": 0.72,
+      "cost": 1.0,
+      "default_weight": 0.72,
+      "from": "Event::PaperTradeRejected",
+      "policy_effect": "paper_trade_retry_bounded",
+      "safety": 0.86,
+      "to": "Control::Repair"
+    },
+    {
+      "confidence": 0.72,
+      "cost": 1.0,
+      "default_weight": 0.72,
+      "from": "Control::Repair",
+      "policy_effect": "paper_trade_retry_bounded",
+      "safety": 0.86,
+      "to": "Control::Retry"
+    },
+    {
+      "confidence": 0.72,
+      "cost": 1.0,
+      "default_weight": 0.72,
+      "from": "Control::Retry",
+      "policy_effect": "paper_trade_retry_bounded",
+      "safety": 0.86,
+      "to": "State::PaperTrade"
+    },
+    {
+      "confidence": 0.95,
+      "cost": 1.0,
+      "default_weight": 0.95,
+      "from": "State::MarketFeed",
+      "policy_effect": "market_analysis_cycle",
+      "safety": 0.98,
+      "to": "State::AnalysisPlan"
+    },
+    {
+      "confidence": 0.95,
+      "cost": 1.0,
+      "default_weight": 0.95,
+      "from": "State::AnalysisPlan",
+      "policy_effect": "market_analysis_cycle",
+      "safety": 0.98,
+      "to": "Analysis::Return1"
+    },
+    {
+      "confidence": 0.95,
+      "cost": 1.0,
+      "default_weight": 0.95,
+      "from": "Analysis::SignalScore",
+      "policy_effect": "market_analysis_cycle",
+      "safety": 0.98,
+      "to": "State::Plan"
     }
   ]
 }

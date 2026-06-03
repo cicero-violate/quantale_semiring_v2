@@ -4,6 +4,7 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use crate::programs::compile_source_programs;
 use crate::{TopologyNode, TopologyTransition};
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -42,6 +43,14 @@ pub fn build_overlay_assets(root: impl AsRef<Path>) -> Result<(), String> {
 
     reject_duplicate_node_names(&nodes)?;
     assign_dense_ids(&mut nodes)?;
+
+    // ── Source topology programs ──────────────────────────────────────────────
+    // If assets/topology.source.json exists, compile its programs into
+    // additional flat transitions and parallel group metadata.
+    // Transitions that already exist in the flat baseline are skipped.
+    let parallel_groups =
+        extend_from_source_topology(root, &nodes, &mut transitions)?;
+
     reject_duplicate_transitions(&transitions)?;
     reject_unknown_transition_endpoints(&nodes, &transitions)?;
     reject_duplicate_operator_contracts(&operator_contracts)?;
@@ -49,11 +58,59 @@ pub fn build_overlay_assets(root: impl AsRef<Path>) -> Result<(), String> {
 
     topology["nodes"] = Value::Array(nodes);
     topology["transitions"] = Value::Array(transitions);
+    if !parallel_groups.is_empty() {
+        topology["parallel_groups"] = Value::Array(
+            parallel_groups
+                .into_iter()
+                .map(|group| {
+                    Value::Array(group.into_iter().map(Value::String).collect())
+                })
+                .collect(),
+        );
+    }
     operators["operators"] = Value::Array(operator_contracts);
 
     write_json(root.join("assets/topology.generated.json"), &topology)?;
     write_json(root.join("assets/operators.generated.json"), &operators)?;
     Ok(())
+}
+
+// ── Source topology integration ───────────────────────────────────────────────
+
+/// Read `assets/topology.source.json`, compile its programs into flat
+/// transitions, and append any genuinely-new edges to `transitions`.
+/// Returns the collected parallel group node-name lists.
+fn extend_from_source_topology(
+    root: &Path,
+    nodes: &[Value],
+    transitions: &mut Vec<Value>,
+) -> Result<Vec<Vec<String>>, String> {
+    let source_path = root.join("assets/topology.source.json");
+    if !source_path.exists() {
+        return Ok(Vec::new());
+    }
+
+    let source = read_json(source_path)?;
+
+    let existing: BTreeSet<(String, String)> = transitions
+        .iter()
+        .filter_map(|t| {
+            let from = t.get("from")?.as_str()?.to_string();
+            let to = t.get("to")?.as_str()?.to_string();
+            Some((from, to))
+        })
+        .collect();
+
+    let known: BTreeSet<String> = nodes
+        .iter()
+        .filter_map(|n| n.get("name")?.as_str().map(str::to_string))
+        .collect();
+
+    let (new_transitions, parallel_groups) =
+        compile_source_programs(&source, &existing, &known)?;
+
+    transitions.extend(new_transitions);
+    Ok(parallel_groups)
 }
 
 fn read_json(path: PathBuf) -> Result<Value, String> {

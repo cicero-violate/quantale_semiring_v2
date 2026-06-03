@@ -268,11 +268,14 @@ fn check_reports_all_violations_not_just_first() {
 // here so new violations are caught immediately; fix each node by adding a
 // second outgoing edge before removing it from this list.
 const KNOWN_CONSUMED_BLOCK_POINTS: &[&str] = &[
+    "Analysis::Return1",    // parallel_prepare par + market_analysis_cycle adds AnalysisPlan→Return1
     "Control::Block",
     "Control::BuildTopologyOverlay",
     "Control::Repair",
     "Event::AnalysisFinished",
     "State::Input",
+    "State::Score",         // parallel_prepare adds Parse→Score (was only CandidateFound→Score)
+    "State::Search",        // parallel_prepare adds Map→Search (was only MapReady→Search)
 ];
 
 #[test]
