@@ -4,7 +4,9 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::programs::compile_source_programs;
+use crate::programs::{
+    build_effects_map, compile_source_programs, emit_patterns_compat, validate_source_node_effects,
+};
 use crate::{TopologyNode, TopologyTransition};
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -49,7 +51,7 @@ pub fn build_overlay_assets(root: impl AsRef<Path>) -> Result<(), String> {
     // additional flat transitions and parallel group metadata.
     // Transitions that already exist in the flat baseline are skipped.
     let parallel_groups =
-        extend_from_source_topology(root, &nodes, &mut transitions)?;
+        extend_from_source_topology(root, &nodes, &mut transitions, &operator_contracts)?;
 
     reject_duplicate_transitions(&transitions)?;
     reject_unknown_transition_endpoints(&nodes, &transitions)?;
@@ -79,11 +81,15 @@ pub fn build_overlay_assets(root: impl AsRef<Path>) -> Result<(), String> {
 
 /// Read `assets/topology.source.json`, compile its programs into flat
 /// transitions, and append any genuinely-new edges to `transitions`.
+/// Also emits `assets/patterns.source.json` (patterns.json-compatible output
+/// generated from source programs — Phase 3 proof that patterns.json can be
+/// replaced by topology.source.json).
 /// Returns the collected parallel group node-name lists.
 fn extend_from_source_topology(
     root: &Path,
     nodes: &[Value],
     transitions: &mut Vec<Value>,
+    operator_contracts: &[Value],
 ) -> Result<Vec<Vec<String>>, String> {
     let source_path = root.join("assets/topology.source.json");
     if !source_path.exists() {
@@ -91,6 +97,16 @@ fn extend_from_source_topology(
     }
 
     let source = read_json(source_path)?;
+
+    // Phase 2: validate declared node effects against slots/resources.
+    let violations = validate_source_node_effects(&source);
+    if !violations.is_empty() {
+        return Err(format!(
+            "topology.source.json slot/resource violations ({} total):\n{}",
+            violations.len(),
+            violations.join("\n")
+        ));
+    }
 
     let existing: BTreeSet<(String, String)> = transitions
         .iter()
@@ -106,10 +122,25 @@ fn extend_from_source_topology(
         .filter_map(|n| n.get("name")?.as_str().map(str::to_string))
         .collect();
 
+    // Phase 3: build the effects map and pass it for par independence checking.
+    let source_nodes = source
+        .get("nodes")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    let effects_map = build_effects_map(operator_contracts, source_nodes);
+
     let (new_transitions, parallel_groups) =
-        compile_source_programs(&source, &existing, &known)?;
+        compile_source_programs(&source, &existing, &known, Some(&effects_map))?;
 
     transitions.extend(new_transitions);
+
+    // Phase 3: emit patterns.source.json (patterns.json-compatible, generated
+    // from topology.source.json programs).  This proves patterns.json can be
+    // derived from the source topology rather than hand-authored.
+    let patterns_compat = emit_patterns_compat(&source);
+    write_json(root.join("assets/patterns.source.json"), &patterns_compat)?;
+
     Ok(parallel_groups)
 }
 

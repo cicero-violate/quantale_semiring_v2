@@ -15,9 +15,111 @@
 //!   zero/blocked      — bottom: no endpoints emitted
 //!   one/skip/identity — identity: no endpoints emitted
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::{Value, json};
+
+// ── Operator effects types ────────────────────────────────────────────────────
+
+/// Declared side effects for a single node.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct NodeEffects {
+    pub reads: BTreeSet<String>,
+    pub writes: BTreeSet<String>,
+    pub locks: BTreeSet<String>,
+}
+
+/// Map from node name → declared effects.  Used for par independence checks.
+pub type EffectsMap = BTreeMap<String, NodeEffects>;
+
+/// Build an `EffectsMap` from the `operators` array in `operators.json` plus
+/// any node declarations in `topology.source.json`.
+///
+/// Source-topology node declarations take precedence over operators.json when
+/// both exist for the same node name.
+pub fn build_effects_map(operator_contracts: &[Value], source_nodes: &[Value]) -> EffectsMap {
+    let mut map = EffectsMap::new();
+
+    for op in operator_contracts {
+        let Some(name) = op.get("node_name").and_then(Value::as_str) else {
+            continue;
+        };
+        if let Some(effects) = op.get("effects") {
+            map.insert(
+                name.to_string(),
+                NodeEffects {
+                    reads: str_set(effects.get("reads")),
+                    writes: str_set(effects.get("writes")),
+                    locks: str_set(effects.get("locks")),
+                },
+            );
+        }
+    }
+
+    for node in source_nodes {
+        let Some(name) = node.get("name").and_then(Value::as_str) else {
+            continue;
+        };
+        let reads = str_set(node.get("reads"));
+        let writes = str_set(node.get("writes"));
+        let locks = str_set(node.get("locks"));
+        if !reads.is_empty() || !writes.is_empty() || !locks.is_empty() {
+            map.insert(name.to_string(), NodeEffects { reads, writes, locks });
+        }
+    }
+
+    map
+}
+
+fn str_set(value: Option<&Value>) -> BTreeSet<String> {
+    value
+        .and_then(Value::as_array)
+        .map(|arr| arr.iter().filter_map(Value::as_str).map(str::to_string).collect())
+        .unwrap_or_default()
+}
+
+fn safe_parallel(a: &NodeEffects, b: &NodeEffects) -> bool {
+    a.writes.is_disjoint(&b.writes)
+        && a.writes.is_disjoint(&b.reads)
+        && a.reads.is_disjoint(&b.writes)
+        && a.locks.is_disjoint(&b.locks)
+}
+
+// ── Patterns compat emitter ───────────────────────────────────────────────────
+
+/// Emit all programs from `topology.source.json` in the `patterns.json` format.
+///
+/// This generates a `{ "patterns": [...] }` value that can replace
+/// `assets/patterns.json`, proving that topology.source.json is the source of
+/// truth for CKA patterns.  Programs with `"kind": "cka_pattern"` are included
+/// as-are; others are included too (they are structurally valid CKA patterns
+/// even if they are also compiled to flat transitions).
+pub fn emit_patterns_compat(source: &Value) -> Value {
+    let programs = match source.get("programs").and_then(Value::as_array) {
+        Some(p) => p,
+        None => return json!({ "patterns": [] }),
+    };
+
+    let patterns: Vec<Value> = programs
+        .iter()
+        .filter_map(|prog| {
+            let name = prog.get("name")?.as_str()?;
+            let expr = prog.get("expr")?;
+            let (confidence, cost, safety) = extract_weight(prog).ok()?;
+            Some(json!({
+                "name": name,
+                "expr": expr,
+                "confidence": confidence,
+                "cost": cost,
+                "safety": safety
+            }))
+        })
+        .collect();
+
+    json!({ "patterns": patterns })
+}
+
+// ── Program compiler ──────────────────────────────────────────────────────────
 
 /// Compile programs from a `topology.source.json` value into flat transition
 /// objects and parallel group node-name lists.
@@ -26,11 +128,19 @@ use serde_json::{Value, json};
 /// silently skipped — Phase-1 preserves all flat transitions from
 /// `topology.json` and programs only extend the edge set with new paths.
 ///
+/// Programs with `"kind": "cka_pattern"` are skipped: they are runtime tensor-
+/// weight patterns only and must not contribute structural topology edges (e.g.
+/// bounded_learn_loop creates a loop-back that bypasses a dominance gate).
+///
+/// When `effects` is `Some`, par branches are validated for effect independence.
+/// When `None`, the check is skipped (useful for tests and migration tooling).
+///
 /// Unknown nodes referenced in expressions produce an error.
 pub fn compile_source_programs(
     source: &Value,
     existing_edges: &BTreeSet<(String, String)>,
     known_node_names: &BTreeSet<String>,
+    effects: Option<&EffectsMap>,
 ) -> Result<(Vec<Value>, Vec<Vec<String>>), String> {
     let programs = match source.get("programs") {
         None => return Ok((Vec::new(), Vec::new())),
@@ -44,6 +154,12 @@ pub fn compile_source_programs(
     let mut seen: BTreeSet<(String, String)> = existing_edges.clone();
 
     for program in programs {
+        // cka_pattern programs are runtime tensor patterns only — skip them
+        // here so they don't generate flat topology transitions.
+        if program.get("kind").and_then(Value::as_str) == Some("cka_pattern") {
+            continue;
+        }
+
         let name = string_field(program, "name", "program")?;
         let (confidence, cost, safety) = extract_weight(program)?;
 
@@ -64,6 +180,7 @@ pub fn compile_source_programs(
             &mut prog_transitions,
             &mut prog_parallel_groups,
             known_node_names,
+            effects,
         )?;
 
         for t in prog_transitions {
@@ -211,6 +328,7 @@ fn compile_expr(
     transitions: &mut Vec<Value>,
     parallel_groups: &mut Vec<Vec<String>>,
     known: &BTreeSet<String>,
+    effects: Option<&EffectsMap>,
 ) -> Result<Endpoints, String> {
     match expr {
         Expr::Zero | Expr::One => Ok(Endpoints::default()),
@@ -231,6 +349,7 @@ fn compile_expr(
             transitions,
             parallel_groups,
             known,
+            effects,
         ),
         Expr::Choice(items) => {
             // Quantale join: each branch is compiled independently; starts and
@@ -246,6 +365,7 @@ fn compile_expr(
                     transitions,
                     parallel_groups,
                     known,
+                    effects,
                 )?;
                 aggregate.starts.extend(ep.starts);
                 aggregate.ends.extend(ep.ends);
@@ -262,6 +382,7 @@ fn compile_expr(
             transitions,
             parallel_groups,
             known,
+            effects,
         ),
         Expr::Par(branches) => compile_par(
             branches,
@@ -272,6 +393,7 @@ fn compile_expr(
             transitions,
             parallel_groups,
             known,
+            effects,
         ),
     }
 }
@@ -285,45 +407,26 @@ fn compile_seq(
     transitions: &mut Vec<Value>,
     parallel_groups: &mut Vec<Vec<String>>,
     known: &BTreeSet<String>,
+    effects: Option<&EffectsMap>,
 ) -> Result<Endpoints, String> {
     let mut iter = items.iter();
     let Some(first) = iter.next() else {
         return Ok(Endpoints::default());
     };
     let mut aggregate = compile_expr(
-        first,
-        program_name,
-        confidence,
-        cost,
-        safety,
-        transitions,
-        parallel_groups,
-        known,
+        first, program_name, confidence, cost, safety,
+        transitions, parallel_groups, known, effects,
     )?;
     let mut prev_ends = aggregate.ends.clone();
 
     for item in iter {
         let ep = compile_expr(
-            item,
-            program_name,
-            confidence,
-            cost,
-            safety,
-            transitions,
-            parallel_groups,
-            known,
+            item, program_name, confidence, cost, safety,
+            transitions, parallel_groups, known, effects,
         )?;
-        // Connect every prev-end to every current-start.
         for from in &prev_ends {
             for to in &ep.starts {
-                transitions.push(make_transition(
-                    from,
-                    to,
-                    confidence,
-                    cost,
-                    safety,
-                    program_name,
-                ));
+                transitions.push(make_transition(from, to, confidence, cost, safety, program_name));
             }
         }
         if aggregate.starts.is_empty() {
@@ -347,34 +450,22 @@ fn compile_star(
     transitions: &mut Vec<Value>,
     parallel_groups: &mut Vec<Vec<String>>,
     known: &BTreeSet<String>,
+    effects: Option<&EffectsMap>,
 ) -> Result<Endpoints, String> {
     let mut first = Endpoints::default();
     let mut prev_ends: Vec<String> = Vec::new();
 
     for idx in 0..max_unroll {
         let ep = compile_expr(
-            body,
-            program_name,
-            confidence,
-            cost,
-            safety,
-            transitions,
-            parallel_groups,
-            known,
+            body, program_name, confidence, cost, safety,
+            transitions, parallel_groups, known, effects,
         )?;
         if idx == 0 {
             first = ep.clone();
         } else {
             for from in &prev_ends {
                 for to in &ep.starts {
-                    transitions.push(make_transition(
-                        from,
-                        to,
-                        confidence,
-                        cost,
-                        safety,
-                        program_name,
-                    ));
+                    transitions.push(make_transition(from, to, confidence, cost, safety, program_name));
                 }
             }
         }
@@ -384,10 +475,7 @@ fn compile_star(
     if first.is_empty() {
         Ok(Endpoints::default())
     } else {
-        Ok(Endpoints {
-            starts: first.starts,
-            ends: prev_ends,
-        })
+        Ok(Endpoints { starts: first.starts, ends: prev_ends })
     }
 }
 
@@ -400,22 +488,21 @@ fn compile_par(
     transitions: &mut Vec<Value>,
     parallel_groups: &mut Vec<Vec<String>>,
     known: &BTreeSet<String>,
+    effects: Option<&EffectsMap>,
 ) -> Result<Endpoints, String> {
+    // Phase 3: validate effect independence when an effects map is provided.
+    if let Some(emap) = effects {
+        validate_par_independence(branches, program_name, emap)?;
+    }
+
     let mut aggregate = Endpoints::default();
     let mut group: Vec<String> = Vec::new();
 
     for branch in branches {
         let ep = compile_expr(
-            branch,
-            program_name,
-            confidence,
-            cost,
-            safety,
-            transitions,
-            parallel_groups,
-            known,
+            branch, program_name, confidence, cost, safety,
+            transitions, parallel_groups, known, effects,
         )?;
-        // Collect start nodes into the parallel group metadata.
         group.extend(ep.starts.iter().cloned());
         aggregate.starts.extend(ep.starts);
         aggregate.ends.extend(ep.ends);
@@ -424,6 +511,69 @@ fn compile_par(
         parallel_groups.push(group);
     }
     Ok(aggregate)
+}
+
+// ── Par independence ──────────────────────────────────────────────────────────
+
+fn validate_par_independence(
+    branches: &[Expr],
+    program_name: &str,
+    effects: &EffectsMap,
+) -> Result<(), String> {
+    let branch_effects: Vec<NodeEffects> = branches
+        .iter()
+        .map(|b| collect_branch_effects(b, program_name, effects))
+        .collect::<Result<_, _>>()?;
+
+    for i in 0..branch_effects.len() {
+        for j in (i + 1)..branch_effects.len() {
+            if !safe_parallel(&branch_effects[i], &branch_effects[j]) {
+                return Err(format!(
+                    "program '{program_name}': par branches {i} and {j} are not effect-independent"
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn collect_branch_effects(
+    expr: &Expr,
+    program_name: &str,
+    effects: &EffectsMap,
+) -> Result<NodeEffects, String> {
+    let mut combined = NodeEffects::default();
+    accumulate_effects(expr, program_name, effects, &mut combined)?;
+    Ok(combined)
+}
+
+fn accumulate_effects(
+    expr: &Expr,
+    program_name: &str,
+    effects: &EffectsMap,
+    out: &mut NodeEffects,
+) -> Result<(), String> {
+    match expr {
+        Expr::Zero | Expr::One => Ok(()),
+        Expr::Node(name) => {
+            let node_effects = effects.get(name.as_str()).ok_or_else(|| {
+                format!(
+                    "program '{program_name}': operator effects missing for par node '{name}'"
+                )
+            })?;
+            out.reads.extend(node_effects.reads.iter().cloned());
+            out.writes.extend(node_effects.writes.iter().cloned());
+            out.locks.extend(node_effects.locks.iter().cloned());
+            Ok(())
+        }
+        Expr::Seq(items) | Expr::Choice(items) | Expr::Par(items) => {
+            for item in items {
+                accumulate_effects(item, program_name, effects, out)?;
+            }
+            Ok(())
+        }
+        Expr::Star { body, .. } => accumulate_effects(body, program_name, effects, out),
+    }
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -462,6 +612,89 @@ fn f64_field(value: &Value, field: &str, context: &str) -> Result<f64, String> {
         .ok_or_else(|| format!("{context} missing numeric field '{field}'"))
 }
 
+// ── Phase 2: slot/resource validation ────────────────────────────────────────
+
+/// Validate node declarations in `topology.source.json` against the declared
+/// `slots` and `resources`.
+///
+/// For every node in `nodes[]`:
+///   - each `reads[]` and `writes[]` entry must be a key in `slots`
+///   - each `locks[]` entry must be a key in `resources`
+///
+/// Returns a list of human-readable violation strings.  An empty list means
+/// the source topology is consistent.  Nodes without a `reads`/`writes`/`locks`
+/// field are silently skipped (not all nodes declare effects yet).
+///
+/// This is intentionally non-fatal from the validator's perspective; callers
+/// decide whether to treat violations as errors.
+pub fn validate_source_node_effects(source: &Value) -> Vec<String> {
+    let slots = match object_keys(source, "slots") {
+        Ok(s) => s,
+        Err(_) => BTreeSet::new(),
+    };
+    let resources = match object_keys(source, "resources") {
+        Ok(r) => r,
+        Err(_) => BTreeSet::new(),
+    };
+
+    let nodes = match source.get("nodes") {
+        None => return Vec::new(),
+        Some(Value::Array(nodes)) => nodes,
+        Some(_) => return vec!["topology.source.json 'nodes' must be an array".to_string()],
+    };
+
+    let mut violations: Vec<String> = Vec::new();
+
+    for node in nodes {
+        let name = match node.get("name").and_then(Value::as_str).filter(|s| !s.is_empty()) {
+            Some(n) => n,
+            None => {
+                violations.push("source node missing non-empty 'name' field".to_string());
+                continue;
+            }
+        };
+
+        for field in &["reads", "writes"] {
+            if let Some(Value::Array(items)) = node.get(*field) {
+                for item in items {
+                    match item.as_str() {
+                        None => violations.push(format!(
+                            "node '{name}': '{field}' entries must be strings"
+                        )),
+                        Some(slot) if !slots.contains(slot) => violations.push(format!(
+                            "node '{name}': undeclared {field} slot '{slot}'"
+                        )),
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        if let Some(Value::Array(locks)) = node.get("locks") {
+            for lock in locks {
+                match lock.as_str() {
+                    None => violations
+                        .push(format!("node '{name}': 'locks' entries must be strings")),
+                    Some(r) if !resources.contains(r) => violations.push(format!(
+                        "node '{name}': undeclared lock resource '{r}'"
+                    )),
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    violations
+}
+
+fn object_keys(source: &Value, field: &str) -> Result<BTreeSet<String>, String> {
+    match source.get(field) {
+        None => Ok(BTreeSet::new()),
+        Some(Value::Object(obj)) => Ok(obj.keys().cloned().collect()),
+        Some(_) => Err(format!("'{field}' must be an object")),
+    }
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -488,7 +721,7 @@ mod tests {
             .iter()
             .map(|(f, t)| (f.to_string(), t.to_string()))
             .collect();
-        compile_source_programs(&source(programs), &ex, &nodes()).unwrap()
+        compile_source_programs(&source(programs), &ex, &nodes(), None).unwrap()
     }
 
     #[test]
@@ -605,8 +838,75 @@ mod tests {
             }])),
             &ex,
             &nodes(),
+            None,
         );
         assert!(result.unwrap_err().contains("unknown node"));
+    }
+
+    #[test]
+    fn cka_pattern_kind_is_skipped_for_flat_transitions() {
+        let (ts, _) = compile(
+            json!([{
+                "name": "loop_pattern",
+                "kind": "cka_pattern",
+                "expr": { "seq": ["A", "B"] },
+                "confidence": 0.9, "cost": 1.0, "safety": 0.9
+            }]),
+            &[],
+        );
+        // cka_pattern programs must NOT produce flat topology transitions
+        assert_eq!(ts.len(), 0);
+    }
+
+    #[test]
+    fn par_independence_check_with_effects_map() {
+        let mut emap = EffectsMap::new();
+        emap.insert(
+            "A".to_string(),
+            NodeEffects { reads: BTreeSet::new(), writes: ["slot_a".to_string()].into(), locks: BTreeSet::new() },
+        );
+        emap.insert(
+            "C".to_string(),
+            NodeEffects { reads: BTreeSet::new(), writes: ["slot_c".to_string()].into(), locks: BTreeSet::new() },
+        );
+        let ex: BTreeSet<(String, String)> = BTreeSet::new();
+        let result = compile_source_programs(
+            &source(json!([{
+                "name": "p",
+                "expr": { "par": ["A", "C"] },
+                "confidence": 0.9, "cost": 1.0, "safety": 0.9
+            }])),
+            &ex,
+            &nodes(),
+            Some(&emap),
+        );
+        // A and C write to disjoint slots — should pass
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn par_with_conflicting_effects_is_rejected() {
+        let mut emap = EffectsMap::new();
+        emap.insert(
+            "A".to_string(),
+            NodeEffects { reads: BTreeSet::new(), writes: ["shared".to_string()].into(), locks: BTreeSet::new() },
+        );
+        emap.insert(
+            "C".to_string(),
+            NodeEffects { reads: ["shared".to_string()].into(), writes: BTreeSet::new(), locks: BTreeSet::new() },
+        );
+        let ex: BTreeSet<(String, String)> = BTreeSet::new();
+        let result = compile_source_programs(
+            &source(json!([{
+                "name": "p",
+                "expr": { "par": ["A", "C"] },
+                "confidence": 0.9, "cost": 1.0, "safety": 0.9
+            }])),
+            &ex,
+            &nodes(),
+            Some(&emap),
+        );
+        assert!(result.unwrap_err().contains("not effect-independent"));
     }
 
     #[test]
@@ -621,6 +921,92 @@ mod tests {
         assert_eq!(ts.len(), 0);
     }
 
+    // ── validate_source_node_effects ─────────────────────────────────────────
+
+    fn source_with_nodes(slots: serde_json::Value, resources: serde_json::Value, nodes: serde_json::Value) -> Value {
+        json!({ "slots": slots, "resources": resources, "nodes": nodes })
+    }
+
+    #[test]
+    fn valid_node_declarations_produce_no_violations() {
+        let src = source_with_nodes(
+            json!({ "a": { "type": "json", "kind": "state" }, "b": { "type": "json", "kind": "state" } }),
+            json!({ "lk": { "kind": "lock", "capacity": 1 } }),
+            json!([{ "name": "Node::X", "reads": ["a"], "writes": ["b"], "locks": ["lk"] }]),
+        );
+        assert!(validate_source_node_effects(&src).is_empty());
+    }
+
+    #[test]
+    fn undeclared_read_slot_is_flagged() {
+        let src = source_with_nodes(
+            json!({}),
+            json!({}),
+            json!([{ "name": "Node::X", "reads": ["missing.slot"], "writes": [], "locks": [] }]),
+        );
+        let v = validate_source_node_effects(&src);
+        assert_eq!(v.len(), 1);
+        assert!(v[0].contains("undeclared reads slot 'missing.slot'"), "{:?}", v);
+    }
+
+    #[test]
+    fn undeclared_write_slot_is_flagged() {
+        let src = source_with_nodes(
+            json!({}),
+            json!({}),
+            json!([{ "name": "Node::X", "reads": [], "writes": ["missing.out"], "locks": [] }]),
+        );
+        let v = validate_source_node_effects(&src);
+        assert_eq!(v.len(), 1);
+        assert!(v[0].contains("undeclared writes slot"), "{:?}", v);
+    }
+
+    #[test]
+    fn undeclared_lock_resource_is_flagged() {
+        let src = source_with_nodes(
+            json!({}),
+            json!({}),
+            json!([{ "name": "Node::X", "reads": [], "writes": [], "locks": ["no_such_lock"] }]),
+        );
+        let v = validate_source_node_effects(&src);
+        assert_eq!(v.len(), 1);
+        assert!(v[0].contains("undeclared lock resource"), "{:?}", v);
+    }
+
+    #[test]
+    fn node_without_effects_fields_skipped() {
+        // Node has no reads/writes/locks — should be fine (partial migration)
+        let src = source_with_nodes(
+            json!({}),
+            json!({}),
+            json!([{ "name": "Node::X", "kind": "event_node" }]),
+        );
+        assert!(validate_source_node_effects(&src).is_empty());
+    }
+
+    #[test]
+    fn no_nodes_section_is_ok() {
+        let src = json!({
+            "slots": { "s": { "type": "json", "kind": "state" } },
+            "resources": {}
+        });
+        assert!(validate_source_node_effects(&src).is_empty());
+    }
+
+    #[test]
+    fn multiple_violations_all_reported() {
+        let src = source_with_nodes(
+            json!({}),
+            json!({}),
+            json!([
+                { "name": "Node::A", "reads": ["x"], "writes": ["y"], "locks": [] },
+                { "name": "Node::B", "reads": [],    "writes": [],    "locks": ["z"] }
+            ]),
+        );
+        let v = validate_source_node_effects(&src);
+        assert_eq!(v.len(), 3, "{:?}", v); // x, y, z all undeclared
+    }
+
     #[test]
     fn empty_programs_array_is_ok() {
         let (ts, groups) = compile(json!([]), &[]);
@@ -632,7 +1018,7 @@ mod tests {
     fn missing_programs_field_is_ok() {
         let src = json!({ "matrix_name": "test" });
         let (ts, groups) =
-            compile_source_programs(&src, &BTreeSet::new(), &nodes()).unwrap();
+            compile_source_programs(&src, &BTreeSet::new(), &nodes(), None).unwrap();
         assert!(ts.is_empty());
         assert!(groups.is_empty());
     }

@@ -1,0 +1,200 @@
+{
+  "patterns": [
+    {
+      "confidence": 0.95,
+      "cost": 1.0,
+      "expr": {
+        "seq": [
+          "State::Plan",
+          "State::Optimize",
+          "State::Execute"
+        ]
+      },
+      "name": "plan_optimize_execute",
+      "safety": 0.9
+    },
+    {
+      "confidence": 0.8,
+      "cost": 2.0,
+      "expr": {
+        "choice": [
+          {
+            "seq": [
+              "Control::Repair",
+              "State::Optimize"
+            ]
+          },
+          {
+            "seq": [
+              "Control::Retry",
+              "State::Optimize"
+            ]
+          }
+        ]
+      },
+      "name": "choose_repair_or_retry",
+      "safety": 0.85
+    },
+    {
+      "confidence": 0.7,
+      "cost": 1.0,
+      "expr": {
+        "star": {
+          "body": {
+            "seq": [
+              "State::Validate",
+              "State::Memory",
+              "State::Learn"
+            ]
+          },
+          "max_unroll": 3
+        }
+      },
+      "name": "bounded_learn_loop",
+      "safety": 0.9
+    },
+    {
+      "confidence": 0.99,
+      "cost": 0.01,
+      "expr": {
+        "seq": [
+          "Event::InputAccepted",
+          {
+            "par": [
+              {
+                "seq": [
+                  "State::Map",
+                  "State::Search"
+                ]
+              },
+              {
+                "seq": [
+                  "State::Parse",
+                  "State::Score"
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "name": "parallel_prepare",
+      "safety": 0.99
+    },
+    {
+      "confidence": 1.0,
+      "cost": 0.0,
+      "expr": "one",
+      "name": "identity_skip_marker",
+      "safety": 1.0
+    },
+    {
+      "confidence": 0.0,
+      "cost": 0.0,
+      "expr": "zero",
+      "name": "blocked_marker",
+      "safety": 0.0
+    },
+    {
+      "confidence": 0.91,
+      "cost": 1.0,
+      "expr": {
+        "seq": [
+          "State::Input",
+          "State::MarketFeed",
+          "Event::MarketFeedUpdated",
+          "State::AnalysisPlan",
+          "Event::AnalysisPlanReady",
+          "Analysis::Return1",
+          "Analysis::Volatility",
+          "Analysis::SignalScore",
+          "Event::AnalysisFinished",
+          "State::Plan",
+          "State::TradePlan",
+          "Event::TradeDecisionReady",
+          "State::PaperTrade"
+        ]
+      },
+      "name": "market_analysis_trade_seq",
+      "safety": 0.9
+    },
+    {
+      "confidence": 0.72,
+      "cost": 1.0,
+      "expr": {
+        "star": {
+          "body": {
+            "seq": [
+              "State::PaperTrade",
+              "Event::PaperTradeRejected",
+              "Control::Repair",
+              "Control::Retry"
+            ]
+          },
+          "max_unroll": 3
+        }
+      },
+      "name": "paper_trade_retry_bounded",
+      "safety": 0.86
+    },
+    {
+      "confidence": 0.91,
+      "cost": 1.0,
+      "expr": {
+        "seq": [
+          "State::Input",
+          "State::MarketFeed",
+          "Event::MarketFeedUpdated",
+          "State::AnalysisPlan",
+          "Event::AnalysisPlanReady",
+          "Analysis::Return1",
+          "Analysis::Volatility",
+          "Analysis::SignalScore",
+          "Event::AnalysisFinished",
+          "State::Plan",
+          "State::TradePlan",
+          "Event::TradeDecisionReady",
+          "State::PaperTrade"
+        ]
+      },
+      "name": "market_analysis_loop_seq",
+      "safety": 0.9
+    },
+    {
+      "confidence": 0.74,
+      "cost": 1.0,
+      "expr": {
+        "star": {
+          "body": {
+            "seq": [
+              "Event::PaperTradeRejected",
+              "Control::Repair",
+              "Control::Retry",
+              "State::PaperTrade"
+            ]
+          },
+          "max_unroll": 3
+        }
+      },
+      "name": "paper_trade_repair_retry_star",
+      "safety": 0.86
+    },
+    {
+      "confidence": 0.95,
+      "cost": 1.0,
+      "expr": {
+        "seq": [
+          "State::Input",
+          "State::MarketFeed",
+          "State::AnalysisPlan",
+          "Analysis::Return1",
+          "Analysis::Volatility",
+          "Analysis::SignalScore",
+          "State::Plan",
+          "State::TradePlan"
+        ]
+      },
+      "name": "market_analysis_cycle",
+      "safety": 0.98
+    }
+  ]
+}

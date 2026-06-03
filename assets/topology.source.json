@@ -66,6 +66,174 @@
 
   "masks": [],
 
+  "nodes": [
+    {
+      "name": "Analysis::Return1",
+      "kind": "kernel",
+      "runtime": { "backend": "cuda", "module": "analysis", "kernel": "analysis_return1" },
+      "reads": ["market.price", "market.open"],
+      "writes": ["analysis.return"],
+      "locks": []
+    },
+    {
+      "name": "Analysis::Volatility",
+      "kind": "kernel",
+      "runtime": { "backend": "cuda", "module": "analysis", "kernel": "analysis_volatility" },
+      "reads": ["market.price", "analysis.return"],
+      "writes": ["analysis.volatility"],
+      "locks": []
+    },
+    {
+      "name": "Analysis::SignalScore",
+      "kind": "kernel",
+      "runtime": { "backend": "cuda", "module": "analysis", "kernel": "analysis_signal_score" },
+      "reads": ["analysis.return", "analysis.volatility"],
+      "writes": ["analysis.signal_score"],
+      "locks": []
+    },
+    {
+      "name": "Execution::VectorAdd",
+      "kind": "kernel",
+      "runtime": { "backend": "cuda", "module": "math", "kernel": "vector_add" },
+      "reads": ["math.a", "math.b"],
+      "writes": ["math.add_out"],
+      "locks": []
+    },
+    {
+      "name": "Execution::VectorScale",
+      "kind": "kernel",
+      "runtime": { "backend": "cuda", "module": "math", "kernel": "vector_scale" },
+      "reads": ["math.add_out", "math.scale"],
+      "writes": ["math.out"],
+      "locks": []
+    },
+    {
+      "name": "Execution::FusedVectorAddScale",
+      "kind": "kernel",
+      "runtime": { "backend": "cuda", "module": "math", "kernel": "fused_vector_add_scale" },
+      "reads": ["math.a", "math.b", "math.scale"],
+      "writes": ["math.out"],
+      "locks": []
+    },
+    {
+      "name": "State::Input",
+      "kind": "host_node",
+      "purity": "deterministic_io",
+      "runtime": { "backend": "python", "script": "crates/operators_lib/input.py" },
+      "reads": ["env.task"],
+      "writes": ["task.context"],
+      "locks": []
+    },
+    {
+      "name": "State::MarketFeed",
+      "kind": "boundary_node",
+      "runtime": { "backend": "python", "script": "crates/operators_lib/market_feed.py" },
+      "reads": ["market.config"],
+      "writes": ["market.feed", "state/market_feed.jsonl"],
+      "locks": [],
+      "governance": { "network": true, "allowed_hosts": ["coingecko", "stooq"] }
+    },
+    {
+      "name": "State::AnalysisPlan",
+      "kind": "boundary_node",
+      "runtime": { "backend": "python", "script": "crates/operators_lib/call_llm.py", "template": "analysis" },
+      "reads": ["market.feed", "analysis.config"],
+      "writes": ["analysis.plan"],
+      "locks": [],
+      "governance": { "llm": true }
+    },
+    {
+      "name": "State::TradePlan",
+      "kind": "boundary_node",
+      "runtime": { "backend": "python", "script": "crates/operators_lib/call_llm.py", "template": "trade" },
+      "reads": ["market.feed", "trading.policy"],
+      "writes": ["trade.decision"],
+      "locks": [],
+      "governance": { "llm": true }
+    },
+    {
+      "name": "State::PaperTrade",
+      "kind": "boundary_node",
+      "runtime": { "backend": "python", "script": "crates/operators_lib/paper_trade.py" },
+      "reads": ["trade.decision", "market.feed", "trading.policy"],
+      "writes": ["trade.receipt", "state/paper_orders.jsonl", "state/paper_positions.json"],
+      "locks": ["paper_broker"],
+      "governance": { "trading": true }
+    },
+    {
+      "name": "State::Plan",
+      "kind": "boundary_node",
+      "runtime": { "backend": "python", "script": "crates/operators_lib/call_llm.py", "template": "plan" },
+      "reads": ["task.context"],
+      "writes": ["plan.tensor"],
+      "locks": [],
+      "governance": { "llm": true }
+    },
+    {
+      "name": "State::Optimize",
+      "kind": "host_node",
+      "purity": "pure",
+      "runtime": { "backend": "noop" },
+      "reads": ["plan.tensor"],
+      "writes": ["optimized.tensor"],
+      "locks": []
+    },
+    {
+      "name": "State::Execute",
+      "kind": "host_node",
+      "purity": "deterministic_io",
+      "runtime": { "backend": "noop" },
+      "reads": ["optimized.tensor"],
+      "writes": ["execution.report"],
+      "locks": ["executor"]
+    },
+    {
+      "name": "State::Memory",
+      "kind": "host_node",
+      "purity": "deterministic_io",
+      "runtime": { "backend": "python", "script": "crates/operators_lib/memory.py" },
+      "reads": ["task.context"],
+      "writes": ["memory.store"],
+      "locks": ["memory"]
+    },
+    {
+      "name": "State::Learn",
+      "kind": "host_node",
+      "purity": "deterministic_io",
+      "runtime": { "backend": "python", "script": "crates/operators_lib/learn.py" },
+      "reads": ["memory.store", "state/quantale.tlog"],
+      "writes": ["learning.tensor", "state/learned_edges.jsonl"],
+      "locks": ["learning"]
+    },
+    {
+      "name": "Control::GateExecution",
+      "kind": "host_node",
+      "purity": "deterministic_io",
+      "runtime": { "backend": "patch" },
+      "reads": ["workspace.diff"],
+      "writes": ["workspace.files"],
+      "locks": ["workspace"]
+    },
+    {
+      "name": "State::Validate",
+      "kind": "host_node",
+      "purity": "deterministic_io",
+      "runtime": { "backend": "cargo", "args": ["test", "--release"] },
+      "reads": ["workspace.files"],
+      "writes": ["validation.report"],
+      "locks": []
+    },
+    {
+      "name": "Control::Commit",
+      "kind": "boundary_node",
+      "runtime": { "backend": "python", "script": "crates/operators_lib/commit.py" },
+      "reads": ["task.context", "execution.report", "validation.report"],
+      "writes": ["commit.record"],
+      "locks": ["commit"],
+      "governance": { "git": true }
+    }
+  ],
+
   "programs": [
     {
       "name": "plan_optimize_execute",
@@ -101,6 +269,25 @@
       "confidence": 0.8,
       "cost": 2.0,
       "safety": 0.85
+    },
+    {
+      "name": "bounded_learn_loop",
+      "kind": "cka_pattern",
+      "expr": {
+        "star": {
+          "body": {
+            "seq": [
+              "State::Validate",
+              "State::Memory",
+              "State::Learn"
+            ]
+          },
+          "max_unroll": 3
+        }
+      },
+      "confidence": 0.7,
+      "cost": 1.0,
+      "safety": 0.9
     },
     {
       "name": "parallel_prepare",
