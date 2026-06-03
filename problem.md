@@ -1,194 +1,243 @@
-# Problems Fixed — Session 2026-06-02
+# Problems Fixed — Session 2026-06-02 (continued)
 
-This document records what we believe we fixed. Validate each item by running
-the system and observing the described expected behaviour.
-
----
-
-## 1. `State::AnalysisPlan` crashes with `NameError: name '_EDGE_SCHEMA' is not defined`
-
-**Symptom**
-```
-[STEP] operator=State::AnalysisPlan exit=1 outcome=Failure
-stderr: NameError: name '_EDGE_SCHEMA' is not defined
-```
-
-**Root cause**
-During a template-reconstruction step, `call_llm.py` was written starting at
-`_BUILTIN_TEMPLATES = {`, losing the 73-line header above it — shebang, all
-imports, module-level constants (`ASSET_DIR`, `_ROUTER_BASE`), and `_EDGE_SCHEMA`
-itself. `_BUILTIN_TEMPLATES` references `_EDGE_SCHEMA` at import time, so any
-`--template` invocation crashed immediately.
-
-**Fix** (`b4d4263`)
-Rebuilt the file by prepending the original header from `git show HEAD` before
-the new templates block.
-
-**Validation**
-- `python3 crates/operators_lib/call_llm.py --template plan` with JSON stdin
-  should return a valid JSON edge array without error.
-- `cargo test` should pass (96 tests).
+This document records what was fixed in this session and what to validate next.
+The previous `problem.md` covered issues 1–4. This session fixed issues 5–11.
 
 ---
 
-## 2. `cargo test` fails — `unresolved import quantale_semiring_v2::topology_check`
+## 5. `State::Introspect` never fired — plan template was conditional
 
 **Symptom**
-```
-error[E0432]: unresolved import `quantale_semiring_v2::topology_check`
- --> tests/topology_check.rs:1:63
-```
+`State::Introspect` never appeared in `state/quantale.tlog` despite the topology
+having a `State::Learn → State::Introspect` edge.
 
-**Root cause**
-`topology_check.rs` was collapsed into `topology.rs` (module consolidation
-earlier in the session). `tests/topology_check.rs` still imported
-`topology_check::{self, ViolationKind}` as a module path and called
-`topology_check::check(...)` at 5 call sites.
+**Root cause A — conditional template**
+The `plan` template said "propose `State::Introspect` *when context shows failures*".
+The trading cycle always succeeded, so the condition was never met.
 
-**Fix** (`0b73853`)
-Updated `tests/topology_check.rs`: changed the import to
-`use quantale_semiring_v2::{..., ViolationKind, check}` and replaced all
-`topology_check::check(` call sites with `check(`.
+**Fix** (commit `b7e58df`-range)
+Changed DEVELOPMENT CYCLE to "always include exactly one dev edge per plan."
 
-**Validation**
-- `cargo test` passes — all 96 tests green.
+**Root cause B — learned edges saturated at 1.0**
+`learn.py` increments confidence by 0.05 per success, clamped to 1.0. After ~8
+traversals, `State::Learn → Event::LearnUpdated` hit conf=1.0 (2959 records in
+`learned_edges.jsonl`). The `State::Introspect` base of 0.35 could not compete.
+
+**Fix** (`learning_policy.json`, `src/learning.rs`)
+Added `max_confidence_above_base = 0.15` and lowered `confidence_clamp[1]` from
+1.0 to 0.85. Cap per edge = `min(base + 0.15, 0.85)`. Prevents any learned edge
+from saturating to 1.0.
 
 ---
 
-## 3. The autonomous development cycle never fires
-
-The system has a development chain wired into the topology:
-```
-State::Learn → State::Introspect → State::TopologyPlan → Control::TopologyMutate
-                                                        → State::OperatorPlan → Control::WriteOperator
-```
-Three independent blockers prevented it from ever running.
-
-### 3a. Edge weights too low to win projection
+## 6. Hard reset discarded accumulated LLM dev-chain weights
 
 **Symptom**
-The agent loops through the trading cycle indefinitely, never routing through
-`State::Introspect`, `State::TopologyPlan`, or `State::OperatorPlan`.
+After each hard reset the `State::Learn → State::Introspect` projection score
+bounced back to ~1.7 (trading cycle dominant). Weights accumulated from LLM
+proposals were lost.
 
 **Root cause**
-`State::Learn → State::Introspect` had `confidence=0.15` while the competing
-`State::Learn → Event::LearnUpdated` had `confidence=0.91`. The quantale world
-projects the highest-scoring path — 0.15 vs 0.91 means the development branch
-almost never wins.
+`maybe_hard_reset_after_blocks` called `reset() + embed_tensor_edges(static_only)`,
+re-embedding only the static topology edges. All LLM-proposed edges (including
+`State::Learn → State::Introspect` at 0.5) were discarded.
 
-**Fix** (`c43cf28`)
-- `State::Learn → State::Introspect`: 0.15 → 0.35
-- `Event::TopologyMutated → State::OperatorPlan`: 0.25 → 0.45
-- `State::Learn → State::PatternPlan`: 0.12 → 0.25
+**Fix** (`src/main.rs`)
+- Added `accumulated_edges` field to `RuntimeEpoch`, seeded with static topology
+  + learned edges + CKA patterns at startup.
+- After each `embed_tensor_edges(&plan_edges)` call, `epoch.accumulated_edges.extend(plan_edges)`.
+- Hard reset now calls `reset() + embed_tensor_edges(&accumulated_edges) + close()`,
+  preserving all LLM proposals across resets.
 
-**Validation**
-After several thousand ticks, at least one of these should appear in
-`state/quantale.tlog`:
-- `AgentStep` with `"node": "State::Introspect"`
-- `AgentStep` with `"node": "State::TopologyPlan"`
-Check with: `grep Introspect state/quantale.tlog | tail -5`
-
-### 3b. `plan` template never proposed development edges
-
-**Symptom**
-Even when `State::Introspect` is reachable, the LLM's plan proposals never
-include `State::Learn → State::Introspect` edges, so the tensor world never
-accumulates weight on that path.
-
-**Root cause**
-The `plan` template said "PRIMARY CYCLE — always prefer this market trading
-chain" and gave only the trading cycle. The LLM followed instructions and
-never proposed development edges.
-
-**Fix** (`c43cf28`, `b7e58df`)
-Added a `DEVELOPMENT CYCLE` section to the `plan` template:
-> Propose `State::Learn -> State::Introspect` (confidence 0.3-0.5) when the
-> context shows failures, stub nodes firing, or stagnant learning. At most
-> one development edge per plan.
-
-**Validation**
-Inspect recent plan outputs in `state/quantale.tlog` for `TensorEdges` records
-containing `State::Introspect` or `State::PatternPlan` as a destination.
-
-### 3c. `write_operator.py` discarded `operator_contract_ops`
-
-**Symptom**
-After `State::OperatorPlan` writes a new `.py` file, the stub operator in
-`operators.json` still has `executable: true`. The new file is never invoked
-because the operator contract was not updated.
-
-**Root cause**
-The `operator_write` LLM template tells the LLM to include
-`operator_contract_ops` in its output (to upgrade `executable: true → python3`).
-`write_operator.py` unwrapped the payload, wrote the file, and exited — the
-`operator_contract_ops` key was read but ignored.
-
-**Fix** (`c43cf28`)
-`write_operator.py` now calls `_apply_contract_ops()` after writing the file.
-It reads `assets/operators.json`, applies each `update`/`replace` op, and
-writes the file back. The receipt includes `contracts_updated: [...]`.
-
-**Validation**
-Manually trigger the chain:
-```bash
-echo '{
-  "filename": "test_impl.py",
-  "source": "#!/usr/bin/env python3\nimport json,sys\nprint(json.dumps({\"test\":1}))\n",
-  "node_name": "State::Goal",
-  "operator_contract_ops": [{"op": "update", "node_name": "State::Goal",
-    "patch": {"executable": "python3",
-              "static_args": ["crates/operators_lib/test_impl.py"],
-              "input_mapping": {"stdin_mode": "json"}}}]
-}' | python3 crates/operators_lib/write_operator.py
-```
-Expected: `contracts_updated: ["State::Goal"]` in the response AND
-`operators.json` entry for `State::Goal` should now have `"executable": "python3"`.
-Clean up: `rm crates/operators_lib/test_impl.py` and restore `operators.json`.
+**Why not `restore_base_tensor()`?**
+`restore_base_tensor()` restores tensor values but NOT the witness matrix. FW on an
+already-closed tensor finds zero improvements so witness stays all -1; `project()`
+then rejects every path. Must use raw-edge re-embed so FW rebuilds witness from scratch.
 
 ---
 
-## 4. `plan` template was hardcoded to the trading domain
+## 7. `Unknown(-1)` blocked after `State::Input` — ConsumedBlockPoint
 
 **Symptom**
-The `plan` template contained:
+Steps 31–33 always block after `Event::LearnUpdated → State::Input` executes.
+Hard reset fires every cycle.
+
+**Root cause**
+The frontier-step CUDA kernel marks `consumed[src*N+hop]=1` on first traversal and
+never clears within a session. `State::Input → State::MarketFeed` is consumed at
+step 5 (via `Event::FactArrived → State::Input`). Re-entry at step 30 via
+`Event::LearnUpdated → State::Input` finds the only outgoing edge consumed → blocked.
+
+**Fix** (structural invariant + topology change — see #9 and #11)
+The hard reset now re-embeds accumulated_edges which calls `reset()` (clears
+consumed[]). This is why the cycle continues after 3 blocked steps. The structural
+root cause is addressed by invariant 14 (see #9) and partially by Fix 1 (see #11).
+
+---
+
+## 8. `projection_first_hop_mismatch` runtime warnings (new)
+
+**Symptom**
+Many `[runtime_check] [projection_first_hop_mismatch] projection dst=X but first_hop=Y`
+warnings after the learning cap fix.
+
+**Root cause**
+The `learned_edges.jsonl` from 215k prior steps is loaded at startup into
+`accumulated_edges`. These learned weights create strong multi-hop transitive closure
+paths. The frontier_step kernel correctly selects `first_hop` = immediate next node
+while `selected_dst` = long-range goal — they legitimately differ for multi-hop paths.
+Invariant 19 was written assuming single-hop steps and is now a false positive.
+
+**Status**
+False positive — the execution is correct. The warnings are noisy but harmless.
+A future session should tighten the invariant 19 check to only fire when `first_hop`
+is *not* on the best path from `selected_src` to `selected_dst`.
+
+---
+
+## 9. Topology invariant 14: ConsumedBlockPoint (new check added)
+
+**What was added** (`crates/topology_core/src/check.rs`, `tests/topology_check.rs`)
+Invariant 14 (`ConsumedBlockPoint`): a reachable non-halt node with exactly 1 outgoing
+edge but 2+ incoming edges. The frontier-step kernel's consumed[] marks the single exit
+used on first traversal; re-entry via any other predecessor produces Unknown(-1) blocked.
+
+`--check-topology` and `load_checked_default()` both demote ConsumedBlockPoint to
+`[WARN]` (not fatal) since the hard-reset handles re-entry at runtime.
+
+**5 known violations in current topology:**
+| Node | Outgoing | Incoming |
+|---|---|---|
+| `State::Input` | 1 | 3 |
+| `Event::AnalysisFinished` | 1 | 2 |
+| `Control::BuildTopologyOverlay` | 1 | 3 |
+| `Control::Repair` | 1 | 2 |
+| `Control::Block` | 1 | 2 |
+
+These are acknowledged in `tests/topology_check.rs::KNOWN_CONSUMED_BLOCK_POINTS`.
+**TODO next session**: add a second outgoing edge to each to eliminate the hard-reset
+dependency for cycle continuity.
+
+---
+
+## 10. Learning policy — confidence cap
+
+**Change** (`assets/learning_policy.json`, `src/learning.rs`)
+```json
+{
+  "learned_edge_cost_floor": 0.001,
+  "confidence_clamp": [0.0, 0.85],
+  "safety_clamp": [0.0, 1.0],
+  "max_confidence_above_base": 0.15
+}
 ```
-PRIMARY CYCLE — always prefer this market trading chain:
-  State::Input -> State::MarketFeed -> Event::MarketFeedUpdated -> ...
-CRITICAL RULES:
-- Emit State::Input -> State::MarketFeed (confidence>=0.97). NEVER emit ...
-- Emit State::Plan -> State::TradePlan (confidence>=0.94). Do NOT emit ...
+Cap formula: `min(base_conf + 0.15, 0.85)` applied when loading `learned_edges.jsonl`.
+
+**Effect on existing learned_edges.jsonl**
+`State::Plan → State::TradePlan` (2959 records at 1.0) will be loaded at 0.85.
+`State::Learn → Event::LearnUpdated` (conf=1.0) will be loaded at 0.85.
+This reduces the trading cycle's dominance from ~1.9 down to ~1.6 projection score.
+
+---
+
+## 11. Fix 1: `State::Introspect` now fires every cycle (topology restructure)
+
+**Root cause of persistent failure**
+Even with all prior fixes, the quantale max-times product penalises longer paths.
+The dev chain from `State::Learn` via `State::Introspect` has 6 intermediate hops
+before rejoining the trading cycle at `Event::LearnUpdated`. Its product:
 ```
-These instructions named specific node names, preventing the agent from
-working in any non-trading domain and making the plan brittle if the topology
-was restructured.
+0.60 × 0.97^4 × 0.90 × 0.95 = 0.46
+```
+The direct shortcut `State::Learn → Event::LearnUpdated` scores 0.85 (capped).
+0.85 beats 0.46 regardless of `State::Introspect` confidence. Mathematically
+impossible for any confidence on `State::Introspect` to win the projection.
 
-**Fix** (`b7e58df`)
-Removed all hardcoded node names and domain-specific rules. Replaced with:
-> "Derive the primary cycle by reading the high-confidence transitions below.
-> The backbone is the sequence of highest-confidence edges — follow it."
+**Fix** (topology.json, topology.generated.json, call_llm_templates.json, call_llm.py)
+- **Removed** `State::Learn → Event::LearnUpdated` (the shortcut blocking the dev chain)
+- **Raised** `State::Learn → State::Introspect` from 0.60 → 0.97 (now the primary path)
+- **Added** `State::Introspect → Event::LearnUpdated` at 0.50 (safety bypass; dev-chain
+  product 0.97^4 × 0.90 = 0.772 > 0.50 so dev chain always wins from Introspect)
+- **Updated** plan template: removed stale DEVELOPMENT CYCLE section; added DEVELOPMENT
+  ROUTING explaining the new hardwired structure
 
-`load_transition_summary()` now sorts edges by confidence descending, so the
-LLM sees the primary cycle at the top of the `{transitions}` list without
-being told what it is.
+**New cycle flow:**
+```
+State::Memory → State::Learn → State::Introspect → State::TopologyPlan
+              → Control::TopologyMutate → Event::TopologyMutated
+              → [State::OperatorPlan → Control::WriteOperator]  (if stubs exist)
+              → Control::BuildTopologyOverlay → Event::TopologyOverlayBuilt
+              → Event::LearnUpdated → State::Input → (trading cycle)
+```
 
-**Validation**
-- The plan template in `assets/call_llm_templates.json` should contain no
-  references to `MarketFeed`, `TradePlan`, `BTC`, `ETH`, or `SOL`.
-- `grep -i "marketfeed\|tradetplan\|BTC\|ETH\|SOL" assets/call_llm_templates.json`
-  should return nothing from the `plan` or `repair` entries (only `analysis`
-  and `trade` templates, which are intentionally trading-specific).
-- `python3 -c "import sys; sys.path.insert(0,'crates/operators_lib'); import call_llm; lines = call_llm.load_transition_summary().split('\n'); print(lines[0])"` 
-  should print a high-confidence edge (confidence ≥ 0.97).
+`introspect.py` is **fully implemented** (9.0 KB). It reads `state/quantale.tlog`,
+`state/learned_edges.jsonl`, `state/topology_mutations.jsonl`, and `assets/operators.json`
+to produce a diagnostic with node stats, stub nodes, never-fired nodes, high-failure
+nodes, declining edges, and goal metrics. This context feeds `State::TopologyPlan`.
 
 ---
 
 ## Summary table
 
-| # | Problem | Fix commit | How to validate |
-|---|---------|-----------|-----------------|
-| 1 | `call_llm.py` header lost, `_EDGE_SCHEMA` undefined | `b4d4263` | `--template plan` works, 96 tests pass |
-| 2 | `topology_check` module import in tests | `0b73853` | `cargo test` passes |
-| 3a | Dev chain weights too low to win | `c43cf28` | `State::Introspect` appears in tlog |
-| 3b | `plan` template never proposed dev edges | `c43cf28`, `b7e58df` | Dev edges appear in TensorEdges records |
-| 3c | `operator_contract_ops` discarded | `c43cf28` | `contracts_updated` non-empty in receipt |
-| 4 | `plan` template domain-locked to trading | `b7e58df` | No node names in plan template |
+| # | Problem | Fix | How to validate |
+|---|---------|-----|-----------------|
+| 5 | Dev edges conditional on failures | Template: unconditional dev edges | Plan output has `State::Introspect` edge |
+| 6 | Hard reset lost LLM dev-chain weights | `accumulated_edges` field + extend on embed | Dev-chain weight survives hard reset |
+| 7 | `State::Input` ConsumedBlockPoint | Hard reset clears consumed[]; Fix 1 reduces frequency | Fewer `Unknown(-1)` blocks per cycle |
+| 8 | `projection_first_hop_mismatch` false positives | Not fixed (false positive, harmless) | Warnings still appear; acceptable |
+| 9 | No topology invariant for consumed blocking | Added invariant 14 `ConsumedBlockPoint` | `cargo run -- --check-topology` prints 5 WARNs, exits 0 |
+| 10 | Learned edges saturate at 1.0 | `min(base+0.15, 0.85)` cap in learning_policy | `State::Plan → State::TradePlan` loads at 0.85 not 1.0 |
+| 11 | Dev chain path product always loses | Fix 1: removed `State::Learn → Event::LearnUpdated` | `State::Introspect` appears in tlog |
+
+---
+
+## Validation for next session
+
+```bash
+# 1. Topology check clean (5 known warnings, exit 0)
+cargo run -- --check-topology
+
+# 2. All 100 tests green
+cargo test
+
+# 3. State::Introspect fires in tlog
+grep "Introspect" state/quantale.tlog | tail -5
+
+# 4. LLM creates nodes/edges (TopologyMutate fires)
+grep "TopologyMutate\|WriteOperator\|OperatorPlan" state/quantale.tlog | tail -5
+
+# 5. Learning cap working (no learned edge above 0.85)
+python3 -c "
+import json
+best = {}
+with open('state/learned_edges.jsonl') as f:
+    for line in f:
+        e = json.loads(line).get('edge', {})
+        k = (e.get('from'), e.get('to'))
+        best[k] = max(best.get(k, 0), e.get('confidence', 0))
+over = {k:v for k,v in best.items() if v > 0.85}
+print('Edges above 0.85:', over if over else 'none — cap is working')
+"
+
+# 6. No projection_first_hop_mismatch causing actual failures
+# (warnings expected; check execution still succeeds after each warning)
+```
+
+## Known remaining issues for next session
+
+1. **5 ConsumedBlockPoint nodes** — each needs a second outgoing edge to avoid
+   hard-reset dependency. Start with `State::Input`: add `State::Input → State::Plan`
+   or similar low-confidence second edge.
+
+2. **`projection_first_hop_mismatch` invariant 19** — tighten the check to only
+   flag when `first_hop` is not on the witness path from `selected_src` to
+   `selected_dst`, rather than requiring `first_hop == selected_dst`.
+
+3. **Dev chain operators** — `State::TopologyPlan`, `Control::TopologyMutate`,
+   `State::OperatorPlan`, `Control::WriteOperator` may be stubs. Check
+   `assets/operators.json` for `"executable": "true"` entries and implement
+   any that are needed before the LLM can write files.
+
+4. **`state/quantale.tlog` size** — 215k records. Consider rotating or trimming
+   to keep `introspect.py`'s TLOG_WINDOW (300 records) representative of recent
+   behaviour rather than ancient history.
