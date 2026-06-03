@@ -1493,6 +1493,49 @@
         ],
         "locks": []
       }
+    },
+    {
+      "node_name": "State::MutationReview",
+      "executable": "python3",
+      "static_args": [
+        "crates/operators_lib/apply_mutations.py",
+        "--preview"
+      ],
+      "input_mapping": {
+        "stdin_mode": "json"
+      },
+      "description": "Read-only review of staged mutation queue records with declarative preview diffs",
+      "effects": {
+        "reads": [
+          "state/mutation_queue.jsonl",
+          "assets/mutation_review_policy.json",
+          "assets/topology.json",
+          "assets/operators.json",
+          "assets/patterns.json"
+        ],
+        "writes": [],
+        "locks": []
+      }
+    },
+    {
+      "node_name": "Event::MutationReviewed",
+      "executable": "python3",
+      "static_args": [
+        "crates/operators_lib/event.py",
+        "--event",
+        "MutationReviewed"
+      ],
+      "input_mapping": {
+        "stdin_mode": "json"
+      },
+      "description": "Signals that the staged mutation queue was inspected",
+      "effects": {
+        "reads": [],
+        "writes": [
+          "event.log"
+        ],
+        "locks": []
+      }
     }
   ]
 }

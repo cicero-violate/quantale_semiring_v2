@@ -82,11 +82,11 @@ Done in the first implementation slice:
 - Added `assets/mutation_review_policy.json`.
 - Mutation queue review now supports preview diffs and selective rejection by
   id through `crates/operators_lib/apply_mutations.py`.
+- Added read-only topology wiring for `State::MutationReview` and
+  `Event::MutationReviewed`.
 
 Still pending:
 
-- Runtime node wiring for mutation review/apply if it should be part of the
-  topology itself.
 - Richer governance policy beyond the current runtime and side-effect assets.
 
 ## Target Assets

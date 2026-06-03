@@ -370,6 +370,16 @@
       "id": 71,
       "name": "Event::PatternMutated",
       "type": "Event"
+    },
+    {
+      "id": 72,
+      "name": "State::MutationReview",
+      "type": "State"
+    },
+    {
+      "id": 73,
+      "name": "Event::MutationReviewed",
+      "type": "Event"
     }
   ],
   "transitions": [
@@ -1162,6 +1172,60 @@
       "confidence": 0.62,
       "cost": 0.38,
       "safety": 0.9
+    },
+    {
+      "from": "Event::TopologyMutated",
+      "to": "State::MutationReview",
+      "default_weight": 0.92,
+      "confidence": 0.92,
+      "cost": 0.08,
+      "safety": 0.99,
+      "policy_effect": "ReviewTopologyMutationQueue"
+    },
+    {
+      "from": "Event::OperatorWritten",
+      "to": "State::MutationReview",
+      "default_weight": 0.92,
+      "confidence": 0.92,
+      "cost": 0.08,
+      "safety": 0.99,
+      "policy_effect": "ReviewOperatorMutationQueue"
+    },
+    {
+      "from": "Event::PatternMutated",
+      "to": "State::MutationReview",
+      "default_weight": 0.92,
+      "confidence": 0.92,
+      "cost": 0.08,
+      "safety": 0.99,
+      "policy_effect": "ReviewPatternMutationQueue"
+    },
+    {
+      "from": "State::MutationReview",
+      "to": "Event::MutationReviewed",
+      "default_weight": 0.98,
+      "confidence": 0.98,
+      "cost": 0.02,
+      "safety": 0.99,
+      "policy_effect": "MutationQueueReviewed"
+    },
+    {
+      "from": "State::MutationReview",
+      "to": "Event::LearnUpdated",
+      "default_weight": 0.4,
+      "confidence": 0.4,
+      "cost": 0.6,
+      "safety": 0.98,
+      "policy_effect": "MutationReviewBypass"
+    },
+    {
+      "from": "Event::MutationReviewed",
+      "to": "Event::LearnUpdated",
+      "default_weight": 0.9,
+      "confidence": 0.9,
+      "cost": 0.1,
+      "safety": 0.98,
+      "policy_effect": "LearnAfterMutationReview"
     }
   ],
   "pages": [

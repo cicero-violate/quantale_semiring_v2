@@ -1493,6 +1493,49 @@
         "--event",
         "PatternMutated"
       ]
+    },
+    {
+      "description": "Read-only review of staged mutation queue records with declarative preview diffs",
+      "effects": {
+        "locks": [],
+        "reads": [
+          "state/mutation_queue.jsonl",
+          "assets/mutation_review_policy.json",
+          "assets/topology.json",
+          "assets/operators.json",
+          "assets/patterns.json"
+        ],
+        "writes": []
+      },
+      "executable": "python3",
+      "input_mapping": {
+        "stdin_mode": "json"
+      },
+      "node_name": "State::MutationReview",
+      "static_args": [
+        "crates/operators_lib/apply_mutations.py",
+        "--preview"
+      ]
+    },
+    {
+      "description": "Signals that the staged mutation queue was inspected",
+      "effects": {
+        "locks": [],
+        "reads": [],
+        "writes": [
+          "event.log"
+        ]
+      },
+      "executable": "python3",
+      "input_mapping": {
+        "stdin_mode": "json"
+      },
+      "node_name": "Event::MutationReviewed",
+      "static_args": [
+        "crates/operators_lib/event.py",
+        "--event",
+        "MutationReviewed"
+      ]
     }
   ]
 }
