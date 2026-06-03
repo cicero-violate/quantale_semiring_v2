@@ -1,5 +1,6 @@
 {
   "learned_edge_cost_floor": 0.001,
-  "confidence_clamp": [0.0, 1.0],
-  "safety_clamp": [0.0, 1.0]
+  "confidence_clamp": [0.0, 0.85],
+  "safety_clamp": [0.0, 1.0],
+  "max_confidence_above_base": 0.15
 }
