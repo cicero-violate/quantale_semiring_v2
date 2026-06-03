@@ -79,10 +79,12 @@ Done in the first implementation slice:
 - Added `quantale_semiring_v2 mutations list|apply [mutation_id]` CLI wiring.
 - Added `assets/runtime_policy.json` for runtime tick, decay, and hard-reset
   thresholds.
+- Added `assets/mutation_review_policy.json`.
+- Mutation queue review now supports preview diffs and selective rejection by
+  id through `crates/operators_lib/apply_mutations.py`.
 
 Still pending:
 
-- Queue listing, diff preview, and selective approval ergonomics.
 - Runtime node wiring for mutation review/apply if it should be part of the
   topology itself.
 - Richer governance policy beyond the current runtime and side-effect assets.

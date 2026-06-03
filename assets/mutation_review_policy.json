@@ -1,0 +1,15 @@
+{
+  "default_command": "list",
+  "preview": {
+    "include_payload": false,
+    "max_diff_chars": 20000
+  },
+  "apply": {
+    "allow_apply_all": true,
+    "allow_apply_by_id": true
+  },
+  "reject": {
+    "allow_reject_all": false,
+    "allow_reject_by_id": true
+  }
+}
