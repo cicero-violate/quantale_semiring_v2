@@ -89,6 +89,16 @@ impl TopologyRuntime {
 
 // ── Split topology ─────────────────────────────────────────────────────────────
 
+/// Synthetic runtime nodes that appear in the hot topology / `regions.hot.json`
+/// but are NOT declared in `topology.source.json`.
+///
+/// These nodes are compiler-generated sentinels used by the hot-region
+/// scheduler.  They do not correspond to any operator and must not be
+/// dispatched through the operator executor.
+///
+/// Validators must treat these as an explicit whitelist, not as missing nodes.
+pub const SYNTHETIC_HOT_NODES: &[&str] = &["Region::CommitReceipt"];
+
 /// CPU-only control/IO subgraph loaded from `topology.control.json`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ControlTopologyRuntime {
@@ -159,11 +169,13 @@ impl SplitTopologyRuntime {
             )));
         }
 
-        // Invariant 2: all hot nodes (except virtual terminal) have region metadata.
+        // Invariant 2: all hot nodes (except synthetic sentinels) have region metadata.
         let unregistered: Vec<&str> = hot_doc
             .nodes
             .iter()
-            .filter(|n| n.name != "Region::CommitReceipt" && !registry.is_hot(&n.name))
+            .filter(|n| {
+                !SYNTHETIC_HOT_NODES.contains(&n.name.as_str()) && !registry.is_hot(&n.name)
+            })
             .map(|n| n.name.as_str())
             .collect();
         if !unregistered.is_empty() {

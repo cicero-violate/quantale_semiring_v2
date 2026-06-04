@@ -259,18 +259,20 @@ impl DeviceRingBuffer {
     }
 }
 
-// ── Async ingress pipeline ────────────────────────────────────────────────────
+// ── Staged ingress pipeline ───────────────────────────────────────────────────
 
-/// Page-locked host buffer for async H2D DMA.
+/// Host-side staging buffer for CPU→GPU data upload.
 ///
-/// MVP uses a regular heap `Vec`; a production implementation would call
-/// `cudaMallocHost` here for true pinned (page-locked) allocation that avoids
-/// the DMA bounce buffer.
-pub struct PinnedHostBuffer {
+/// Uses a regular heap `Vec<f32>`.  This is a *staging* buffer, not a
+/// page-locked (pinned) allocation — true pinned memory would require
+/// `cudaMallocHost` / `cudaHostRegister` and avoids the intermediate DMA
+/// bounce buffer.  If low-latency H2D transfer matters, replace the `Vec`
+/// with a `cudaMallocHost` allocation via the `cuda-sys` crate.
+pub struct HostStagingBuffer {
     pub data: Vec<f32>,
 }
 
-impl PinnedHostBuffer {
+impl HostStagingBuffer {
     pub fn from_slice(src: &[f32]) -> Self {
         Self { data: src.to_vec() }
     }
@@ -284,13 +286,14 @@ impl PinnedHostBuffer {
     }
 }
 
-/// Async upload queue: stages CPU data for H2D transfer.
+/// Staged upload queue: accumulates CPU data and copies it to the device
+/// slot registry in one `flush` call.
 ///
-/// `stage` accumulates (slot_name, buffer) pairs.  `flush` uploads all staged
-/// buffers to the `DeviceSlotRegistry` in one pass, using `htod_copy` which
-/// internally issues an async DMA if the source is pinned.
+/// `flush` currently performs *synchronous* `htod_copy` transfers in series.
+/// It is named "upload queue" rather than "async queue" because no CUDA
+/// streams are used yet — async multi-stream upload is a future optimisation.
 pub struct AsyncUploadQueue {
-    staged: Vec<(String, PinnedHostBuffer)>,
+    staged: Vec<(String, HostStagingBuffer)>,
 }
 
 impl Default for AsyncUploadQueue {
@@ -304,10 +307,10 @@ impl AsyncUploadQueue {
         Self::default()
     }
 
-    /// Stage `data` for upload under `slot`.  The copy into `PinnedHostBuffer`
+    /// Stage `data` for upload under `slot`.  The copy into `HostStagingBuffer`
     /// is synchronous; the H2D transfer happens on `flush`.
     pub fn stage(&mut self, slot: &str, data: &[f32]) -> Result<(), String> {
-        self.staged.push((slot.to_string(), PinnedHostBuffer::from_slice(data)));
+        self.staged.push((slot.to_string(), HostStagingBuffer::from_slice(data)));
         Ok(())
     }
 

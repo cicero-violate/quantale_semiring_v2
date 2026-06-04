@@ -26,7 +26,7 @@ pub use console::*;
 pub use contracts::*;
 pub use device_slots::{
     AsyncUploadQueue, DeviceBufferPool, DeviceRingBuffer, DeviceSlot, DeviceSlotRegistry,
-    PinnedHostBuffer,
+    HostStagingBuffer,
 };
 pub use egress::*;
 pub use error::*;
