@@ -64,7 +64,7 @@ GPU-selected parallel dispatch tier with CPU-dispatched GPU operators;
 hot-region par receipts applied via device ring
 ```
 
-Not: "fully GPU-native orchestration" — CPU still handles dispatch (Gap A) and eligibility (Gap B).
+Not: "fully GPU-native orchestration" — CPU still handles operator dispatch (Gap A).
 
 ---
 
