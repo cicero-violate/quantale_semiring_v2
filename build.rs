@@ -4,6 +4,9 @@ fn main() {
     println!("cargo:rerun-if-changed=assets/operators.json");
     println!("cargo:rerun-if-changed=assets/topology.source.json");
     println!("cargo:rerun-if-changed=assets/topology.generated.json");
+    println!("cargo:rerun-if-changed=assets/regions.hot.json");
+    println!("cargo:rerun-if-changed=assets/topology.hot.json");
+    println!("cargo:rerun-if-changed=assets/topology.control.json");
 
     let topology_path = if Path::new("assets/topology.generated.json").exists() {
         "assets/topology.generated.json"

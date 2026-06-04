@@ -10,6 +10,23 @@ pub struct TopologyNode {
     pub action: Option<String>,
 }
 
+impl TopologyNode {
+    /// True when this node is a GPU-resident compute region.
+    ///
+    /// GPU regions are dispatched through the device dispatch table rather than
+    /// the CPU operator executor. They do not require an entry in
+    /// `operators.generated.json`.
+    pub fn is_gpu_region(&self) -> bool {
+        self.node_type == "gpu_region"
+    }
+
+    /// True when this node belongs to the CPU control/IO graph.
+    pub fn is_control_io(&self) -> bool {
+        let t = self.node_type.as_str();
+        t == "State" || t == "Control" || t == "Event"
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct TopologyTransition {
     pub from: String,

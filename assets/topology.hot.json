@@ -1,0 +1,49 @@
+{
+  "matrix_name": "quantale_hot",
+  "nodes": [
+    {
+      "id": 44,
+      "name": "Execution::VectorAdd",
+      "type": "Execution"
+    },
+    {
+      "id": 45,
+      "name": "Execution::VectorScale",
+      "type": "Execution"
+    },
+    {
+      "id": 46,
+      "name": "Execution::FusedVectorAddScale",
+      "type": "Execution"
+    },
+    {
+      "id": 57,
+      "name": "Analysis::Return1",
+      "type": "Analysis"
+    },
+    {
+      "id": 58,
+      "name": "Analysis::Volatility",
+      "type": "Analysis"
+    },
+    {
+      "id": 59,
+      "name": "Analysis::SignalScore",
+      "type": "Analysis"
+    }
+  ],
+  "transitions": [],
+  "pages": [
+    {
+      "name": "hot",
+      "node_names": [
+        "Execution::VectorAdd",
+        "Execution::VectorScale",
+        "Execution::FusedVectorAddScale",
+        "Analysis::Return1",
+        "Analysis::Volatility",
+        "Analysis::SignalScore"
+      ]
+    }
+  ]
+}

@@ -8,9 +8,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::fusion_dispatch::FusionDispatch;
+use crate::hot_region::HotRegionRegistry;
 use crate::topology::GraphTopology;
 
-pub const DEFAULT_OPERATORS_JSON: &str = include_str!("../assets/operators.json");
+pub const DEFAULT_OPERATORS_JSON: &str = include_str!("../assets/operators.generated.json");
 pub const DEFAULT_RUNTIME_CONTEXT_JSON: &str = include_str!("../assets/runtime_context.json");
 pub const DEFAULT_RELOAD_POLICY_JSON: &str = include_str!("../assets/reload_policy.json");
 pub const DEFAULT_BLOCK_SIZE: usize = 512;
@@ -57,6 +58,9 @@ pub struct SystemConfig {
     /// Loaded from `assets/topology.fusion.json`; JitChains built from
     /// `operator_registry`.  Empty when the file doesn't exist yet.
     pub fusion_dispatch: FusionDispatch,
+    /// Hot GPU region metadata loaded from `assets/regions.hot.json`.
+    /// Empty when the file doesn't exist yet.
+    pub hot_region_registry: HotRegionRegistry,
     pub ingress_capacity_hint: usize,
     /// Maximum ticks before the loop exits. 0 means run forever.
     pub max_ticks: usize,
@@ -169,6 +173,9 @@ impl Default for SystemConfig {
             FusionDispatch::load("assets/topology.fusion.json", &operator_registry)
                 .unwrap_or_default();
 
+        let hot_region_registry =
+            HotRegionRegistry::load("assets/regions.hot.json").unwrap_or_default();
+
         Self {
             matrix_dim,
             matrix_len,
@@ -178,6 +185,7 @@ impl Default for SystemConfig {
             operators_path,
             operator_registry,
             fusion_dispatch,
+            hot_region_registry,
             ingress_capacity_hint: runtime_policy.ingress_capacity_hint.unwrap_or(1024),
             max_ticks: max_ticks_from_env(runtime_policy.max_ticks.unwrap_or(64)),
             tick_sleep_ms: tick_sleep_ms_from_env(runtime_policy.tick_sleep_ms.unwrap_or(0)),
@@ -190,12 +198,7 @@ impl Default for SystemConfig {
 }
 
 pub fn default_operators_path() -> PathBuf {
-    let generated = PathBuf::from("assets/operators.generated.json");
-    if generated.exists() {
-        generated
-    } else {
-        PathBuf::from("assets/operators.json")
-    }
+    PathBuf::from("assets/operators.generated.json")
 }
 
 impl SystemConfig {
@@ -232,6 +235,18 @@ impl SystemConfig {
         self.fusion_dispatch =
             FusionDispatch::load("assets/topology.fusion.json", &self.operator_registry)
                 .unwrap_or_default();
+    }
+
+    /// Reload `regions.hot.json` into `hot_region_registry`.
+    /// Silently resets to empty if the file is absent.
+    pub fn reload_hot_region_registry(&mut self) {
+        self.hot_region_registry =
+            HotRegionRegistry::load("assets/regions.hot.json").unwrap_or_default();
+    }
+
+    pub fn with_hot_region_registry(mut self, registry: HotRegionRegistry) -> Self {
+        self.hot_region_registry = registry;
+        self
     }
 
     pub fn validate(&self) -> Result<(), String> {
@@ -326,4 +341,19 @@ pub fn parse_operator_registry_str(input: &str) -> Result<OperatorRegistry, Stri
     }
 
     Ok(registry)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn runtime_default_operator_registry_is_generated_asset() {
+        assert_eq!(
+            default_operators_path(),
+            PathBuf::from("assets/operators.generated.json")
+        );
+        let registry = parse_operator_registry_str(DEFAULT_OPERATORS_JSON).unwrap();
+        assert!(!registry.is_empty());
+    }
 }

@@ -1,0 +1,58 @@
+{
+  "regions": [
+    {
+      "region_id": 0,
+      "name": "Execution::VectorAdd",
+      "kind": "gpu_region",
+      "reads": ["execution.a", "execution.b"],
+      "writes": ["execution.sum"],
+      "kernel": "jit_fused",
+      "pure": true
+    },
+    {
+      "region_id": 1,
+      "name": "Execution::VectorScale",
+      "kind": "gpu_region",
+      "reads": ["execution.input", "execution.scale"],
+      "writes": ["execution.scaled"],
+      "kernel": "jit_fused",
+      "pure": true
+    },
+    {
+      "region_id": 2,
+      "name": "Execution::FusedVectorAddScale",
+      "kind": "gpu_region",
+      "reads": ["execution.a", "execution.b", "execution.scale"],
+      "writes": ["execution.result"],
+      "kernel": "jit_fused",
+      "pure": true
+    },
+    {
+      "region_id": 3,
+      "name": "Analysis::Return1",
+      "kind": "gpu_region",
+      "reads": ["market.price", "market.open"],
+      "writes": ["analysis.return"],
+      "kernel": "jit_fused",
+      "pure": true
+    },
+    {
+      "region_id": 4,
+      "name": "Analysis::Volatility",
+      "kind": "gpu_region",
+      "reads": ["market.price", "analysis.return"],
+      "writes": ["analysis.volatility"],
+      "kernel": "jit_fused",
+      "pure": true
+    },
+    {
+      "region_id": 5,
+      "name": "Analysis::SignalScore",
+      "kind": "gpu_region",
+      "reads": ["analysis.return", "analysis.volatility"],
+      "writes": ["analysis.signal_score"],
+      "kernel": "jit_fused",
+      "pure": true
+    }
+  ]
+}

@@ -10,15 +10,18 @@ use serde_json::Value;
 
 use crate::config::SystemConfig;
 use crate::fusion_dispatch::FusionEntry;
+use crate::hot_region::HotRegionRegistry;
 #[cfg(feature = "cuda")]
 use crate::jit_kernel_fusion::{JitCache, JitChain, SlotBuffers};
 use crate::topology::{GraphTopology, NodeRegistry};
 use crate::types::ProcessReceipt;
 
 pub struct UniversalExecutor {
-    /// Mapping of Node Names to their generic CLI schemas loaded from operators.json.
+    /// Mapping of node names to their generated runtime operator contracts.
     pub operator_registry: HashMap<String, Value>,
     node_registry: NodeRegistry,
+    #[allow(dead_code)]
+    hot_region_registry: HotRegionRegistry,
     #[cfg(feature = "cuda")]
     jit_cache: Mutex<JitCache>,
     #[cfg(feature = "cuda")]
@@ -31,6 +34,7 @@ impl UniversalExecutor {
             operator_registry: config.operator_registry.clone(),
             node_registry: GraphTopology::bundled_registry()
                 .expect("topology.generated.json or bundled topology must compile"),
+            hot_region_registry: config.hot_region_registry.clone(),
             #[cfg(feature = "cuda")]
             jit_cache: Mutex::new(JitCache::new()),
             #[cfg(feature = "cuda")]
@@ -45,6 +49,7 @@ impl UniversalExecutor {
         Self {
             operator_registry,
             node_registry,
+            hot_region_registry: HotRegionRegistry::default(),
             #[cfg(feature = "cuda")]
             jit_cache: Mutex::new(JitCache::new()),
             #[cfg(feature = "cuda")]
@@ -57,6 +62,7 @@ impl UniversalExecutor {
             operator_registry,
             node_registry: GraphTopology::bundled_registry()
                 .expect("topology.generated.json or bundled topology must compile"),
+            hot_region_registry: HotRegionRegistry::default(),
             #[cfg(feature = "cuda")]
             jit_cache: Mutex::new(JitCache::new()),
             #[cfg(feature = "cuda")]
@@ -68,20 +74,28 @@ impl UniversalExecutor {
         &self.node_registry
     }
 
-    /// Spawns and executes any command contract defined in the operators configuration.
-    pub async fn execute_abstract_node(
-        &self,
-        node_name: &str,
-        dynamic_payload: &Value,
-    ) -> ProcessReceipt {
-        self.execute_abstract_node_blocking(node_name, dynamic_payload)
+    /// True if `node_name` should be dispatched via the GPU region path.
+    ///
+    /// Checks both the `HotRegionRegistry` (nodes with explicit GPU region
+    /// metadata) and the operator registry (`executable = "jit_cuda"`).  The
+    /// hot path bypasses process-spawning and routes directly through
+    /// `TensorQuantaleWorld::gpu_dispatch_region`.
+    pub fn is_hot_node(&self, node_name: &str) -> bool {
+        if self.hot_region_registry.is_hot(node_name) {
+            return true;
+        }
+        self.operator_registry
+            .get(node_name)
+            .and_then(|op| op["executable"].as_str())
+            .map(|e| e == "jit_cuda")
+            .unwrap_or(false)
     }
 
     /// Return the declared `output_mode` for a node operator, if any.
     ///
-    /// Operators that emit a JSON tensor edge plan should declare `"output_mode": "tensor_plan"`
-    /// in `operators.json`. The main loop uses this to decide whether to run
-    /// `compile_llm_tensor_plan` on the operator's stdout.
+    /// Operators that emit a JSON tensor edge plan should declare
+    /// `"output_mode": "tensor_plan"`. The main loop uses this to decide
+    /// whether to run `compile_llm_tensor_plan` on the operator's stdout.
     pub fn output_mode<'a>(&'a self, node_name: &str) -> Option<&'a str> {
         self.operator_registry
             .get(node_name)

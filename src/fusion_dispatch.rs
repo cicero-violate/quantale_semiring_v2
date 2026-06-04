@@ -51,15 +51,14 @@ pub struct SynthesizedKernel {
     pub source: String,
 }
 
-/// Fast-dispatch index: maps region node names to `FusionEntry`s.
+/// Fast-dispatch index: maps fusion entry node names to `FusionEntry`s.
 ///
 /// Loaded from `assets/topology.fusion.json` at startup.  Provides O(1)
-/// dispatch lookup by either the entry node (first node in the chain) or any
-/// member node.
+/// dispatch lookup by the entry node, which is the only point where a fused
+/// region may execute.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct FusionDispatch {
     by_entry: HashMap<String, usize>,
-    by_member: HashMap<String, usize>,
     pub entries: Vec<FusionEntry>,
 }
 
@@ -140,9 +139,6 @@ impl FusionDispatch {
             if let Some(first) = nodes.first() {
                 dispatch.by_entry.insert(first.clone(), idx);
             }
-            for node in &nodes {
-                dispatch.by_member.insert(node.clone(), idx);
-            }
 
             dispatch.entries.push(FusionEntry {
                 region: region_name.to_string(),
@@ -176,20 +172,102 @@ impl FusionDispatch {
         self.by_entry.get(node).map(|&i| &self.entries[i])
     }
 
-    /// Look up the fusion entry that contains `node` anywhere in the chain.
-    pub fn get_by_member(&self, node: &str) -> Option<&FusionEntry> {
-        self.by_member.get(node).map(|&i| &self.entries[i])
-    }
-
     /// Return true if `node` is the entry point of any loaded fusion region.
     pub fn is_fusion_entry(&self, node: &str) -> bool {
         self.by_entry.contains_key(node)
     }
+}
 
-    /// Return true if `node` is a member of any loaded fusion region.
-    pub fn is_fusion_member(&self, node: &str) -> bool {
-        self.by_member.contains_key(node)
+// ── TypedIR → FusionEntry API ─────────────────────────────────────────────────
+
+impl FusionDispatch {
+    /// Build a `FusionEntry` from a named `IrPipeline` without requiring the
+    /// ops to already exist in the operator registry.
+    ///
+    /// Synthesises ephemeral `jit_body` strings via `ir_op_to_jit_body`, injects
+    /// them as transient operator entries, and calls `detect_jit_chains`.
+    pub fn entry_from_ir_pipeline(
+        pipeline: &crate::ir::IrPipeline,
+        registry: &OperatorRegistry,
+    ) -> Result<FusionEntry, String> {
+        // Build a transient registry that overlays the IR-synthesised operators
+        // on top of the real registry.
+        let mut transient = registry.clone();
+        for (idx, op) in pipeline.ops.iter().enumerate() {
+            let node_name = format!("IR::{}::{idx}", pipeline.name);
+            let synthetic = ir_op_to_synthetic_operator(&node_name, op)?;
+            transient.insert(node_name, synthetic);
+        }
+
+        // Build the node-name list in pipeline order.
+        let nodes: Vec<String> = (0..pipeline.ops.len())
+            .map(|idx| format!("IR::{}::{idx}", pipeline.name))
+            .collect();
+
+        if nodes.len() < 2 {
+            return Err(format!(
+                "IR pipeline '{}' must have at least 2 ops to form a JitChain",
+                pipeline.name
+            ));
+        }
+
+        let chains =
+            crate::jit_kernel_fusion::detect_jit_chains(&nodes, &transient).map_err(|e| {
+                format!("entry_from_ir_pipeline '{}': {e}", pipeline.name)
+            })?;
+
+        if chains.len() != 1 {
+            return Err(format!(
+                "entry_from_ir_pipeline '{}': expected 1 chain, got {} \
+                 (pipeline ops may not form a single linear data-flow)",
+                pipeline.name,
+                chains.len()
+            ));
+        }
+
+        let chain = chains.into_iter().next().unwrap();
+        let metadata =
+            crate::jit_kernel_fusion::chain_metadata(&chain, 0);
+
+        let reads = pipeline.external_reads();
+        let writes = pipeline.external_writes();
+
+        Ok(FusionEntry {
+            region: pipeline.name.clone(),
+            nodes,
+            chain,
+            metadata,
+            reads,
+            writes,
+        })
     }
+}
+
+fn ir_op_to_synthetic_operator(
+    node_name: &str,
+    op: &crate::ir::TypedIrOp,
+) -> Result<serde_json::Value, String> {
+    let jit_body = crate::ir::ir_op_to_jit_body(op)?;
+    let reads: Vec<serde_json::Value> = op
+        .reads()
+        .into_iter()
+        .map(|s| serde_json::Value::String(s.to_string()))
+        .collect();
+    let writes: Vec<serde_json::Value> = op
+        .writes()
+        .into_iter()
+        .map(|s| serde_json::Value::String(s.to_string()))
+        .collect();
+    Ok(serde_json::json!({
+        "node_name": node_name,
+        "executable": "jit_cuda",
+        "jit_body": jit_body,
+        "effects": {
+            "reads": reads,
+            "writes": writes,
+            "locks": []
+        }
+    }))
 }
 
 // ── Synthesis API ─────────────────────────────────────────────────────────────
@@ -332,23 +410,11 @@ mod tests {
     }
 
     #[test]
-    fn member_lookup_finds_any_chain_node() {
-        let reg = analysis_registry();
-        let dispatch = FusionDispatch::from_json_str(&analysis_fusion_json(), &reg).unwrap();
-        assert!(dispatch.get_by_member("Analysis::Return1").is_some());
-        assert!(dispatch.get_by_member("Analysis::Volatility").is_some());
-        assert!(dispatch.get_by_member("Analysis::SignalScore").is_some());
-        assert!(dispatch.get_by_member("State::MarketFeed").is_none());
-    }
-
-    #[test]
-    fn is_fusion_entry_and_member_predicates() {
+    fn is_fusion_entry_predicate_only_matches_entry() {
         let reg = analysis_registry();
         let dispatch = FusionDispatch::from_json_str(&analysis_fusion_json(), &reg).unwrap();
         assert!(dispatch.is_fusion_entry("Analysis::Return1"));
         assert!(!dispatch.is_fusion_entry("Analysis::Volatility")); // not the entry
-        assert!(dispatch.is_fusion_member("Analysis::Volatility"));
-        assert!(!dispatch.is_fusion_member("Control::Block"));
     }
 
     #[test]

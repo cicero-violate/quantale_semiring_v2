@@ -45,6 +45,10 @@ const EXPLORATION_SCORE_KERNEL: &str = "tensor_quantale_score_tokens";
 const EXPLORATION_TOPK_KERNEL: &str = "tensor_quantale_select_topk_tokens";
 const EXPLORATION_COMMIT_KERNEL: &str = "tensor_quantale_commit_exploration";
 const JIT_CHAIN_SCORE_KERNEL: &str = "jit_chain_score_embed";
+const DRAIN_DEVICE_RECEIPTS_KERNEL: &str = "tensor_quantale_drain_device_receipts";
+const GPU_DISPATCH_KERNEL: &str = "tensor_quantale_gpu_dispatch";
+
+pub const DEVICE_RECEIPT_RING_SIZE: usize = 256;
 
 pub const EXPLORATION_MAX_TOKENS: usize = TENSOR_NODE_COUNT * TENSOR_NODE_COUNT;
 pub const EXPLORATION_MAX_SELECTED: usize = TENSOR_NODE_COUNT;
@@ -123,6 +127,48 @@ pub struct ExecutionReceipt {
 
 unsafe impl DeviceRepr for ExecutionReceipt {}
 
+/// GPU-native receipt produced by the hot dispatch path.
+///
+/// Written entirely on-device by `tensor_quantale_gpu_dispatch`; drained by
+/// `tensor_quantale_drain_device_receipts` without any CPU tensor-update hop.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct DeviceReceipt {
+    pub region_id: i32,
+    pub src: i32,
+    pub dst: i32,
+    pub outcome: i32,
+    pub latency: f32,
+    pub valid: i32,
+    pub output_flags: i32,
+}
+
+unsafe impl DeviceRepr for DeviceReceipt {}
+
+/// Host-side mirror of the CUDA `GpuDispatchMailbox` struct.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct GpuDispatchMailboxHost {
+    pub pending_region_id: i32,
+    pub src_node: i32,
+    pub dst_node: i32,
+    pub dispatched: i32,
+}
+
+unsafe impl DeviceRepr for GpuDispatchMailboxHost {}
+
+/// Device-resident ring buffer for `DeviceReceipt`s.
+///
+/// `ring` holds `DEVICE_RECEIPT_RING_SIZE` slots on the GPU.
+/// `head` and `tail` are single-element slices so GPU kernels can advance
+/// them atomically.  The CPU only reads `tail` to know when new receipts
+/// arrived, and only writes `region_id` + mailbox data.
+pub struct DeviceReceiptBuffer {
+    pub ring: CudaSlice<DeviceReceipt>,
+    pub head: CudaSlice<i32>,
+    pub tail: CudaSlice<i32>,
+}
+
 impl From<&ProcessReceipt> for ExecutionOutcome {
     fn from(receipt: &ProcessReceipt) -> Self {
         match receipt.exit_code {
@@ -156,6 +202,8 @@ pub struct TensorQuantaleWorld {
     base_tensor: Vec<f32>,
     /// Host-side queue of execution receipts pending a drain_lattice_queue call.
     event_queue: Vec<ExecutionReceipt>,
+    /// Device-resident receipt ring for the GPU hot-dispatch path.
+    device_receipt_buffer: DeviceReceiptBuffer,
 }
 
 impl TensorQuantaleWorld {
@@ -184,6 +232,8 @@ impl TensorQuantaleWorld {
                 EXPLORATION_TOPK_KERNEL,
                 EXPLORATION_COMMIT_KERNEL,
                 JIT_CHAIN_SCORE_KERNEL,
+                DRAIN_DEVICE_RECEIPTS_KERNEL,
+                GPU_DISPATCH_KERNEL,
             ],
         )
         .map_err(|error| CudaError::new("load_ptx tensor", error))?;
@@ -234,6 +284,16 @@ impl TensorQuantaleWorld {
             .htod_copy(vec![0_i32])
             .map_err(|error| CudaError::new("htod_copy exploration selected_count", error))?;
 
+        let device_receipt_ring = dev
+            .htod_copy(vec![DeviceReceipt::default(); DEVICE_RECEIPT_RING_SIZE])
+            .map_err(|error| CudaError::new("htod_copy device_receipt_ring", error))?;
+        let device_receipt_head = dev
+            .htod_copy(vec![0_i32])
+            .map_err(|error| CudaError::new("htod_copy device_receipt_head", error))?;
+        let device_receipt_tail = dev
+            .htod_copy(vec![0_i32])
+            .map_err(|error| CudaError::new("htod_copy device_receipt_tail", error))?;
+
         let mut world = Self {
             dev,
             tensor,
@@ -252,6 +312,11 @@ impl TensorQuantaleWorld {
             exploration_selected_count,
             base_tensor: Vec::new(),
             event_queue: Vec::new(),
+            device_receipt_buffer: DeviceReceiptBuffer {
+                ring: device_receipt_ring,
+                head: device_receipt_head,
+                tail: device_receipt_tail,
+            },
         };
         world.reset()?;
         Ok(world)
@@ -595,6 +660,78 @@ impl TensorQuantaleWorld {
             .ok_or(CudaError::missing_function(DRAIN_KERNEL))?;
         unsafe { kernel.launch(kernel_config(), (&mut self.tensor, &receipt_buf, count)) }
             .map_err(|error| CudaError::new("tensor_quantale_drain_queue", error))
+    }
+
+    /// Drain all `DeviceReceipt`s in the device ring buffer on-device.
+    ///
+    /// Unlike `drain_lattice_queue`, this path never touches the CPU for
+    /// tensor updates — the GPU reads the ring and applies confidence/cost/
+    /// safety atomics directly.
+    pub fn drain_device_receipts(&mut self) -> Result<(), CudaError> {
+        let ring_size = DEVICE_RECEIPT_RING_SIZE as i32;
+        let kernel = self
+            .dev
+            .get_func(MODULE_NAME, DRAIN_DEVICE_RECEIPTS_KERNEL)
+            .ok_or(CudaError::missing_function(DRAIN_DEVICE_RECEIPTS_KERNEL))?;
+        unsafe {
+            kernel.launch(
+                kernel_config(),
+                (
+                    &mut self.tensor,
+                    &self.device_receipt_buffer.ring,
+                    ring_size,
+                    &mut self.device_receipt_buffer.head,
+                    &self.device_receipt_buffer.tail,
+                ),
+            )
+        }
+        .map_err(|error| CudaError::new("tensor_quantale_drain_device_receipts", error))
+    }
+
+    /// Write a region dispatch request to the device mailbox and launch
+    /// `tensor_quantale_gpu_dispatch`, which records a `DeviceReceipt` in the
+    /// ring buffer without returning to the CPU.
+    ///
+    /// The JIT kernel for the region must have been launched **before** calling
+    /// this method so that `gpu_dispatch` can immediately record a success
+    /// receipt.  Call `drain_device_receipts` afterwards to fold the receipt
+    /// into the quantale tensor.
+    pub fn gpu_dispatch_region(
+        &mut self,
+        region_id: i32,
+        src_node: i32,
+        dst_node: i32,
+    ) -> Result<(), CudaError> {
+        use crate::tensor::GpuDispatchMailboxHost;
+        let mailbox = GpuDispatchMailboxHost {
+            pending_region_id: region_id,
+            src_node,
+            dst_node,
+            dispatched: 0,
+        };
+        let mailbox_buf = self
+            .dev
+            .htod_copy(vec![mailbox])
+            .map_err(|error| CudaError::new("htod_copy gpu dispatch mailbox", error))?;
+        let region_count = 64_i32; // upper bound; actual regions registered at startup
+        let ring_size = DEVICE_RECEIPT_RING_SIZE as i32;
+        let kernel = self
+            .dev
+            .get_func(MODULE_NAME, GPU_DISPATCH_KERNEL)
+            .ok_or(CudaError::missing_function(GPU_DISPATCH_KERNEL))?;
+        unsafe {
+            kernel.launch(
+                kernel_config(),
+                (
+                    &mailbox_buf,
+                    &mut self.device_receipt_buffer.ring,
+                    &mut self.device_receipt_buffer.tail,
+                    ring_size,
+                    region_count,
+                ),
+            )
+        }
+        .map_err(|error| CudaError::new("tensor_quantale_gpu_dispatch", error))
     }
 
     pub fn decay(&mut self, factor: f32) -> Result<(), CudaError> {

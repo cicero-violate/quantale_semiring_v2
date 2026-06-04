@@ -39,6 +39,16 @@ struct RuntimeEpoch {
 struct ActiveExecution {
     receipt: ProcessReceipt,
     fusion: Option<FusionLogicalAdvance>,
+    /// Set when the execution used the GPU hot path: caller must call
+    /// `world.gpu_dispatch_region(region_id, src, dst)` followed by
+    /// `world.drain_device_receipts()` to fold the receipt into the tensor.
+    hot_dispatch: Option<HotDispatchInfo>,
+}
+
+struct HotDispatchInfo {
+    region_id: u32,
+    src: i32,
+    dst: i32,
 }
 
 struct FusionLogicalAdvance {
@@ -83,7 +93,7 @@ fn main() {
         }
     }
 
-    // --check-topology: validate topology.json and exit without running the loop.
+    // --check-topology: validate the generated runtime topology and exit.
     if args.iter().any(|a| a == "--check-topology") {
         let topology = match GraphTopology::default_asset() {
             Ok(t) => t,
@@ -385,6 +395,7 @@ fn main() {
             );
             let process_receipt = &execution.receipt;
             let outcome = ExecutionOutcome::from(process_receipt);
+            apply_hot_dispatch_if_needed(&mut epoch.world, &execution);
             queue_execution_lattice_updates(&mut epoch.world, &decision, &execution, outcome);
             update_execution_receipt_priors(
                 &mut epoch.exploration_engine,
@@ -527,8 +538,12 @@ fn main() {
                         );
                     }
 
-                    let scheduled_receipts =
-                        dispatch_decision_batch_blocking(&epoch.executor, batch, &current_payload);
+                    let scheduled_receipts = dispatch_decision_batch_blocking(
+                        &epoch.executor,
+                        &config.fusion_dispatch,
+                        batch,
+                        &current_payload,
+                    );
                     let mut batch_stdout = Vec::new();
 
                     for scheduled in scheduled_receipts {
@@ -881,6 +896,7 @@ fn main() {
         );
         let process_receipt = &execution.receipt;
         let outcome = ExecutionOutcome::from(process_receipt);
+        apply_hot_dispatch_if_needed(&mut epoch.world, &execution);
 
         console::info(
             "operator",
@@ -1043,6 +1059,30 @@ fn filter_static_topology_edges(
         .collect()
 }
 
+/// If the execution used the GPU hot path, write a device receipt and drain it
+/// into the quantale tensor.  No-ops for control/IO executions.
+fn apply_hot_dispatch_if_needed(world: &mut TensorQuantaleWorld, execution: &ActiveExecution) {
+    #[cfg(feature = "cuda")]
+    if let Some(ref info) = execution.hot_dispatch {
+        let result = world
+            .gpu_dispatch_region(info.region_id as i32, info.src, info.dst)
+            .and_then(|_| world.drain_device_receipts());
+        if let Err(err) = result {
+            console::warn(
+                "gpu_dispatch",
+                "drain_failed",
+                &[("error", err.to_string())],
+            );
+        }
+    }
+    #[cfg(not(feature = "cuda"))]
+    let _ = (world, execution);
+}
+
+fn is_hot_dispatch(node_name: &str, config: &SystemConfig, executor: &UniversalExecutor) -> bool {
+    config.hot_region_registry.is_hot(node_name) || executor.is_hot_node(node_name)
+}
+
 fn execute_active_node_blocking(
     epoch: &RuntimeEpoch,
     config: &SystemConfig,
@@ -1050,6 +1090,29 @@ fn execute_active_node_blocking(
     active_node_name: &str,
     current_payload: &Value,
 ) -> ActiveExecution {
+    // ── Hot GPU path ──────────────────────────────────────────────────────────
+    // Hot nodes (jit_cuda or registered GPU regions) bypass process-spawning.
+    // The JIT kernel runs on-device; the caller is responsible for calling
+    // world.gpu_dispatch_region() and drain_device_receipts() using the
+    // returned `hot_dispatch` info so the tensor update stays GPU-side.
+    if is_hot_dispatch(active_node_name, config, &epoch.executor) {
+        if let Some(region_id) = config.hot_region_registry.region_id_for(active_node_name) {
+            let jit_receipt = epoch
+                .executor
+                .execute_abstract_node_blocking(active_node_name, current_payload);
+            return ActiveExecution {
+                receipt: jit_receipt,
+                fusion: None,
+                hot_dispatch: Some(HotDispatchInfo {
+                    region_id,
+                    src: decision.selected_src,
+                    dst: decision.first_hop,
+                }),
+            };
+        }
+    }
+
+    // ── Fusion region path ────────────────────────────────────────────────────
     if let Some(entry) = config.fusion_dispatch.get_by_entry(active_node_name) {
         console::info(
             "fusion",
@@ -1064,7 +1127,7 @@ fn execute_active_node_blocking(
             .executor
             .execute_fusion_entry_blocking(entry, current_payload);
         let fusion = build_fusion_logical_advance(entry, decision, epoch.topology.registry());
-        return ActiveExecution { receipt, fusion };
+        return ActiveExecution { receipt, fusion, hot_dispatch: None };
     }
 
     let receipt = epoch
@@ -1073,6 +1136,7 @@ fn execute_active_node_blocking(
     ActiveExecution {
         receipt,
         fusion: None,
+        hot_dispatch: None,
     }
 }
 
@@ -1199,6 +1263,7 @@ fn build_runtime_epoch(
     tlog: &mut TlogWriter,
 ) -> Result<RuntimeEpoch, String> {
     config.reload_default_operator_registry()?;
+    config.reload_hot_region_registry();
 
     let topology = TopologyRuntime::load_checked_default().map_err(|error| error.to_string())?;
     let invariants = TopologyInvariants::default_asset();
@@ -1216,10 +1281,7 @@ fn build_runtime_epoch(
         ));
     }
 
-    let executor = UniversalExecutor::from_registry(
-        config.operator_registry.clone(),
-        topology.registry().clone(),
-    );
+    let executor = UniversalExecutor::from_config(config);
     let contracts = NodeContracts::default_asset();
 
     let mut tensor_edges = topology.tensor_edges().to_vec();

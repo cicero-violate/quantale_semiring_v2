@@ -6,7 +6,7 @@
 //   2  security/safety         max-min
 //
 // N must match TENSOR_NODE_COUNT in src/tensor.rs.
-// HALT_NODE must match id_of("Control::Halt") in assets/topology.json.
+// HALT_NODE must match id_of("Control::Halt") in the generated topology.
 
 struct DecisionReport {
     int step;
@@ -26,7 +26,7 @@ struct DecisionReport {
 #define BOTTOM   0.0f
 #define Q_UNIT   1.0f
 
-// Special node IDs derived from assets/topology.json.
+// Special node IDs derived from the generated topology.
 #define START_NODE  0   // State::Goal
 #define HALT_NODE  19   // Control::Halt  (CONTROL_OFFSET=13, C_Halt=6)
 
@@ -163,6 +163,35 @@ struct ExecutionReceipt {
     int src;
     int dst;
     int outcome; // 0=success, 1=failure, 2=timeout, 3=safety violation
+};
+
+// ── Device-side receipts ──────────────────────────────────────────────────────
+//
+// DeviceReceipt is the GPU-native receipt produced by the hot execution path.
+// Unlike ExecutionReceipt (built on the CPU from process stdout), a
+// DeviceReceipt is written entirely on-device by tensor_quantale_gpu_dispatch
+// and drained by tensor_quantale_drain_device_receipts without any CPU hop.
+
+struct DeviceReceipt {
+    int region_id;    // GPU region that produced this receipt
+    int src;          // src node id from the dispatch decision
+    int dst;          // dst node id
+    int outcome;      // 0=success, 1=failure, 2=timeout, 3=safety_violation
+    float latency;    // relative execution latency hint (0=unknown)
+    int valid;        // 1 if this ring slot is populated
+    int output_flags; // bitmask of written slot indices
+};
+
+#define DEVICE_RECEIPT_RING_SIZE 256
+
+// Mailbox used by the hot dispatch path: quantale selects a region, the host
+// (or a persistent kernel) reads pending_region_id, runs the GPU kernel, and
+// the GPU writes back the receipt without a CPU tensor update.
+struct GpuDispatchMailbox {
+    int pending_region_id; // -1 = empty
+    int src_node;
+    int dst_node;
+    int dispatched;        // set to 1 by tensor_quantale_gpu_dispatch
 };
 
 // ── kernels ───────────────────────────────────────────────────────────────
@@ -875,4 +904,104 @@ extern "C" __global__ void tensor_quantale_tick(
     tensor_quantale_closure(tensor, scratch, witness);
     __syncthreads();
     tensor_quantale_frontier_step(tensor, witness, consumed, active, next_active, bias, decision);
+}
+
+// ── Device-side receipt drain ─────────────────────────────────────────────────
+//
+// Processes completed DeviceReceipts from the ring buffer entirely on-device,
+// applying the same tensor updates as tensor_quantale_drain_queue but without
+// any CPU round-trip.  ring_head is the consumer index (advances per receipt
+// processed); ring_tail is the producer index written by gpu_dispatch.
+
+extern "C" __global__ void tensor_quantale_drain_device_receipts(
+    float*               tensor,
+    const DeviceReceipt* receipt_ring,
+    int                  ring_size,
+    int*                 ring_head,
+    const int*           ring_tail
+) {
+    if (threadIdx.x != 0 || blockIdx.x != 0) return;
+
+    int head = *ring_head;
+    int tail = *ring_tail;
+
+    while (head != tail) {
+        int slot = head % ring_size;
+        DeviceReceipt r = receipt_ring[slot];
+
+        if (r.valid && r.src >= 0 && r.src < N && r.dst >= 0 && r.dst < N && r.src != r.dst) {
+            int cidx = tensor_idx(LAYER_CONFIDENCE, r.src, r.dst);
+            int eidx = tensor_idx(LAYER_COST,       r.src, r.dst);
+            int sidx = tensor_idx(LAYER_SAFETY,     r.src, r.dst);
+
+            if (r.outcome == 0) { // success
+                atomicExch(&tensor[cidx], 1.0f);
+                {
+                    int* ptr = (int*)&tensor[eidx];
+                    int ob, nb;
+                    do {
+                        ob = *((volatile int*)ptr);
+                        float v = __int_as_float(ob);
+                        if (v <= 0.01f) break;
+                        nb = __float_as_int(v * 0.5f);
+                    } while (atomicCAS(ptr, ob, nb) != ob);
+                }
+                atomicExch(&tensor[sidx], 1.0f);
+            } else if (r.outcome == 1) { // failure
+                atomic_float_mul(&tensor[cidx], 0.1f);
+                atomic_float_add_capped(&tensor[eidx], 10.0f);
+                atomic_float_mul(&tensor[sidx], 0.5f);
+            } else if (r.outcome == 2) { // timeout
+                atomic_float_mul(&tensor[cidx], 0.5f);
+                atomic_float_add_capped(&tensor[eidx], 100.0f);
+            } else if (r.outcome == 3) { // safety violation
+                atomic_float_mul(&tensor[cidx], 0.25f);
+                atomic_float_add_capped(&tensor[eidx], 50.0f);
+                atomicExch(&tensor[sidx], 0.0f);
+            }
+        }
+
+        head++;
+    }
+
+    *ring_head = head;
+}
+
+// ── GPU-side region dispatch ──────────────────────────────────────────────────
+//
+// Reads a pending region request from the mailbox, records a DeviceReceipt,
+// and marks the mailbox dispatched — all without CPU involvement.
+//
+// For the MVP the actual per-region compute is run by the JIT kernels launched
+// from Rust (see TensorQuantaleWorld::gpu_dispatch_region).  This kernel
+// establishes the device-side receipt ring-buffer protocol so that
+// tensor_quantale_drain_device_receipts can drain without a CPU hop.
+
+extern "C" __global__ void tensor_quantale_gpu_dispatch(
+    const GpuDispatchMailbox* mailbox,
+    DeviceReceipt*            receipt_ring,
+    int*                      ring_tail,
+    int                       ring_size,
+    int                       region_count
+) {
+    if (threadIdx.x != 0 || blockIdx.x != 0) return;
+
+    int rid = mailbox->pending_region_id;
+    if (rid < 0 || rid >= region_count) return;
+
+    // Write a success receipt to the next ring slot.
+    int tail = *ring_tail;
+    int slot = tail % ring_size;
+
+    DeviceReceipt r;
+    r.region_id   = rid;
+    r.src         = mailbox->src_node;
+    r.dst         = mailbox->dst_node;
+    r.outcome     = 0; // success — JIT kernel ran before this dispatch call
+    r.latency     = 0.0f;
+    r.valid       = 1;
+    r.output_flags = (1 << rid);
+
+    receipt_ring[slot] = r;
+    *ring_tail = tail + 1;
 }

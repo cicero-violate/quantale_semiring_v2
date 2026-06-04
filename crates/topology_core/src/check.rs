@@ -600,8 +600,10 @@ fn check_phase2(
     operator_registry: &OperatorRegistry,
 ) {
     for node in &topology.nodes {
-        // Only check State and Control nodes; skip Event nodes and halt nodes
-        let is_state_or_control = node.node_type == "State" || node.node_type == "Control";
+        // Only check State/Control nodes; skip Event nodes, halt nodes, and
+        // gpu_region nodes (those bind to DeviceDispatchTable, not operators.json).
+        let is_state_or_control = (node.node_type == "State" || node.node_type == "Control")
+            && !node.is_gpu_region();
         if !is_state_or_control {
             continue;
         }
