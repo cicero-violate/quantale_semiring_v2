@@ -141,7 +141,7 @@ pub enum ExecutionOutcome {
 }
 
 impl ExecutionOutcome {
-    fn code(self) -> i32 {
+    pub fn code(self) -> i32 {
         match self {
             Self::Success => 0,
             Self::Failure => 1,

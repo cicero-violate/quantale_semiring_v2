@@ -458,6 +458,9 @@ fn main() {
 
             let mut par_failures = 0usize;
             let mut par_stdout: Vec<Value> = Vec::new();
+            // Tracks whether any hot-region receipt was routed through the device ring
+            // (Gap D partial closure). Cleared each group; drives drain_device_receipts.
+            let mut any_device_ring = false;
             for ((decision, receipt), par_node_name) in par_decisions
                 .iter()
                 .zip(par_receipts.iter())
@@ -486,11 +489,55 @@ fn main() {
                     );
                 }
                 let par_outcome = ExecutionOutcome::from(receipt);
-                epoch.world.queue_lattice_update(
-                    decision.selected_src,
-                    decision.first_hop,
-                    par_outcome,
-                );
+
+                // Gap D (partial): hot-region par members route their receipt through the
+                // device ring (gpu_dispatch_region → drain_device_receipts) so tensor
+                // updates stay GPU-resident. Fusion/abstract members use queue_lattice_update.
+                let hot_rid = config.hot_region_registry.region_id_for(par_node_name);
+                let via_device = if let Some(rid) = hot_rid {
+                    match epoch.world.gpu_dispatch_region(
+                        rid as i32,
+                        decision.selected_src,
+                        decision.first_hop,
+                        par_outcome.code(),
+                    ) {
+                        Ok(()) => {
+                            console::info(
+                                "parallel",
+                                "device_ring_receipt",
+                                &[
+                                    ("node", par_node_name.clone()),
+                                    ("region_id", rid.to_string()),
+                                ],
+                            );
+                            true
+                        }
+                        Err(error) => {
+                            console::warn(
+                                "parallel",
+                                "device_ring_fallback",
+                                &[
+                                    ("node", par_node_name.clone()),
+                                    ("error", error.to_string()),
+                                ],
+                            );
+                            epoch.world.queue_lattice_update(
+                                decision.selected_src,
+                                decision.first_hop,
+                                par_outcome,
+                            );
+                            false
+                        }
+                    }
+                } else {
+                    epoch.world.queue_lattice_update(
+                        decision.selected_src,
+                        decision.first_hop,
+                        par_outcome,
+                    );
+                    false
+                };
+                any_device_ring |= via_device;
                 epoch.exploration_engine.update_receipt_prior(decision.first_hop, receipt);
                 if let Err(error) = tlog.append_exploration_receipt(&json!({
                     "node": par_node_name,
@@ -555,6 +602,16 @@ fn main() {
                             }));
                         }
                     }
+                }
+            }
+            // Drain device ring for hot-region receipts first, then CPU queue for the rest.
+            if any_device_ring {
+                if let Err(error) = epoch.world.drain_device_receipts() {
+                    console::warn(
+                        "parallel",
+                        "drain_device_receipts_failed",
+                        &[("error", error.to_string())],
+                    );
                 }
             }
             if let Err(error) = epoch.world.drain_lattice_queue() {
