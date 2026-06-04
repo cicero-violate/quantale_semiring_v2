@@ -152,23 +152,11 @@ pub(super) fn build_runtime_epoch(
         }
     }
 
-    // Build GPU-resident par group data.  A group is eligible only when every
-    // member operator is GPU-executable (jit_cuda / fusion entry / hot region).
-    let par_eligible: Vec<bool> = topology
-        .parallel_groups
-        .iter()
-        .map(|group| {
-            group.iter().all(|&id| {
-                let Some(name) = topology.registry().name_of(id as usize) else {
-                    return false;
-                };
-                executor.is_hot_node(name) || config.fusion_dispatch.is_fusion_entry(name)
-            })
-        })
-        .collect();
-    // Per-member hot-region ids (-1 when the member is not a hot-region operator).
-    // Encoded into the packed table so the kernel emits them in ParGroupStepOutput
-    // without any CPU-side hot_region_registry lookup per dispatch tick.
+    // Build GPU-resident par group data.
+    //
+    // Per-member tables — both are encoded as triples in the packed table so the
+    // kernel computes eligibility on-device (E_g = 1) and emits region_ids in the
+    // output (R_k = 1) without any CPU-side registry lookup per dispatch tick.
     let par_region_ids: Vec<Vec<i32>> = topology
         .parallel_groups
         .iter()
@@ -186,8 +174,27 @@ pub(super) fn build_runtime_epoch(
                 .collect()
         })
         .collect();
+    let par_is_dispatchable: Vec<Vec<bool>> = topology
+        .parallel_groups
+        .iter()
+        .map(|group| {
+            group
+                .iter()
+                .map(|&id| {
+                    let Some(name) = topology.registry().name_of(id as usize) else {
+                        return false;
+                    };
+                    executor.is_hot_node(name) || config.fusion_dispatch.is_fusion_entry(name)
+                })
+                .collect()
+        })
+        .collect();
     let par_group_data = world
-        .make_par_group_data(&topology.parallel_groups, &par_eligible, &par_region_ids)
+        .make_par_group_data(
+            &topology.parallel_groups,
+            &par_region_ids,
+            &par_is_dispatchable,
+        )
         .ok();
 
     Ok(RuntimeEpoch {

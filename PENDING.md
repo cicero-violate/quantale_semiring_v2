@@ -35,20 +35,20 @@ Current honest classification:
 ```text
 G_s = 1   GPU selects the par group
 G_c = 1   GPU commits consumed/active state
-E_g = ½   eligibility checked on-device, but mask is CPU-precomputed at epoch start
+E_g = 1   eligibility computed on-device from per-member is_gpu_dispatchable flags in the table
 D_h = 1   CPU still dispatches operators (thread::scope → execute_*_blocking)
 R_d = ½   hot-region par members route receipts through device ring; fusion/abstract use CPU path
-R_k = 1   per-member region_id encoded in the packed table; kernel emits it in ParGroupStepOutput
+R_k = 1   per-member (region_id, is_gpu_dispatchable) encoded in table; kernel emits region_ids
           (no per-tick hot_region_registry lookup — routing info is GPU-native from epoch start)
 ```
 
-What changed: the CPU group-selection loop is gone. The GPU now selects and commits. Hot-region par members now issue `gpu_dispatch_region` + `drain_device_receipts` instead of `queue_lattice_update`, so their tensor updates are applied on-device without a CPU drain kernel. The par table now encodes `(node_id, region_id)` pairs so the kernel emits per-member routing info; `main.rs` uses `par_member_region_ids` from the kernel output rather than re-deriving from `hot_region_registry` per tick. What remains CPU-side:
+What changed: the CPU group-selection loop is gone. The GPU now selects and commits. The par table encodes `(node_id, region_id, is_gpu_dispatchable)` triples; the kernel computes eligibility on-device from `is_gpu_dispatchable` flags without a separate CPU-precomputed mask. Hot-region par members route receipts through the device ring; `main.rs` uses `par_member_region_ids` from the kernel output. What remains CPU-side:
 
 **Gap A — operator dispatch is still host-bound.**
 `dispatch_gpu_parallel_group` uses `thread::scope → execute_fusion_entry_blocking / execute_abstract_node_blocking`. Operators run on the GPU (jit_cuda/fusion), but the launch is CPU-initiated per member.
 
-**Gap B — effect validation is precomputed, not on-device.**
-The kernel trusts `eligible[g]` from `ParGroupGpuData`. The mask is built at epoch start from `executor.is_hot_node || fusion_dispatch.is_fusion_entry`. Build-overlay already validated `par` independence structurally, so runtime effect conflicts cannot arise. The correct wording is "GPU consumes prevalidated eligibility" not "GPU validates conflicts on-device".
+**~~Gap B — effect validation is precomputed, not on-device.~~ ✓ Closed**
+Per-member `is_gpu_dispatchable` flags are encoded in the table as the third element of each `(node_id, region_id, is_gpu_dispatchable)` triple. The kernel computes `all_eligible` on-device by scanning flags — no separate CPU-precomputed `eligible[]` array. Build-overlay still validates `par` independence structurally, so runtime effect conflicts cannot arise.
 
 **Gap C — commit is single-threaded control-flow, not CUDA atomic.**
 The kernel runs `threadIdx.x == 0` only. The commit is all-or-nothing by control flow. Correct term: "device-side sequential commit", not "atomic GPU commit" (unless atomic is used in the logical/transactional sense).

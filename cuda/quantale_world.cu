@@ -1136,9 +1136,14 @@ extern "C" __global__ void tensor_quantale_gpu_dispatch(
 // Eligibility (jit_cuda/fusion/hot) is precomputed on the CPU at epoch start
 // and passed as a static int[] mask — 0=ineligible, 1=eligible.
 //
-// Table layout: [g0_size, g0_n0, g0_r0, g0_n1, g0_r1, ..., g1_size, g1_n0, g1_r0, ...]
-// Each member is an (node_id, region_id) pair; region_id = -1 for non-hot members.
+// Table layout: [g0_size, g0_n0, g0_r0, g0_d0, g0_n1, g0_r1, g0_d1, ..., g1_size, ...]
+// Each member is a (node_id, region_id, is_gpu_dispatchable) triple.
+//   region_id            = -1 for non-hot members (fusion-entry and pure-CPU alike)
+//   is_gpu_dispatchable  = 1 for hot-region or fusion-entry; 0 for pure-CPU
 // (num_groups is passed as a separate int)
+//
+// Eligibility is computed on-device: a group is eligible iff all members have
+// is_gpu_dispatchable == 1.  No separate eligible[] array is required.
 //
 // Output: ParGroupStepOutput written to *result.
 //   selected_group_idx = -1  → no group was ready; tensor state unchanged.
@@ -1165,8 +1170,7 @@ extern "C" __global__ void tensor_quantale_par_group_step(
     int*                 next_active,
     const ProjectionBias* bias,
     DecisionReport*      global_decision,
-    const int*           par_table,    // packed (node_id, region_id) pair table
-    const int*           eligible,     // [num_groups] 1=eligible
+    const int*           par_table,    // packed (node_id, region_id, is_gpu_dispatchable) triple table
     int                  num_groups,
     ParGroupStepOutput*  result
 ) {
@@ -1184,9 +1188,17 @@ extern "C" __global__ void tensor_quantale_par_group_step(
     for (int g = 0; g < num_groups; g++) {
         int sz = par_table[ptr++];
         int group_start = ptr;
-        ptr += sz * 2; // each member is (node_id, region_id)
+        ptr += sz * 3; // each member is (node_id, region_id, is_gpu_dispatchable)
 
-        if (!eligible[g] || sz < 2 || sz > MAX_PAR_GROUP_SIZE) continue;
+        if (sz < 2 || sz > MAX_PAR_GROUP_SIZE) continue;
+
+        // Eligibility check: all members must be GPU-dispatchable (hot-region or fusion-entry).
+        // Computed on-device from per-member is_gpu_dispatchable flags in the table.
+        int all_eligible = 1;
+        for (int i = 0; i < sz; i++) {
+            if (!par_table[group_start + i * 3 + 2]) { all_eligible = 0; break; }
+        }
+        if (!all_eligible) continue;
 
         // Project each member toward its target node.
         bool all_ready = true;
@@ -1194,8 +1206,8 @@ extern "C" __global__ void tensor_quantale_par_group_step(
         int region_ids[MAX_PAR_GROUP_SIZE];
 
         for (int i = 0; i < sz; i++) {
-            int target_hop = par_table[group_start + i * 2];
-            region_ids[i]  = par_table[group_start + i * 2 + 1];
+            int target_hop = par_table[group_start + i * 3];
+            region_ids[i]  = par_table[group_start + i * 3 + 1];
             float best_value = -1.0e30f;
             int best_src = -1, best_dst = -1, best_hop = -1, candidates = 0;
 

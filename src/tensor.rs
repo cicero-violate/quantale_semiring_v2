@@ -201,61 +201,60 @@ unsafe impl DeviceRepr for GpuDispatchMailboxHost {}
 /// operator eligibility mask.  Uploaded to the GPU device at construction.
 pub struct ParGroupGpuData {
     pub(crate) table_buf: CudaSlice<i32>,
-    pub(crate) eligible_buf: CudaSlice<i32>,
     pub num_groups: usize,
 }
 
 impl ParGroupGpuData {
     /// Build and upload par group data.
     ///
-    /// `eligible[g]` is true when every operator in group `g` is GPU-executable
-    /// (jit_cuda / fusion / hot).
-    ///
     /// `region_ids[g][i]` is the hot-region id for member `i` of group `g`, or
-    /// `-1` when the member is not a hot-region operator.  The table is packed as
-    /// `[g0_size, g0_n0, g0_r0, g0_n1, g0_r1, ..., g1_size, ...]` so the kernel
-    /// reads `(node_id, region_id)` pairs and writes `region_ids` to the output
-    /// without any CPU-side registry lookup.
+    /// `-1` when the member is not a hot-region operator.
+    ///
+    /// `is_gpu_dispatchable[g][i]` is `true` when the member is GPU-executable
+    /// (jit_cuda / fusion-entry / hot-region).  The table is packed as
+    /// `[g0_size, g0_n0, g0_r0, g0_d0, g0_n1, g0_r1, g0_d1, ..., g1_size, ...]`
+    /// — `(node_id, region_id, is_gpu_dispatchable)` triples.  The kernel computes
+    /// eligibility on-device from the `is_gpu_dispatchable` flags rather than from
+    /// a separate CPU-precomputed mask.
     pub fn build(
         dev: &Arc<CudaDevice>,
         groups: &[Vec<i32>],
-        eligible: &[bool],
         region_ids: &[Vec<i32>],
+        is_gpu_dispatchable: &[Vec<bool>],
     ) -> Result<Self, CudaError> {
-        assert_eq!(groups.len(), eligible.len());
         assert_eq!(groups.len(), region_ids.len());
+        assert_eq!(groups.len(), is_gpu_dispatchable.len());
         if groups.is_empty() {
             let table_buf = dev
                 .htod_copy(vec![0_i32])
                 .map_err(|e| CudaError::new("htod par_group table empty", e))?;
-            let eligible_buf = dev
-                .htod_copy(vec![0_i32])
-                .map_err(|e| CudaError::new("htod par_group eligible empty", e))?;
             return Ok(Self {
                 table_buf,
-                eligible_buf,
                 num_groups: 0,
             });
         }
-        // Packed table: [g0_size, g0_n0, g0_r0, g0_n1, g0_r1, ..., g1_size, ...]
-        // Each member occupies two slots: (node_id, region_id).
+        // Packed table: [g0_size, g0_n0, g0_r0, g0_d0, g0_n1, g0_r1, g0_d1, ..., g1_size, ...]
+        // Each member occupies three slots: (node_id, region_id, is_gpu_dispatchable).
         let mut table: Vec<i32> = Vec::new();
-        for (group, rids) in groups.iter().zip(region_ids.iter()) {
+        for ((group, rids), dispatchable) in groups
+            .iter()
+            .zip(region_ids.iter())
+            .zip(is_gpu_dispatchable.iter())
+        {
             table.push(group.len() as i32);
-            for (&node_id, &rid) in group.iter().zip(rids.iter()) {
+            for ((&node_id, &rid), &disp) in
+                group.iter().zip(rids.iter()).zip(dispatchable.iter())
+            {
                 table.push(node_id);
                 table.push(rid);
+                table.push(disp as i32);
             }
         }
         let table_buf = dev
             .htod_copy(table)
             .map_err(|e| CudaError::new("htod par_group table", e))?;
-        let eligible_buf = dev
-            .htod_copy(eligible.iter().map(|&b| b as i32).collect::<Vec<_>>())
-            .map_err(|e| CudaError::new("htod par_group eligible", e))?;
         Ok(Self {
             table_buf,
-            eligible_buf,
             num_groups: groups.len(),
         })
     }
@@ -703,15 +702,16 @@ impl TensorQuantaleWorld {
     /// Build and upload par group GPU data using this world's CUDA device.
     ///
     /// `groups` are the compiled par groups (node ID lists).
-    /// `eligible[g]` is `true` when every operator in group `g` is GPU-executable.
     /// `region_ids[g][i]` is the hot-region id for member `i` (-1 if not hot).
+    /// `is_gpu_dispatchable[g][i]` is `true` for hot-region / fusion-entry members.
+    /// Eligibility is encoded per-member in the table and validated by the kernel.
     pub fn make_par_group_data(
         &self,
         groups: &[Vec<i32>],
-        eligible: &[bool],
         region_ids: &[Vec<i32>],
+        is_gpu_dispatchable: &[Vec<bool>],
     ) -> Result<ParGroupGpuData, CudaError> {
-        ParGroupGpuData::build(&self.dev, groups, eligible, region_ids)
+        ParGroupGpuData::build(&self.dev, groups, region_ids, is_gpu_dispatchable)
     }
 
     /// GPU-native parallel group step: select the first eligible, all-ready CKA
@@ -757,7 +757,6 @@ impl TensorQuantaleWorld {
                     &bias_buf,
                     &mut self.decision,
                     &data.table_buf,
-                    &data.eligible_buf,
                     data.num_groups as i32,
                     &mut out_buf,
                 ),
