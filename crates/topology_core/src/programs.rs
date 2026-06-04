@@ -4,8 +4,8 @@
 //! expressions into flat transition objects (same format as
 //! `topology.generated.json` transitions) and parallel group metadata.
 //!
-//! Called by `build_overlay_assets` to merge program-derived edges with the
-//! existing flat transition baseline from `topology.json`.
+//! Called by `build_overlay_assets` to compile program-derived edges into the
+//! generated runtime topology.
 //!
 //! Algebraic forms supported:
 //!   seq(A, B, C)      — sequential composition: emit edges A→B, B→C
@@ -32,11 +32,11 @@ pub struct NodeEffects {
 /// Map from node name → declared effects.  Used for par independence checks.
 pub type EffectsMap = BTreeMap<String, NodeEffects>;
 
-/// Build an `EffectsMap` from the `operators` array in `operators.json` plus
-/// any node declarations in `topology.source.json`.
+/// Build an `EffectsMap` from operator contracts plus any node declarations in
+/// `topology.source.json`.
 ///
-/// Source-topology node declarations take precedence over operators.json when
-/// both exist for the same node name.
+/// Source-topology node declarations take precedence when both exist for the
+/// same node name.
 pub fn build_effects_map(operator_contracts: &[Value], source_nodes: &[Value]) -> EffectsMap {
     let mut map = EffectsMap::new();
 
@@ -99,13 +99,13 @@ fn safe_parallel(a: &NodeEffects, b: &NodeEffects) -> bool {
 
 // ── Patterns compat emitter ───────────────────────────────────────────────────
 
-/// Emit all programs from `topology.source.json` in the `patterns.json` format.
+/// Emit all programs from `topology.source.json` in the generated pattern format.
 ///
-/// This generates a `{ "patterns": [...] }` value that can replace
-/// `assets/patterns.json`, proving that topology.source.json is the source of
-/// truth for CKA patterns.  Programs with `"kind": "cka_pattern"` are included
-/// as-are; others are included too (they are structurally valid CKA patterns
-/// even if they are also compiled to flat transitions).
+/// This generates a `{ "patterns": [...] }` value for `patterns.source.json`,
+/// proving that topology.source.json is the source of truth for CKA patterns.
+/// Programs with `"kind": "cka_pattern"` are included as-are; others are
+/// included too (they are structurally valid CKA patterns even if they are also
+/// compiled to flat transitions).
 pub fn emit_patterns_compat(source: &Value) -> Value {
     let programs = match source.get("programs").and_then(Value::as_array) {
         Some(p) => p,
@@ -137,8 +137,7 @@ pub fn emit_patterns_compat(source: &Value) -> Value {
 /// objects and parallel group node-name lists.
 ///
 /// Transitions whose `(from, to)` pair already exists in `existing_edges` are
-/// silently skipped — Phase-1 preserves all flat transitions from
-/// `topology.json` and programs only extend the edge set with new paths.
+/// silently skipped.
 ///
 /// Programs with `"kind": "cka_pattern"` are skipped: they are runtime tensor-
 /// weight patterns only and must not contribute structural topology edges (e.g.
@@ -219,7 +218,7 @@ fn extract_weight(program: &Value) -> Result<(f64, f64, f64), String> {
         let safety = f64_field(w, "safety", "weight")?;
         return Ok((confidence, cost, safety));
     }
-    // Compat-style: top-level confidence/cost/safety (patterns.json schema)
+    // Compat-style: top-level confidence/cost/safety pattern schema.
     let confidence = f64_field(program, "confidence", "program")?;
     let cost = f64_field(program, "cost", "program")?;
     let safety = f64_field(program, "safety", "program")?;

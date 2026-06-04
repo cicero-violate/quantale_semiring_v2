@@ -1,6 +1,5 @@
 pub mod check;
 pub mod compile;
-pub mod delta;
 pub mod error;
 pub mod fusion;
 pub mod model;
@@ -17,5 +16,5 @@ pub use model::{
     CompiledTopology, CompiledTransition, GraphTopology, TopologyNode, TopologyPage,
     TopologyTransition,
 };
-pub use overlay::{OperatorOverlay, TopologyOverlay, build_overlay_assets};
+pub use overlay::build_overlay_assets;
 pub use registry::NodeRegistry;

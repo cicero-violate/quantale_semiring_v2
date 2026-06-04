@@ -2,7 +2,7 @@ use quantale_semiring_v2::{
     COST_INFINITY, ExplorationCandidate, ExplorationConfig, ExplorationEngine, GraphTopology,
     LAYER_CONFIDENCE, LAYER_COST, LAYER_SAFETY, NodeRegistry, ProcessReceipt, ProjectionBias,
     TENSOR_LEN, TENSOR_NODE_COUNT, TensorEdge, TensorQuantaleWorld, TopologyRuntime,
-    load_operator_registry, tensor_idx,
+    default_operators_path, load_operator_registry, tensor_idx,
 };
 
 fn reg() -> NodeRegistry {
@@ -74,7 +74,7 @@ fn topology() -> GraphTopology {
 }
 
 fn operators() -> quantale_semiring_v2::OperatorRegistry {
-    load_operator_registry("assets/operators.json").expect("operator registry")
+    load_operator_registry(default_operators_path()).expect("operator registry")
 }
 
 #[test]

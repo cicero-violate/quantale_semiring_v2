@@ -2,7 +2,7 @@
 //!
 //! This is the host reference model for the exploration layer. It is deliberately
 //! data-driven: strategy configuration comes from `assets/exploration.json`,
-//! legal node IDs come from topology, effects come from `operators.json`, and
+//! legal node IDs come from topology, effects come from the operator registry, and
 //! receipt priors are updated from execution receipts.
 
 use std::collections::HashMap;

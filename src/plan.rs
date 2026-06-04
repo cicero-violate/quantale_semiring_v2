@@ -1,7 +1,7 @@
 //! Tensor LLM plan compilation from structured JSON edge arrays.
 //!
 //! The LLM operator emits data-only tensor edge proposals. This module validates
-//! node names against `assets/topology.json` before any edge reaches VRAM.
+//! node names against the generated runtime topology before any edge reaches VRAM.
 
 use serde::Deserialize;
 

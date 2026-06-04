@@ -92,10 +92,9 @@ impl<'de> Deserialize<'de> for CkaExpr {
 ///
 /// Preference order (first that exists wins):
 ///   1. `assets/patterns.source.json` — generated from `topology.source.json` programs
-///   2. Embedded `assets/patterns.json` — compile-time bundled constant
+///   2. Embedded `assets/patterns.source.json` — compile-time bundled constant
 ///
-/// The hand-authored `assets/patterns.json` is the build input for
-/// `topology build-overlay`; it is not a runtime fallback.
+/// Legacy pattern assets are not authoritative runtime inputs.
 pub fn load_default_patterns() -> Result<CkaPatternSet, CudaError> {
     let source = Path::new("assets/patterns.source.json");
     if source.exists() {
@@ -596,7 +595,7 @@ mod tests {
     }
 
     fn registry() -> OperatorRegistry {
-        load_operator_registry("assets/operators.json").unwrap()
+        load_operator_registry(default_operators_path()).unwrap()
     }
 
     fn pattern(expr: CkaExpr) -> CkaPattern {
@@ -737,5 +736,12 @@ mod tests {
         assert!(edges.iter().all(|edge| edge.confidence > 0.0));
         assert!(edges.iter().all(|edge| edge.cost >= 0.0));
         assert!(edges.iter().all(|edge| edge.safety > 0.0));
+    }
+
+    #[test]
+    fn patterns_json_is_not_required_at_runtime() {
+        let patterns = load_default_patterns().unwrap();
+        assert!(!patterns.patterns.is_empty());
+        assert!(parse_patterns_str(DEFAULT_PATTERNS_JSON).is_ok());
     }
 }

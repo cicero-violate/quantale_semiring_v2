@@ -9,6 +9,7 @@ use serde_json::Value;
 use crate::config::OperatorRegistry;
 use crate::egress::UniversalExecutor;
 use crate::error::CudaError;
+use crate::fusion_dispatch::FusionDispatch;
 use crate::graph::{DecisionReport, Node};
 use crate::pattern::{CompiledCkaPattern, operator_effects_for_node, safe_parallel};
 use crate::tensor::{ProjectionBias, TensorQuantaleWorld};
@@ -74,6 +75,7 @@ pub fn project_ready_batch_plan(
 
 pub fn dispatch_decision_batch_blocking(
     executor: &UniversalExecutor,
+    fusion_dispatch: &FusionDispatch,
     batch: &DecisionBatch,
     dynamic_payload: &Value,
 ) -> Vec<ScheduledReceipt> {
@@ -83,7 +85,12 @@ pub fn dispatch_decision_batch_blocking(
             handles.push(scope.spawn(move || {
                 let node_name =
                     decision_node_name(decision, executor.node_registry()).unwrap_or("Unknown");
-                let receipt = executor.execute_abstract_node_blocking(node_name, dynamic_payload);
+                let receipt = dispatch_scheduled_node_blocking(
+                    executor,
+                    fusion_dispatch,
+                    node_name,
+                    dynamic_payload,
+                );
                 ScheduledReceipt {
                     decision: *decision,
                     receipt,
@@ -96,6 +103,18 @@ pub fn dispatch_decision_batch_blocking(
             .map(|handle| handle.join().expect("parallel scheduler worker panicked"))
             .collect()
     })
+}
+
+fn dispatch_scheduled_node_blocking(
+    executor: &UniversalExecutor,
+    fusion_dispatch: &FusionDispatch,
+    node_name: &str,
+    dynamic_payload: &Value,
+) -> ProcessReceipt {
+    if let Some(entry) = fusion_dispatch.get_by_entry(node_name) {
+        return executor.execute_fusion_entry_blocking(entry, dynamic_payload);
+    }
+    executor.execute_abstract_node_blocking(node_name, dynamic_payload)
 }
 
 fn decision_node_name<'a>(
@@ -193,7 +212,8 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::config::load_operator_registry;
+    use crate::config::{default_operators_path, load_operator_registry};
+    use crate::fusion_dispatch::FusionDispatch;
     use crate::tensor::TensorEdge;
     use crate::topology::GraphTopology;
 
@@ -236,7 +256,7 @@ mod tests {
         let parse = node_id(&node_reg, "State::Parse");
         let goal = node_id(&node_reg, "State::Goal");
         let compiled = compiled_group(vec![map, parse]);
-        let op_registry = load_operator_registry("assets/operators.json").unwrap();
+        let op_registry = load_operator_registry(default_operators_path()).unwrap();
 
         let plan = prepare_parallel_batch_plan(
             &compiled,
@@ -259,7 +279,7 @@ mod tests {
         let parse = node_id(&node_reg, "State::Parse");
         let goal = node_id(&node_reg, "State::Goal");
         let compiled = compiled_group(vec![map, parse]);
-        let op_registry = load_operator_registry("assets/operators.json").unwrap();
+        let op_registry = load_operator_registry(default_operators_path()).unwrap();
 
         let err = prepare_parallel_batch_plan(
             &compiled,
@@ -278,7 +298,7 @@ mod tests {
         let parse = node_id(&node_reg, "State::Parse");
         let goal = node_id(&node_reg, "State::Goal");
         let compiled = compiled_group(vec![map, parse]);
-        let op_registry = load_operator_registry("assets/operators.json").unwrap();
+        let op_registry = load_operator_registry(default_operators_path()).unwrap();
         let mut blocked = decision(7, parse, goal);
         blocked.blocked = 1;
 
@@ -299,7 +319,7 @@ mod tests {
         let parse = node_id(&node_reg, "State::Parse");
         let goal = node_id(&node_reg, "State::Goal");
         let compiled = compiled_group(vec![map, parse]);
-        let mut op_registry = load_operator_registry("assets/operators.json").unwrap();
+        let mut op_registry = load_operator_registry(default_operators_path()).unwrap();
         op_registry.insert(
             "State::Map".to_string(),
             json!({"effects": {"reads": [], "writes": ["shared"], "locks": []}}),
@@ -325,15 +345,20 @@ mod tests {
         let map = node_id(&node_reg, "State::Map");
         let parse = node_id(&node_reg, "State::Parse");
         let goal = node_id(&node_reg, "State::Goal");
-        let op_registry = load_operator_registry("assets/operators.json").unwrap();
+        let op_registry = load_operator_registry(default_operators_path()).unwrap();
         let executor = UniversalExecutor::new(op_registry);
         let batch = DecisionBatch {
             step: 9,
             decisions: vec![decision(9, map, goal), decision(9, parse, goal)],
         };
 
-        let receipts =
-            dispatch_decision_batch_blocking(&executor, &batch, &json!({"context": "x"}));
+        let fusion_dispatch = FusionDispatch::default();
+        let receipts = dispatch_decision_batch_blocking(
+            &executor,
+            &fusion_dispatch,
+            &batch,
+            &json!({"context": "x"}),
+        );
         assert_eq!(receipts.len(), 2);
         assert!(receipts.iter().all(|s| s.receipt.exit_code == 0));
         assert!(receipts.iter().any(|s| s.receipt.node_name == "State::Map"));
@@ -350,7 +375,7 @@ mod tests {
         let map = node_id(&node_reg, "State::Map");
         let parse = node_id(&node_reg, "State::Parse");
         let goal = node_id(&node_reg, "State::Goal");
-        let mut op_registry = load_operator_registry("assets/operators.json").unwrap();
+        let mut op_registry = load_operator_registry(default_operators_path()).unwrap();
         op_registry.insert(
             "State::Map".to_string(),
             json!({
@@ -377,8 +402,13 @@ mod tests {
             decisions: vec![decision(9, map, goal), decision(9, parse, goal)],
         };
 
-        let receipts =
-            dispatch_decision_batch_blocking(&executor, &batch, &json!({"context": "x"}));
+        let fusion_dispatch = FusionDispatch::default();
+        let receipts = dispatch_decision_batch_blocking(
+            &executor,
+            &fusion_dispatch,
+            &batch,
+            &json!({"context": "x"}),
+        );
         assert_eq!(receipts.len(), 2);
 
         // In all cases the dispatch must not attempt to spawn a "jit_cuda" binary process.
@@ -396,5 +426,72 @@ mod tests {
                     .contains("requires the cuda feature")
             );
         }
+    }
+
+    #[test]
+    fn dispatcher_routes_fusion_entry_through_fusion_dispatch() {
+        let mut op_registry = OperatorRegistry::new();
+        op_registry.insert(
+            "State::Map".to_string(),
+            json!({
+                "node_name": "State::Map",
+                "executable": "jit_cuda",
+                "jit_body": "out[i] = in0[i];",
+                "effects": {"reads": ["market.feed"], "writes": ["map.out"], "locks": []}
+            }),
+        );
+        op_registry.insert(
+            "State::Parse".to_string(),
+            json!({
+                "node_name": "State::Parse",
+                "executable": "jit_cuda",
+                "jit_body": "out[i] = in0[i];",
+                "effects": {"reads": ["map.out"], "writes": ["parse.out"], "locks": []}
+            }),
+        );
+        let fusion_dispatch = FusionDispatch::from_json_str(
+            &json!({
+                "regions": [{
+                    "region": "State::Map__State::Parse",
+                    "nodes": ["State::Map", "State::Parse"],
+                    "reads": ["market.feed"],
+                    "writes": ["parse.out"],
+                    "locks": []
+                }]
+            })
+            .to_string(),
+            &op_registry,
+        )
+        .unwrap();
+        assert!(fusion_dispatch.is_fusion_entry("State::Map"));
+
+        let node_reg = test_registry();
+        let map = node_id(&node_reg, "State::Map");
+        let goal = node_id(&node_reg, "State::Goal");
+        let executor = UniversalExecutor::from_registry(op_registry, node_reg);
+        let batch = DecisionBatch {
+            step: 9,
+            decisions: vec![decision(9, map, goal)],
+        };
+
+        let receipts = dispatch_decision_batch_blocking(
+            &executor,
+            &fusion_dispatch,
+            &batch,
+            &json!({"market.feed": [1.0, 2.0]}),
+        );
+
+        assert_eq!(receipts.len(), 1);
+        assert_eq!(
+            receipts[0].receipt.node_name,
+            "Fusion::State::Map__State::Parse"
+        );
+        #[cfg(not(feature = "cuda"))]
+        assert!(
+            receipts[0]
+                .receipt
+                .stderr_payload
+                .contains("requires the cuda feature")
+        );
     }
 }

@@ -44,16 +44,6 @@ pub struct DecisionReport {
 
 unsafe impl DeviceRepr for DecisionReport {}
 
-impl DecisionReport {
-    pub fn selected_node(&self, registry: &NodeRegistry) -> Option<Node> {
-        Node::decode(self.selected_dst, registry)
-    }
-
-    pub fn first_hop_node(&self, registry: &NodeRegistry) -> Option<Node> {
-        Node::decode(self.first_hop, registry)
-    }
-}
-
 pub fn action_label(node_id: i32, registry: &NodeRegistry) -> &str {
     if node_id < 0 {
         return "blocked";

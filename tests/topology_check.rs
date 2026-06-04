@@ -280,7 +280,7 @@ const KNOWN_CONSUMED_BLOCK_POINTS: &[&str] = &[
 
 #[test]
 fn current_topology_passes_all_checks() {
-    let topo = GraphTopology::default_asset().expect("bundled topology");
+    let topo = GraphTopology::default_asset().expect("generated runtime topology");
     let violations = check(&topo, &TopologyInvariants::default());
 
     let unexpected: Vec<_> = violations
@@ -298,7 +298,7 @@ fn current_topology_passes_all_checks() {
     }
     assert!(
         unexpected.is_empty(),
-        "bundled topology.json has {} unexpected violation(s); fix before committing",
+        "generated runtime topology has {} unexpected violation(s); fix before committing",
         unexpected.len()
     );
 
@@ -319,7 +319,7 @@ fn current_topology_passes_all_checks() {
 
 #[test]
 fn current_topology_fits_tensor_universe() {
-    let topo = GraphTopology::default_asset().expect("bundled topology");
+    let topo = GraphTopology::default_asset().expect("generated runtime topology");
     let compiled = topo.compile().expect("compile topology");
     assert!(
         compiled.node_count <= TENSOR_NODE_COUNT,

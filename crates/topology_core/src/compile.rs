@@ -3,7 +3,7 @@ use std::path::Path;
 
 use crate::{CompiledTopology, CompiledTransition, GraphTopology, NodeRegistry, TopologyError};
 
-pub const DEFAULT_TOPOLOGY_JSON: &str = include_str!("../../../assets/topology.json");
+pub const DEFAULT_TOPOLOGY_JSON: &str = include_str!("../../../assets/topology.generated.json");
 
 impl GraphTopology {
     pub fn from_json_str(input: &str) -> Result<Self, TopologyError> {
@@ -20,9 +20,8 @@ impl GraphTopology {
         if Path::new("assets/topology.generated.json").exists() {
             return Self::from_json_file("assets/topology.generated.json");
         }
-        // Fall back to the compile-time bundled topology only — the hand-authored
-        // topology.json is the build input for `topology build-overlay`, not a
-        // runtime fallback. Run `cargo run -- topology build-overlay` first.
+        // Fall back to the compile-time bundled generated topology only. The
+        // hand-authored topology.json is a build input, not a runtime fallback.
         Self::from_json_str(DEFAULT_TOPOLOGY_JSON)
     }
 
@@ -66,5 +65,38 @@ impl GraphTopology {
             transitions,
             pages: self.pages.clone(),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::Value;
+
+    use super::*;
+
+    #[test]
+    fn bundled_default_topology_is_generated_quantale_asset() {
+        let value: Value = serde_json::from_str(DEFAULT_TOPOLOGY_JSON).unwrap();
+        assert!(value.get("quantale").is_some());
+        assert!(value.get("source_version").is_some());
+        let transitions = value
+            .get("transitions")
+            .and_then(Value::as_array)
+            .expect("generated topology transitions");
+        assert!(!transitions.is_empty());
+        assert!(
+            transitions
+                .iter()
+                .all(|transition| transition.get("default_weight").is_none()),
+            "generated runtime topology must not carry legacy default_weight"
+        );
+        assert!(
+            transitions.iter().all(|transition| {
+                transition.get("confidence").is_some()
+                    && transition.get("cost").is_some()
+                    && transition.get("safety").is_some()
+            }),
+            "generated runtime topology must carry explicit quantale triples"
+        );
     }
 }

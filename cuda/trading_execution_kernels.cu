@@ -1,6 +1,6 @@
 // Legacy trading execution kernels.
 //
-// Math operators moved to runtime JIT synthesis from assets/operators.json.
+// Math operators moved to runtime JIT synthesis from generated operator assets.
 // This file is no longer compiled by build.rs.
 
 extern "C" {

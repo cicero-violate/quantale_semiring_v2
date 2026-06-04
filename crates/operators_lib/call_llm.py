@@ -26,6 +26,7 @@ import json
 import argparse
 import os
 import pathlib
+import re
 
 _ROUTER_BASE = os.environ.get("BROWSER_ROUTER_URL", "http://127.0.0.1:8090/v1/chat/completions")
 # Derive the base URL (scheme + host + port) from BROWSER_ROUTER_URL so that
@@ -169,7 +170,7 @@ _BUILTIN_TEMPLATES = {
     "operator_write": (
         'You are a neuro-symbolic operator developer. Write a complete Python operator file.\n'
         '\n'
-        'System context (goal, architecture, existing operators, stubs needing implementation):\n'
+        'System context (runtime facts, existing operators, stubs needing implementation):\n'
         '{system_context}\n'
         '\n'
         'Recent context (what topology mutations were just applied):\n'
@@ -192,6 +193,9 @@ _BUILTIN_TEMPLATES = {
         '- Under 150 lines. Follow the structure of existing operators in system_context.\n'
         '\n'
         'Also emit operator_contract_ops to upgrade the stub from executable=true to python3.\n'
+        'The response must pass json.loads(response), and source must pass ast.parse(source).\n'
+        'Use dunder names exactly: __file__, __name__, and "__main__".\n'
+        'Do not use pathlib.Path(file), if name == "main", string concatenation outside JSON, or markdown fences.\n'
         'Output ONLY a JSON object — no prose, no markdown fences:\n'
         '{{{{"filename":"snake_case.py","node_name":"Namespace::Name","source":"#!/usr/bin/env python3\\\\n...complete source...\\\\n","operator_contract_ops":[{{{{"op":"update","node_name":"Namespace::Name","patch":{{{{"executable":"python3","static_args":["crates/operators_lib/snake_case.py"],"input_mapping":{{{{"stdin_mode":"json"}}}}}}}}}}}}]}}}}\n'
     ),
@@ -327,6 +331,7 @@ def load_templates() -> dict[str, str]:
                 result[k] = v + "\n\n" + _EDGE_SCHEMA
             else:
                 result[k] = v
+        result["operator_write"] = _BUILTIN_TEMPLATES["operator_write"]
         return result
     except FileNotFoundError:
         return _BUILTIN_TEMPLATES
@@ -439,52 +444,119 @@ def load_goal_metrics() -> str:
     return json.dumps(metrics, separators=(",", ":")) if metrics else "(metrics unavailable)"
 
 
+def _snake_from_node(node_name: str) -> str:
+    """Derive the default operator filename for Namespace::CamelCase node names."""
+    leaf = node_name.split("::")[-1]
+    with_underscores = re.sub(r"(?<!^)(?=[A-Z])", "_", leaf)
+    return with_underscores.lower() + ".py"
+
+
+def _operator_script_name(op: dict) -> str:
+    """Return the script filename declared by a python3 contract, if any."""
+    for arg in op.get("static_args", []):
+        path = pathlib.PurePosixPath(str(arg))
+        if path.suffix == ".py":
+            return path.name
+    return _snake_from_node(str(op.get("node_name", "")))
+
+
+def _operator_doc(path: pathlib.Path) -> str:
+    try:
+        first_lines = path.read_text().splitlines()
+    except OSError:
+        return ""
+    for line in first_lines[1:12]:
+        stripped = line.strip().strip('"\'')
+        if stripped and not stripped.startswith("#"):
+            return stripped[:100]
+    return ""
+
+
+def _load_runtime_summary() -> str:
+    """Return current generated-asset facts without stale static architecture counts."""
+    lines = [
+        "Canonical path:",
+        "  assets/topology.source.json -> topology build-overlay -> generated assets -> runtime VM",
+        "Runtime inputs:",
+        f"  topology: {TOPOLOGY_PATH}",
+        f"  operators: {OPERATORS_PATH}",
+        "Build inputs:",
+        "  assets/topology.source.json",
+        "  assets/operators.json",
+        "  assets/patterns.source.json",
+    ]
+    try:
+        topology = load_topology()
+        lines.append(f"Current generated topology nodes: {len(topology.get('nodes', []))}")
+        lines.append(f"Current generated topology transitions: {len(topology.get('transitions', []))}")
+    except Exception as exc:
+        lines.append(f"Current generated topology unavailable: {exc}")
+    return "\n".join(lines)
+
+
 def load_system_context() -> str:
-    """Return a compact system context: goal, architecture excerpt, existing operator list."""
+    """Return compact, current context for operator generation."""
     parts = []
 
     goal_path = ASSET_DIR.parent / "GOAL.md"
     try:
-        parts.append("=== GOAL ===\n" + goal_path.read_text().strip()[:800])
+        parts.append("=== GOAL ===\n" + goal_path.read_text().strip()[:600])
     except OSError:
         pass
 
-    arch_path = ASSET_DIR.parent / "ARCHITECTURE.md"
-    try:
-        lines = arch_path.read_text().splitlines()[:40]
-        parts.append("=== ARCHITECTURE (excerpt) ===\n" + "\n".join(lines))
-    except OSError:
-        pass
+    parts.append("=== RUNTIME FACTS ===\n" + _load_runtime_summary())
 
     ops_lib = ASSET_DIR.parent / "crates" / "operators_lib"
-    op_lines = []
-    try:
-        for p in sorted(ops_lib.glob("*.py")):
-            try:
-                first_lines = p.read_text().splitlines()
-                doc = next(
-                    (l.strip().strip('"\'') for l in first_lines[1:10]
-                     if l.strip() and not l.strip().startswith("#")),
-                    ""
-                )
-                op_lines.append(f"  {p.name}: {doc[:80]}")
-            except OSError:
-                pass
-    except OSError:
-        pass
-    if op_lines:
-        parts.append("=== EXISTING OPERATORS ===\n" + "\n".join(op_lines))
+    existing_files = {p.name: p for p in ops_lib.glob("*.py")}
+    implemented_lines = []
+    helper_lines = []
+    contract_mismatch_lines = []
+    stub_lines = []
 
     try:
         ops = json.loads(OPERATORS_PATH.read_text()).get("operators", [])
-        stub_lines = [
-            f"  {op['node_name']}: {op.get('description','(no description)')}  effects={json.dumps(op.get('effects',{}),separators=(',',':'))}"
-            for op in ops if op.get("executable") == "true"
-        ]
-        if stub_lines:
-            parts.append("=== STUB OPERATORS (need implementation) ===\n" + "\n".join(stub_lines[:15]))
     except Exception:
-        pass
+        ops = []
+
+    registered_scripts = set()
+    for op in ops:
+        node_name = str(op.get("node_name", ""))
+        executable = op.get("executable")
+        script_name = _operator_script_name(op)
+        if script_name:
+            registered_scripts.add(script_name)
+        if executable == "python3":
+            path = existing_files.get(script_name)
+            status = "present" if path else "missing file"
+            doc = _operator_doc(path) if path else op.get("description", "")
+            implemented_lines.append(f"  {node_name} -> {script_name} ({status}): {doc[:100]}")
+        elif executable == "true":
+            path = existing_files.get(script_name)
+            effects = json.dumps(op.get("effects", {}), separators=(",", ":"))
+            if path:
+                contract_mismatch_lines.append(
+                    f"  {node_name}: local {script_name} exists but contract is still executable=true"
+                )
+            else:
+                stub_lines.append(
+                    f"  {node_name}: create {script_name}; {op.get('description','(no description)')} effects={effects}"
+                )
+
+    for name, path in sorted(existing_files.items()):
+        if name not in registered_scripts and name not in {"mutation_policy.py", "__init__.py"}:
+            helper_lines.append(f"  {name}: {_operator_doc(path)[:100]}")
+
+    if implemented_lines:
+        parts.append("=== IMPLEMENTED PYTHON OPERATORS ===\n" + "\n".join(implemented_lines[:30]))
+    if helper_lines:
+        parts.append("=== LOCAL HELPER FILES ===\n" + "\n".join(helper_lines[:20]))
+    if contract_mismatch_lines:
+        parts.append("=== CONTRACT MISMATCHES (fix registry, do not rewrite file) ===\n" + "\n".join(contract_mismatch_lines[:20]))
+    if stub_lines:
+        parts.append("=== STUB OPERATORS (need implementation) ===\n" + "\n".join(stub_lines[:20]))
+
+    if not ops:
+        parts.append("=== OPERATOR REGISTRY ===\n  (operator registry unavailable)")
 
     return "\n\n".join(parts) if parts else "(system context unavailable)"
 
