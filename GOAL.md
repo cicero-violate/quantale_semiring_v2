@@ -24,7 +24,7 @@ security/safety:        max-min
 CKA = { 0, 1, +, ;, *, || }
 ```
 
-CKA patterns describe executable structure. They compile into `TensorEdge` deltas and safe parallel-group hints. They do not replace the tensor runtime.
+CKA patterns describe executable structure. They compile into `TensorEdge` deltas that seed the tensor world at epoch start. They do not replace the tensor runtime.
 
 ## Runtime invariant
 
@@ -44,8 +44,6 @@ Receipts validate actual thought.
 - Generated artifacts are consumed by the runtime; hand-authored JSON is build input only.
 - CKA and exploration remain data-driven through JSON assets.
 - `par` requires effect independence.
-- CUDA batch projection is read-only.
-- CUDA batch commit occurs only after whole-group validation.
 - Runtime feedback updates tensor cells directly.
 - Receipts remain the canonical truth gate.
 - Boundary nodes are explicit, governed, and always barriers — never fused.
@@ -64,16 +62,13 @@ Tensor rule deltas
 Tensor frontier step
 Tensor tick
 Tensor runtime loop
-Full CKA pattern compiler
+Full CKA pattern compiler (edges embedded at epoch start)
 Effect-gated par validation
-CUDA batch projection
-CUDA batch commit
-Host parallel scheduler dispatch
-Append-only batch trace logging
 CUDA exploration seed/expand/score/top-k/commit kernels
 Exploration-first scheduler integration
+  → exploration candidate → execute_active_node_blocking → receipt → tensor update
+  → no candidate → frontier_step → same dispatch path
 Receipt-prior feedback into exploration
-Runtime smoke-tested batch execution
 Static topology invariant checker — phases 1–3 (topology_check.rs)
   identity, weight domain, operator binding, gate dominance,
   receipt cutset, SCC progress, zero-cost cycle detection
@@ -83,6 +78,9 @@ Runtime decision invariant checker (runtime_check.rs)
   decision_is_safe() guard (inv 20), check_decision() diagnostics (inv 18/19/24)
   base_tensor CPU snapshot for hard-reset groundwork (inv 23)
   action/output_mode operator field check (inv 25)
+Single canonical dispatch path through execute_active_node_blocking
+  FusionDispatch checked first, hot region second, process fallback last
+Runtime split into sub-modules: cli, runtime_dispatch, runtime_epoch, runtime_reset
 
 Topology DSL — Phases 1–7 (plan.topology.md):
   Phase 1: topology.source.json with programs compiler
@@ -98,16 +96,9 @@ Topology DSL — Phases 1–7 (plan.topology.md):
            patterns.source.json as runtime source, patterns.json deleted
 ```
 
-Validated test count: **117 passed** (8 suites, `--no-default-features`).
+Validated test count: **135 passed** (10 suites, `--no-default-features`).
 
-Validated runtime smoke includes concurrent dispatch for:
-
-```text
-Event::InputAccepted → State::Map
-Event::InputAccepted → State::Parse
-```
-
-Fusion region emitted for:
+Fusion region active for:
 
 ```text
 Analysis::Return1 → Analysis::Volatility → Analysis::SignalScore

@@ -1,6 +1,6 @@
 # Architecture
 
-`quantale_semiring_v2` is a CUDA-first tensor quantale orchestrator with a data-driven CKA structural compiler, effect-safe parallel scheduler, and a topology DSL that compiles algebraic orchestration programs into quantale-valued tensor graphs and JIT kernel fusion regions.
+`quantale_semiring_v2` is a CUDA-first tensor quantale orchestrator with a data-driven CKA structural compiler, and a topology DSL that compiles algebraic orchestration programs into quantale-valued tensor graphs and JIT kernel fusion regions.
 
 ## Core invariant
 
@@ -32,7 +32,7 @@ Node universe:
 Current topology: 74 nodes
 Source of truth:  assets/topology.source.json
 Generated graph:  assets/topology.generated.json  (runtime input)
-Rust constant:    TENSOR_NODE_COUNT is derived from generated topology at build time
+TENSOR_NODE_COUNT derived from generated topology at build time
 MATRIX_LEN        = TENSOR_NODE_COUNT * TENSOR_NODE_COUNT
 TENSOR_LEN        = 3 * MATRIX_LEN
 ```
@@ -51,7 +51,7 @@ registry.len()                      // → node count
 registry.matrix_len()               // → len * len
 ```
 
-`SystemConfig`, `ExplorationEngine`, `batch.rs`, and `egress.rs` all derive dimensions from the registry. No component holds a hard-coded `NODE_COUNT` constant.
+`SystemConfig`, `ExplorationEngine`, and `egress.rs` all derive dimensions from the registry. No component holds a hard-coded `NODE_COUNT` constant.
 
 ## Topology DSL pipeline
 
@@ -83,7 +83,7 @@ validate_boundary_governance         every boundary_node has a governance object
 validate_kernel_slot_purity          kernel reads/writes only tensor-kind slots
 validate_quantale_layers             algebraic laws (unit/bottom/compose/join)
 validate_par_independence            par branches are effect-independent
-compile_source_programs              CKA → flat transitions + parallel_groups
+compile_source_programs              CKA → flat transitions
 partition_fusible_regions            Fusable(F) = B∧K∧S∧A∧R
 ```
 
@@ -111,14 +111,13 @@ Rust owns:
 ```text
 JSON asset loading and NodeRegistry
 Topology DSL compiler (crates/topology_core)
-CKA pattern compilation
+CKA pattern compilation (epoch start; edges only)
 FusionDispatch: fusion region loading and JitChain construction
 JitCache: NVRTC/PTX compilation and kernel caching (#[cfg(feature="cuda")])
 Static topology invariant checking
 Runtime decision invariant checking
 Base tensor CPU snapshot for hard reset
 Operator effect validation
-Batch scheduling policy
 Host-side operator execution (process and jit_cuda backends)
 Edge-delta upload
 Compact report decoding
@@ -145,7 +144,7 @@ JIT fusion kernels (src/jit_kernel_fusion/)
   Regions:  loaded from assets/topology.fusion.json via FusionDispatch
 ```
 
-`quantale_world.cu` provides the deterministic tensor execution core. Fusion kernels use NVRTC to specialize operator chains at runtime once fusion regions are identified.
+`quantale_world.cu` provides the deterministic tensor execution core. Fusion kernels use NVRTC to specialize operator chains at runtime once fusion regions are identified. The `project_batch` and `commit_batch` kernels exist in the CUDA world but are not on the current active dispatch path.
 
 ## Fusion architecture
 
@@ -202,7 +201,7 @@ assets/topology.generated.json
 
 assets/patterns.source.json
   → CkaExpr
-  → CompiledCkaPattern { edges, parallel_groups }
+  → CompiledCkaPattern { edges }
   → TensorEdge[]
 
 assets/topology.fusion.json
@@ -216,17 +215,30 @@ TensorEdge[]
   → tensor_quantale_closure
   → exploration scheduler
       → tensor_quantale_seed/expand/score/topk/commit
-  → CKA scheduler fallback
-      → tensor_quantale_project_batch
-      → validate_parallel_group_effects
-      → tensor_quantale_commit_batch
-      → dispatch_decision_batch_blocking
   → single-step fallback
       → tensor_quantale_frontier_step
   → ProcessReceipt
   → tensor_quantale_update_edge
   → T := T ∨ ΔT
 ```
+
+## Dispatch loop
+
+```text
+each tick:
+  1. CUDA close tensor
+  2. ExplorationEngine: expand + score + topk
+  3. if best candidate:
+       commit_exploration_candidate
+       execute_active_node_blocking     ← fusion-first, then hot, then process
+       update receipt priors + lattice
+       continue
+  4. frontier_step
+       execute_active_node_blocking     ← same single dispatch path
+       update receipt priors + lattice
+```
+
+`execute_active_node_blocking` checks `FusionDispatch.get_by_entry` first, then `HotRegionRegistry`, then falls back to `UniversalExecutor::execute_abstract_node_blocking`. All paths emit a `ProcessReceipt`.
 
 ## CKA layer
 
@@ -245,10 +257,10 @@ Node   — atomic endpoint
 Seq    — composes adjacent endpoints
 Choice — quantale join; no cross-edges between alternatives
 Star   — bounded finite unroll only
-Par    — independent branches + parallel group metadata + effect check
+Par    — independent branches + effect check
 ```
 
-Source topology programs compile the same algebra via `crates/topology_core/src/programs.rs`. Node names are validated against the registry at compile time.
+Source topology programs compile the same algebra via `crates/topology_core/src/programs.rs`. Node names are validated against the registry at compile time. Pattern edges are embedded into the tensor world at epoch start; the `par` branch data is computed by the compiler but not consumed at runtime in the current dispatch path.
 
 ## Exploration layer
 
@@ -274,21 +286,6 @@ Anti-repeat state (host-owned, uploaded per tick):
 terminal_visits[N], first_hop_visits[N]
 repeat_penalty, max_terminal_visits, max_first_hop_visits
 ```
-
-## Parallel scheduler
-
-```text
-project_ready_batch_plan(...)
-  → TensorQuantaleWorld::project_parallel_group(...)
-  → tensor_quantale_project_batch          (read-only)
-  → validate_parallel_group_effects(...)   (effect safety)
-  → prepare_parallel_batch_plan(...)
-  → TensorQuantaleWorld::commit_decision_batch(...)
-  → tensor_quantale_commit_batch           (mutates frontier)
-  → dispatch_decision_batch_blocking(...)
-```
-
-CUDA projection is read-only. Commit occurs only after whole-group validation. All backends go through a single uniform dispatch path.
 
 ## Operator dispatch
 
@@ -327,8 +324,8 @@ tensor_quantale_reset
 tensor_quantale_embed_edges
 tensor_quantale_closure
 tensor_quantale_project
-tensor_quantale_project_batch
-tensor_quantale_commit_batch
+tensor_quantale_project_batch       (not on active dispatch path)
+tensor_quantale_commit_batch        (not on active dispatch path)
 tensor_quantale_seed_exploration
 tensor_quantale_expand_tokens
 tensor_quantale_score_tokens
@@ -345,9 +342,8 @@ tensor_quantale_decay
 `tlog.rs` records append-only JSONL events:
 
 ```text
-Decision, Receipt, TensorEdges, AgentStep
-ExplorationSeed, ExplorationExpand, ExplorationTopK, ExplorationCommit
-ExplorationReceipt, BatchPlan
+Decision, TensorEdges, AgentStep
+ExplorationSeed, ExplorationTopK, ExplorationCommit, ExplorationReceipt
 fusion::regions_loaded, fusion::region, fusion::kernel_synthesized  (startup)
 ```
 
@@ -411,19 +407,8 @@ runtime PTX stitching or FusionPlan types
 fake CUDA planned-success receipts
 QuantaleAction enum / selected_action()
 batch_contains_cuda_ptx / CUDA-specific batch branching
-runtime fallback to legacy topology assets
-runtime fallback to legacy pattern assets
-```
-
-## Benchmark baseline
-
-Recorded on 44-node topology; recapture after the 74-node graph is exercise-tested.
-
-```text
-profile=release
-iterations=10
-edge_count=45
-tensor_closure     avg_us=217.630
-tensor_projection  avg_us=33.412
-tensor_decay       avg_us=12.782
+runtime fallback to legacy topology or pattern assets
+CPU batch scheduler (batch.rs)
+TypedIR lowering scaffold (ir.rs)
+bench binaries (src/bin/bench_*)
 ```

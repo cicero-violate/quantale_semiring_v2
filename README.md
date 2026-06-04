@@ -27,14 +27,13 @@ assets/topology.source.json              (authoritative DSL source)
 assets/topology.generated.json
   → NodeRegistry + TensorEdge[]
 assets/patterns.source.json
-  → CompiledCkaPattern { edges, parallel_groups } → TensorEdge[]
+  → CompiledCkaPattern { edges } → TensorEdge[]
 assets/topology.fusion.json
   → FusionDispatch → JitChain → synthesize_kernel → JitCache (NVRTC)
 
 TensorEdge[]
   → TensorQuantaleWorld → tensor_quantale_closure
   → Exploration scheduler  (seed / expand / score / topk / commit)
-  → CKA batch scheduler    (project_batch → effect-safe commit_batch → dispatch)
   → Single-step fallback   (frontier_step)
   → ProcessReceipt
   → tensor_quantale_update_edge → T := T ∨ ΔT
@@ -161,12 +160,12 @@ Compilation paths:
 ```text
 topology.source.json programs
   → crates/topology_core/src/programs.rs
-  → flat transitions + parallel_groups
+  → flat transitions
   → topology.generated.json
 
 assets/patterns.source.json (generated)
   → src/pattern.rs
-  → CompiledCkaPattern { edges, parallel_groups }
+  → CompiledCkaPattern { edges }
   → TensorEdge deltas
 ```
 
@@ -185,13 +184,16 @@ Effects are declared in `topology.source.json` node entries and validated at bui
 ## Main Rust surfaces
 
 ```text
-src/main.rs                runtime loop and scheduler integration
-src/tensor.rs              CUDA tensor world, TensorEdge API, batch projection/commit
+src/main.rs                runtime loop: exploration-first → frontier fallback
+src/cli.rs                 CLI command parsing (topology build-overlay, --check-topology)
+src/runtime_dispatch.rs    execute_active_node_blocking, hot/fusion dispatch helpers
+src/runtime_epoch.rs       RuntimeEpoch struct, build_runtime_epoch, asset fingerprint
+src/runtime_reset.rs       maybe_hard_reset_after_blocks
+src/tensor.rs              CUDA tensor world, TensorEdge API, projection/commit
 src/topology.rs            topology.generated.json parser, NodeRegistry
 src/fusion_dispatch.rs     FusionDispatch: load topology.fusion.json → JitChain
 src/jit_kernel_fusion/     chain detection, kernel synthesis, NVRTC cache, slot buffers
 src/pattern.rs             CKA pattern compiler
-src/batch.rs               DecisionBatch, BatchPlan, scheduler dispatch
 src/egress.rs              data-driven executor: process / jit_cuda / cuda_ptx
 src/config.rs              SystemConfig: operator registry + FusionDispatch + runtime config
 src/learning.rs            learned_edges.jsonl checkpoint loader
@@ -211,12 +213,11 @@ crates/topology_core/      DSL compiler: programs, validators, fusion partitione
 2. At startup: learned edge checkpoints + topology + CKA pattern edges are embedded. `FusionDispatch` loads `topology.fusion.json` and builds `JitChain`s; fusion kernels are synthesized (and compiled via NVRTC if `--features cuda`).
 3. CUDA closes the tensor.
 4. Exploration seeds strategies from `assets/exploration.json`, expands CUDA tokens, scores and selects top-K.
-5. Best effect-safe exploration candidate is committed if available.
-6. If not, CKA batch scheduler projects compiled `par` groups, validates effect safety, commits and dispatches.
-7. If no batch is ready, CUDA runs normal single frontier step.
-8. `runtime_check::decision_is_safe()` guards every execution step.
-9. Process results become `ProcessReceipt` evidence; tensor edge feedback and exploration receipt priors are updated.
-10. Asset fingerprint changes (from `assets/reload_policy.json`) trigger epoch reload.
+5. If a best exploration candidate is available, it is committed and dispatched.
+6. If no exploration candidate is ready, CUDA runs a normal single frontier step.
+7. `runtime_check::decision_is_safe()` guards every execution step.
+8. Process results become `ProcessReceipt` evidence; tensor edge feedback and exploration receipt priors are updated.
+9. Asset fingerprint changes (from `assets/reload_policy.json`) trigger epoch reload.
 
 ## Validation
 
@@ -228,14 +229,13 @@ cargo check
 cargo test
 cargo check --no-default-features
 cargo test --no-default-features
-cargo run --bin bench_tensor_quantale -- 3
 ```
 
 Current validated test counts:
 
 ```text
-cargo test                         117 passed (8 suites)
-cargo test --no-default-features   117 passed (8 suites)
+cargo test                         135 passed (10 suites)
+cargo test --no-default-features   135 passed (10 suites)
 ```
 
 ## Non-goals
@@ -253,7 +253,9 @@ separate kernel_fusion crate or addons/ directory
 runtime PTX stitching or FusionPlan types
 fake CUDA planned-success receipts
 QuantaleAction enum / selected_action()
-CUDA-specific batch branching in batch.rs
+TypedIR lowering scaffold (ir.rs — deleted)
+CPU batch scheduler (batch.rs — deleted)
+bench binaries in src/bin/ (deleted)
 ```
 
 ## Proof boundary
