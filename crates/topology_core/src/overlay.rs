@@ -65,11 +65,15 @@ pub fn build_overlay_assets(root: impl AsRef<Path>) -> Result<(), String> {
     write_json(root.join("assets/topology.generated.json"), &topology)?;
     write_json(root.join("assets/operators.generated.json"), &operators)?;
 
-    // Phase 6: always emit topology.fusion.json (empty regions list when none found).
-    let fusion_json = serde_json::json!({
-        "regions": fusion_regions.iter().map(FusionRegion::to_json).collect::<Vec<_>>()
-    });
-    write_json(root.join("assets/topology.fusion.json"), &fusion_json)?;
+    // Phase 6: emit topology.fusion.json when fusible regions were found.
+    // The file is absent if no linear-chain jit_cuda subgraph exists in the
+    // compiled transition set (e.g. shortcut edges break the linear check).
+    if !fusion_regions.is_empty() {
+        let fusion_json = serde_json::json!({
+            "regions": fusion_regions.iter().map(FusionRegion::to_json).collect::<Vec<_>>()
+        });
+        write_json(root.join("assets/topology.fusion.json"), &fusion_json)?;
+    }
 
     Ok(())
 }
@@ -479,11 +483,13 @@ mod tests {
 
         build_overlay_assets(&root).unwrap();
 
+        // topology.fusion.json is only emitted when linear-chain jit_cuda
+        // subgraphs are detected; it is absent when shortcut edges prevent
+        // linear chain fusion (e.g. Return1DirectSignalFallback bypass edge).
         for asset in [
             "topology.generated.json",
             "operators.generated.json",
             "patterns.source.json",
-            "topology.fusion.json",
         ] {
             assert!(
                 assets.join(asset).exists(),
