@@ -9,8 +9,8 @@ import json
 import pathlib
 from datetime import datetime, timezone
 
-ROOT = pathlib.Path(__file__).resolve().parent.parent.parent
-GOALS = ROOT / "assets" / "goals.source.json"
+ROOT = pathlib.Path(__file__).resolve().parents[3]
+GOALS = ROOT / "assets" / "inactive_mutation" / "goals.source.json"
 TLOG = ROOT / "state" / "quantale.tlog"
 
 

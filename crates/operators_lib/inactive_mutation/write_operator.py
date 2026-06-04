@@ -21,7 +21,7 @@ import sys
 
 import mutation_policy
 
-_PROJECT_ROOT  = pathlib.Path(__file__).resolve().parent.parent.parent
+_PROJECT_ROOT  = pathlib.Path(__file__).resolve().parents[3]
 _OPERATORS_LIB = _PROJECT_ROOT / "crates" / "operators_lib"
 _OPERATORS_JSON = _PROJECT_ROOT / "assets" / "operators.json"
 _EFFECTS = ["repo_write", "operator_registry_write"]

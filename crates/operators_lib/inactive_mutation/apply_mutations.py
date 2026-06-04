@@ -27,8 +27,8 @@ SCRIPT_BY_KIND = {
     "topology_patch": "topology_mutate.py",
     "pattern_patch": "pattern_mutate.py",
 }
-POLICY_PATH = mutation_policy.PROJECT_ROOT / "assets" / "mutation_review_policy.json"
-GOVERNANCE_PATH = mutation_policy.PROJECT_ROOT / "assets" / "governance_policy.json"
+POLICY_PATH = mutation_policy.PROJECT_ROOT / "assets" / "inactive_mutation" / "mutation_review_policy.json"
+GOVERNANCE_PATH = mutation_policy.PROJECT_ROOT / "assets" / "inactive_mutation" / "governance_policy.json"
 OPERATORS_JSON = mutation_policy.PROJECT_ROOT / "assets" / "operators.json"
 
 

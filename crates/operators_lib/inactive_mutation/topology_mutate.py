@@ -45,7 +45,7 @@ import sys
 
 import mutation_policy
 
-_PROJECT_ROOT   = pathlib.Path(__file__).resolve().parent.parent.parent
+_PROJECT_ROOT   = pathlib.Path(__file__).resolve().parents[3]
 TOPOLOGY_PATH   = _PROJECT_ROOT / "assets" / "topology.source.json"
 OPERATORS_PATH  = _PROJECT_ROOT / "assets" / "operators.json"
 EXPLORATION_PATH = _PROJECT_ROOT / "assets" / "exploration.json"

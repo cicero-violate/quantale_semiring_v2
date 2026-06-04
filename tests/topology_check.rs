@@ -270,7 +270,6 @@ fn check_reports_all_violations_not_just_first() {
 const KNOWN_CONSUMED_BLOCK_POINTS: &[&str] = &[
     "Analysis::Return1", // parallel_prepare par + market_analysis_cycle adds AnalysisPlan→Return1
     "Control::Block",
-    "Control::BuildTopologyOverlay",
     "Control::Repair",
     "Event::AnalysisFinished",
     "Execution::VectorScale", // hot VectorAdd→VectorScale chain adds VectorAdd as an alternate predecessor

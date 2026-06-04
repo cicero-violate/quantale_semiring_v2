@@ -309,98 +309,8 @@
     },
     {
       "id": 60,
-      "name": "Control::BuildTopologyOverlay",
-      "type": "Control"
-    },
-    {
-      "id": 61,
-      "name": "Event::TopologyOverlayBuilt",
-      "type": "Event"
-    },
-    {
-      "id": 62,
-      "name": "Control::TopologyMutate",
-      "type": "Control"
-    },
-    {
-      "id": 63,
-      "name": "Event::TopologyMutated",
-      "type": "Event"
-    },
-    {
-      "id": 64,
-      "name": "State::TopologyPlan",
-      "type": "State"
-    },
-    {
-      "id": 65,
       "name": "State::Introspect",
       "type": "State"
-    },
-    {
-      "id": 66,
-      "name": "State::OperatorPlan",
-      "type": "State"
-    },
-    {
-      "id": 67,
-      "name": "Control::WriteOperator",
-      "type": "Control"
-    },
-    {
-      "id": 68,
-      "name": "Event::OperatorWritten",
-      "type": "Event"
-    },
-    {
-      "id": 69,
-      "name": "State::PatternPlan",
-      "type": "State"
-    },
-    {
-      "id": 70,
-      "name": "Control::PatternMutate",
-      "type": "Control"
-    },
-    {
-      "id": 71,
-      "name": "Event::PatternMutated",
-      "type": "Event"
-    },
-    {
-      "id": 72,
-      "name": "State::MutationReview",
-      "type": "State"
-    },
-    {
-      "id": 73,
-      "name": "Event::MutationReviewed",
-      "type": "Event"
-    },
-    {
-      "id": 74,
-      "name": "State::GoalIntrospect",
-      "type": "State"
-    },
-    {
-      "id": 75,
-      "name": "State::GoalProposal",
-      "type": "State"
-    },
-    {
-      "id": 76,
-      "name": "Control::GoalReview",
-      "type": "Control"
-    },
-    {
-      "id": 77,
-      "name": "Control::GoalMutate",
-      "type": "Control"
-    },
-    {
-      "id": 78,
-      "name": "Event::GoalChanged",
-      "type": "Event"
     }
   ],
   "pages": [
@@ -463,14 +373,7 @@
         "Event::PaperTradeRejected",
         "Analysis::Return1",
         "Analysis::Volatility",
-        "Analysis::SignalScore",
-        "Control::BuildTopologyOverlay",
-        "Event::TopologyOverlayBuilt",
-        "State::GoalIntrospect",
-        "State::GoalProposal",
-        "Control::GoalReview",
-        "Control::GoalMutate",
-        "Event::GoalChanged"
+        "Analysis::SignalScore"
       ]
     }
   ],
@@ -483,25 +386,25 @@
   "quantale": {
     "layers": [
       {
-        "bottom": 0.0,
+        "bottom": 0,
         "compose": "times",
         "join": "max",
         "name": "confidence",
-        "unit": 1.0
+        "unit": 1
       },
       {
         "bottom": "inf",
         "compose": "plus",
         "join": "min",
         "name": "cost",
-        "unit": 0.0
+        "unit": 0
       },
       {
-        "bottom": 0.0,
+        "bottom": 0,
         "compose": "min",
         "join": "max",
         "name": "safety",
-        "unit": 1.0
+        "unit": 1
       }
     ]
   },
@@ -592,26 +495,6 @@
       "kind": "state",
       "type": "json"
     },
-    "goal.policy": {
-      "kind": "config",
-      "type": "json"
-    },
-    "goal.proposal": {
-      "kind": "state",
-      "type": "json"
-    },
-    "goal.report": {
-      "kind": "state",
-      "type": "json"
-    },
-    "goal.review": {
-      "kind": "state",
-      "type": "json"
-    },
-    "goals.source": {
-      "kind": "config",
-      "type": "json"
-    },
     "introspect.report": {
       "kind": "state",
       "type": "json"
@@ -664,23 +547,11 @@
       "kind": "state",
       "type": "json"
     },
-    "mutation.review": {
-      "kind": "state",
-      "type": "json"
-    },
-    "operator.plan": {
-      "kind": "state",
-      "type": "json"
-    },
     "optimized.tensor": {
       "kind": "state",
       "type": "json"
     },
     "parse.tree": {
-      "kind": "state",
-      "type": "json"
-    },
-    "pattern.plan": {
       "kind": "state",
       "type": "json"
     },
@@ -720,19 +591,11 @@
       "kind": "state",
       "type": "json"
     },
-    "state/goal_mutations.jsonl": {
-      "kind": "receipt",
-      "type": "jsonl"
-    },
     "state/learned_edges.jsonl": {
       "kind": "log",
       "type": "jsonl"
     },
     "state/market_feed.jsonl": {
-      "kind": "log",
-      "type": "jsonl"
-    },
-    "state/mutation_queue.jsonl": {
       "kind": "log",
       "type": "jsonl"
     },
@@ -748,15 +611,7 @@
       "kind": "log",
       "type": "jsonl"
     },
-    "state/topology_mutations.jsonl": {
-      "kind": "log",
-      "type": "jsonl"
-    },
     "task.context": {
-      "kind": "state",
-      "type": "json"
-    },
-    "topology.plan": {
       "kind": "state",
       "type": "json"
     },
@@ -1160,38 +1015,6 @@
       "to": "State::Learn"
     },
     {
-      "confidence": 0.34,
-      "cost": 0.66,
-      "from": "State::Learn",
-      "policy_effect": "BuildTopologyOverlay",
-      "safety": 0.95,
-      "to": "Control::BuildTopologyOverlay"
-    },
-    {
-      "confidence": 0.97,
-      "cost": 0.03,
-      "from": "Control::BuildTopologyOverlay",
-      "policy_effect": "TopologyOverlayBuilt",
-      "safety": 0.98,
-      "to": "Event::TopologyOverlayBuilt"
-    },
-    {
-      "confidence": 0.51,
-      "cost": 0.49,
-      "from": "Control::BuildTopologyOverlay",
-      "policy_effect": "TopologyOverlayDirectResumeFallback",
-      "safety": 0.9,
-      "to": "Event::LearnUpdated"
-    },
-    {
-      "confidence": 0.9,
-      "cost": 0.1,
-      "from": "Event::TopologyOverlayBuilt",
-      "policy_effect": "ResumeAfterTopologyOverlayBuild",
-      "safety": 0.95,
-      "to": "Event::LearnUpdated"
-    },
-    {
       "confidence": 0.3,
       "cost": 0.7,
       "from": "Control::Block",
@@ -1241,18 +1064,18 @@
     },
     {
       "confidence": 0.75,
-      "cost": 2.0,
+      "cost": 2,
       "from": "State::Execute",
       "policy_effect": "DispatchFusedVectorAddScale",
       "safety": 0.78,
       "to": "Execution::FusedVectorAddScale"
     },
     {
-      "confidence": 1.0,
+      "confidence": 1,
       "cost": 0.1,
       "from": "Execution::VectorAdd",
       "policy_effect": "ChainVectorAddToVectorScale",
-      "safety": 1.0,
+      "safety": 1,
       "to": "Execution::VectorScale"
     },
     {
@@ -1329,7 +1152,7 @@
     },
     {
       "confidence": 0.9,
-      "cost": 1.0,
+      "cost": 1,
       "from": "Analysis::Return1",
       "policy_effect": "ChainReturn1ToVolatility",
       "safety": 0.9,
@@ -1345,7 +1168,7 @@
     },
     {
       "confidence": 0.9,
-      "cost": 1.0,
+      "cost": 1,
       "from": "Analysis::Volatility",
       "policy_effect": "ChainVolatilityToSignalScore",
       "safety": 0.9,
@@ -1450,106 +1273,10 @@
     {
       "confidence": 0.97,
       "cost": 0.03,
-      "from": "Control::TopologyMutate",
-      "policy_effect": "TopologyMutated",
-      "safety": 0.98,
-      "to": "Event::TopologyMutated"
-    },
-    {
-      "confidence": 0.97,
-      "cost": 0.03,
-      "from": "Event::TopologyMutated",
-      "policy_effect": "BuildTopologyOverlayAfterMutate",
-      "safety": 0.98,
-      "to": "Control::BuildTopologyOverlay"
-    },
-    {
-      "confidence": 0.97,
-      "cost": 0.03,
-      "from": "State::TopologyPlan",
-      "policy_effect": "TopologyMutateFromPlan",
-      "safety": 0.98,
-      "to": "Control::TopologyMutate"
-    },
-    {
-      "confidence": 0.97,
-      "cost": 0.03,
       "from": "State::Learn",
       "policy_effect": "Introspect",
       "safety": 0.95,
       "to": "State::Introspect"
-    },
-    {
-      "confidence": 0.97,
-      "cost": 0.03,
-      "from": "State::Introspect",
-      "policy_effect": "TopologyPlanFromIntrospect",
-      "safety": 0.97,
-      "to": "State::TopologyPlan"
-    },
-    {
-      "confidence": 0.65,
-      "cost": 0.35,
-      "from": "Event::TopologyMutated",
-      "policy_effect": "OperatorPlan",
-      "safety": 0.95,
-      "to": "State::OperatorPlan"
-    },
-    {
-      "confidence": 0.97,
-      "cost": 0.03,
-      "from": "State::OperatorPlan",
-      "policy_effect": "WriteOperator",
-      "safety": 0.97,
-      "to": "Control::WriteOperator"
-    },
-    {
-      "confidence": 0.97,
-      "cost": 0.03,
-      "from": "Control::WriteOperator",
-      "policy_effect": "OperatorWritten",
-      "safety": 0.98,
-      "to": "Event::OperatorWritten"
-    },
-    {
-      "confidence": 0.5,
-      "cost": 0.5,
-      "from": "Event::OperatorWritten",
-      "policy_effect": "BuildOverlayAfterWrite",
-      "safety": 0.97,
-      "to": "Control::BuildTopologyOverlay"
-    },
-    {
-      "confidence": 0.25,
-      "cost": 0.75,
-      "from": "State::Learn",
-      "policy_effect": "PatternPlan",
-      "safety": 0.95,
-      "to": "State::PatternPlan"
-    },
-    {
-      "confidence": 0.97,
-      "cost": 0.03,
-      "from": "State::PatternPlan",
-      "policy_effect": "PatternMutate",
-      "safety": 0.97,
-      "to": "Control::PatternMutate"
-    },
-    {
-      "confidence": 0.97,
-      "cost": 0.03,
-      "from": "Control::PatternMutate",
-      "policy_effect": "PatternMutated",
-      "safety": 0.98,
-      "to": "Event::PatternMutated"
-    },
-    {
-      "confidence": 0.9,
-      "cost": 0.1,
-      "from": "Event::PatternMutated",
-      "policy_effect": "ResumeAfterPatternMutate",
-      "safety": 0.95,
-      "to": "Event::LearnUpdated"
     },
     {
       "confidence": 0.5,
@@ -1560,114 +1287,12 @@
       "to": "Event::LearnUpdated"
     },
     {
-      "confidence": 0.62,
-      "cost": 0.38,
-      "from": "Control::WriteOperator",
-      "safety": 0.9,
-      "to": "Control::Repair"
-    },
-    {
-      "confidence": 0.62,
-      "cost": 0.38,
-      "from": "Control::PatternMutate",
-      "safety": 0.9,
-      "to": "Control::Repair"
-    },
-    {
-      "confidence": 0.92,
-      "cost": 0.08,
-      "from": "Event::TopologyMutated",
-      "policy_effect": "ReviewTopologyMutationQueue",
-      "safety": 0.99,
-      "to": "State::MutationReview"
-    },
-    {
-      "confidence": 0.92,
-      "cost": 0.08,
-      "from": "Event::OperatorWritten",
-      "policy_effect": "ReviewOperatorMutationQueue",
-      "safety": 0.99,
-      "to": "State::MutationReview"
-    },
-    {
-      "confidence": 0.92,
-      "cost": 0.08,
-      "from": "Event::PatternMutated",
-      "policy_effect": "ReviewPatternMutationQueue",
-      "safety": 0.99,
-      "to": "State::MutationReview"
-    },
-    {
-      "confidence": 0.98,
-      "cost": 0.02,
-      "from": "State::MutationReview",
-      "policy_effect": "MutationQueueReviewed",
-      "safety": 0.99,
-      "to": "Event::MutationReviewed"
-    },
-    {
-      "confidence": 0.4,
-      "cost": 0.6,
-      "from": "State::MutationReview",
-      "policy_effect": "MutationReviewBypass",
-      "safety": 0.98,
-      "to": "Event::LearnUpdated"
-    },
-    {
       "confidence": 0.9,
       "cost": 0.1,
-      "from": "Event::MutationReviewed",
-      "policy_effect": "LearnAfterMutationReview",
-      "safety": 0.98,
-      "to": "Event::LearnUpdated"
-    },
-    {
-      "confidence": 0.35,
-      "cost": 0.65,
       "from": "State::Learn",
-      "policy_effect": "GoalSelfRevisionEntry",
+      "policy_effect": "LearnUpdated",
       "safety": 0.95,
-      "to": "State::GoalIntrospect"
-    },
-    {
-      "confidence": 0.85,
-      "cost": 1.0,
-      "from": "State::GoalIntrospect",
-      "policy_effect": "goal_self_revision_cycle",
-      "safety": 0.95,
-      "to": "State::GoalProposal"
-    },
-    {
-      "confidence": 0.85,
-      "cost": 1.0,
-      "from": "State::GoalProposal",
-      "policy_effect": "goal_self_revision_cycle",
-      "safety": 0.95,
-      "to": "Control::GoalReview"
-    },
-    {
-      "confidence": 0.85,
-      "cost": 1.0,
-      "from": "Control::GoalReview",
-      "policy_effect": "goal_self_revision_cycle",
-      "safety": 0.95,
-      "to": "Control::GoalMutate"
-    },
-    {
-      "confidence": 0.85,
-      "cost": 1.0,
-      "from": "Control::GoalMutate",
-      "policy_effect": "goal_self_revision_cycle",
-      "safety": 0.95,
-      "to": "Event::GoalChanged"
-    },
-    {
-      "confidence": 0.85,
-      "cost": 1.0,
-      "from": "Event::GoalChanged",
-      "policy_effect": "goal_self_revision_cycle",
-      "safety": 0.95,
-      "to": "State::Plan"
+      "to": "Event::LearnUpdated"
     },
     {
       "confidence": 0.95,

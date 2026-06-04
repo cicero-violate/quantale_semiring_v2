@@ -11,10 +11,10 @@ import sys
 import uuid
 from datetime import datetime, timezone
 
-ROOT = pathlib.Path(__file__).resolve().parent.parent.parent
-GOALS = ROOT / "assets" / "goals.source.json"
+ROOT = pathlib.Path(__file__).resolve().parents[3]
+GOALS = ROOT / "assets" / "inactive_mutation" / "goals.source.json"
 LOG = ROOT / "state" / "goal_mutations.jsonl"
-BAK = ROOT / "assets" / "goals.source.json.bak"
+BAK = ROOT / "assets" / "inactive_mutation" / "goals.source.json.bak"
 
 APPLY_ALLOWED = False
 

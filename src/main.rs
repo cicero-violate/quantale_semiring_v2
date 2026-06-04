@@ -1517,6 +1517,18 @@ fn contract_violation_receipt(node_name: &str, violation: &ContractViolation) ->
 }
 
 fn run_mutations_cli(args: &[String]) -> i32 {
+    if std::env::var("QUANTALE_ENABLE_MUTATION_TOOLS").as_deref() != Ok("1") {
+        console::error(
+            "mutations",
+            "disabled",
+            &[(
+                "required_env",
+                "QUANTALE_ENABLE_MUTATION_TOOLS=1".to_string(),
+            )],
+        );
+        return 2;
+    }
+
     let Some(command) = args.first().map(String::as_str) else {
         console::error(
             "mutations",
@@ -1529,7 +1541,8 @@ fn run_mutations_cli(args: &[String]) -> i32 {
         return 2;
     };
 
-    let mut child_args = vec!["crates/operators_lib/apply_mutations.py".to_string()];
+    let mut child_args =
+        vec!["crates/operators_lib/inactive_mutation/apply_mutations.py".to_string()];
     match command {
         "list" => child_args.push("--list".to_string()),
         "apply" => {

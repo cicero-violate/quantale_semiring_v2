@@ -213,9 +213,9 @@ mod tests {
         NodeContracts::from_json_str(
             r#"{
                 "contracts": [{
-                    "node": "Control::WriteOperator",
-                    "requires_payload": ["filename", "source"],
-                    "allowed_after": ["State::OperatorPlan"],
+                    "node": "Control::Commit",
+                    "requires_payload": ["decision", "receipt"],
+                    "allowed_after": ["State::Validate"],
                     "exploration": {"allow_direct": false}
                 }]
             }"#,
@@ -226,14 +226,14 @@ mod tests {
     #[test]
     fn validates_unwrapped_payload_and_origin() {
         let payload = json!({
-            "context": "{\"filename\":\"x.py\",\"source\":\"print(1)\\n\"}"
+            "context": "{\"decision\":\"accept\",\"receipt\":\"ok\"}"
         });
         assert!(
             contracts()
                 .validate(
-                    "Control::WriteOperator",
+                    "Control::Commit",
                     &payload,
-                    Some("State::OperatorPlan"),
+                    Some("State::Validate"),
                     ContractContext::Frontier,
                 )
                 .is_ok()
@@ -242,28 +242,28 @@ mod tests {
 
     #[test]
     fn blocks_missing_required_payload() {
-        let payload = json!({"context": "{\"filename\":\"x.py\"}"});
+        let payload = json!({"context": "{\"decision\":\"accept\"}"});
         let err = contracts()
             .validate(
-                "Control::WriteOperator",
+                "Control::Commit",
                 &payload,
-                Some("State::OperatorPlan"),
+                Some("State::Validate"),
                 ContractContext::Frontier,
             )
             .unwrap_err();
-        assert!(err.reason.contains("source"));
+        assert!(err.reason.contains("receipt"));
     }
 
     #[test]
     fn blocks_disallowed_exploration() {
         let payload = json!({
-            "context": "{\"filename\":\"x.py\",\"source\":\"print(1)\\n\"}"
+            "context": "{\"decision\":\"accept\",\"receipt\":\"ok\"}"
         });
         let err = contracts()
             .validate(
-                "Control::WriteOperator",
+                "Control::Commit",
                 &payload,
-                Some("State::OperatorPlan"),
+                Some("State::Validate"),
                 ContractContext::Exploration,
             )
             .unwrap_err();
@@ -273,11 +273,11 @@ mod tests {
     #[test]
     fn blocks_wrong_origin() {
         let payload = json!({
-            "context": "{\"filename\":\"x.py\",\"source\":\"print(1)\\n\"}"
+            "context": "{\"decision\":\"accept\",\"receipt\":\"ok\"}"
         });
         let err = contracts()
             .validate(
-                "Control::WriteOperator",
+                "Control::Commit",
                 &payload,
                 Some("State::Plan"),
                 ContractContext::Frontier,

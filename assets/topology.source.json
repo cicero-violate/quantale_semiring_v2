@@ -174,27 +174,7 @@
       "type": "json",
       "kind": "state"
     },
-    "state/topology_mutations.jsonl": {
-      "type": "jsonl",
-      "kind": "log"
-    },
-    "state/mutation_queue.jsonl": {
-      "type": "jsonl",
-      "kind": "log"
-    },
     "introspect.report": {
-      "type": "json",
-      "kind": "state"
-    },
-    "topology.plan": {
-      "type": "json",
-      "kind": "state"
-    },
-    "operator.plan": {
-      "type": "json",
-      "kind": "state"
-    },
-    "pattern.plan": {
       "type": "json",
       "kind": "state"
     },
@@ -202,37 +182,9 @@
       "type": "json",
       "kind": "state"
     },
-    "mutation.review": {
-      "type": "json",
-      "kind": "state"
-    },
     "rollback.record": {
       "type": "json",
       "kind": "state"
-    },
-    "goals.source": {
-      "type": "json",
-      "kind": "config"
-    },
-    "goal.policy": {
-      "type": "json",
-      "kind": "config"
-    },
-    "goal.report": {
-      "type": "json",
-      "kind": "state"
-    },
-    "goal.proposal": {
-      "type": "json",
-      "kind": "state"
-    },
-    "goal.review": {
-      "type": "json",
-      "kind": "state"
-    },
-    "state/goal_mutations.jsonl": {
-      "type": "jsonl",
-      "kind": "receipt"
     }
   },
   "resources": {
@@ -291,22 +243,22 @@
         "name": "confidence",
         "join": "max",
         "compose": "times",
-        "bottom": 0.0,
-        "unit": 1.0
+        "bottom": 0,
+        "unit": 1
       },
       {
         "name": "cost",
         "join": "min",
         "compose": "plus",
         "bottom": "inf",
-        "unit": 0.0
+        "unit": 0
       },
       {
         "name": "safety",
         "join": "max",
         "compose": "min",
-        "bottom": 0.0,
-        "unit": 1.0
+        "bottom": 0,
+        "unit": 1
       }
     ]
   },
@@ -1132,85 +1084,6 @@
       "locks": []
     },
     {
-      "name": "Control::BuildTopologyOverlay",
-      "kind": "host_node",
-      "purity": "deterministic_io",
-      "runtime": {
-        "backend": "cargo",
-        "args": [
-          "run",
-          "--",
-          "topology",
-          "build-overlay"
-        ]
-      },
-      "reads": [],
-      "writes": [],
-      "locks": [
-        "topology_assets"
-      ]
-    },
-    {
-      "name": "Event::TopologyOverlayBuilt",
-      "kind": "event_node",
-      "runtime": {
-        "backend": "noop"
-      },
-      "reads": [],
-      "writes": [],
-      "locks": []
-    },
-    {
-      "name": "Control::TopologyMutate",
-      "kind": "boundary_node",
-      "runtime": {
-        "backend": "python",
-        "script": "crates/operators_lib/topology_mutate.py"
-      },
-      "reads": [
-        "topology.plan"
-      ],
-      "writes": [
-        "state/topology_mutations.jsonl"
-      ],
-      "locks": [
-        "topology"
-      ],
-      "governance": {
-        "self_modification": true
-      }
-    },
-    {
-      "name": "Event::TopologyMutated",
-      "kind": "event_node",
-      "runtime": {
-        "backend": "noop"
-      },
-      "reads": [],
-      "writes": [],
-      "locks": []
-    },
-    {
-      "name": "State::TopologyPlan",
-      "kind": "boundary_node",
-      "runtime": {
-        "backend": "python",
-        "script": "crates/operators_lib/call_llm.py",
-        "template": "topology_plan"
-      },
-      "reads": [
-        "state/quantale.tlog",
-        "state/topology_mutations.jsonl"
-      ],
-      "writes": [
-        "topology.plan"
-      ],
-      "locks": [],
-      "governance": {
-        "llm": true
-      }
-    },
-    {
       "name": "State::Introspect",
       "kind": "boundary_node",
       "runtime": {
@@ -1220,8 +1093,7 @@
       },
       "reads": [
         "state/quantale.tlog",
-        "state/learned_edges.jsonl",
-        "state/topology_mutations.jsonl"
+        "state/learned_edges.jsonl"
       ],
       "writes": [
         "introspect.report"
@@ -1230,228 +1102,6 @@
       "governance": {
         "llm": true
       }
-    },
-    {
-      "name": "State::OperatorPlan",
-      "kind": "boundary_node",
-      "runtime": {
-        "backend": "python",
-        "script": "crates/operators_lib/call_llm.py",
-        "template": "operator_plan"
-      },
-      "reads": [
-        "state/topology_mutations.jsonl"
-      ],
-      "writes": [
-        "operator.plan"
-      ],
-      "locks": [],
-      "governance": {
-        "llm": true
-      }
-    },
-    {
-      "name": "Control::WriteOperator",
-      "kind": "boundary_node",
-      "runtime": {
-        "backend": "python",
-        "script": "crates/operators_lib/write_operator.py"
-      },
-      "reads": [
-        "operator.plan"
-      ],
-      "writes": [],
-      "locks": [
-        "operators_lib"
-      ],
-      "governance": {
-        "self_modification": true
-      }
-    },
-    {
-      "name": "Event::OperatorWritten",
-      "kind": "event_node",
-      "runtime": {
-        "backend": "noop"
-      },
-      "reads": [],
-      "writes": [],
-      "locks": []
-    },
-    {
-      "name": "State::PatternPlan",
-      "kind": "boundary_node",
-      "runtime": {
-        "backend": "python",
-        "script": "crates/operators_lib/call_llm.py",
-        "template": "pattern_plan"
-      },
-      "reads": [
-        "state/quantale.tlog"
-      ],
-      "writes": [
-        "pattern.plan"
-      ],
-      "locks": [],
-      "governance": {
-        "llm": true
-      }
-    },
-    {
-      "name": "Control::PatternMutate",
-      "kind": "boundary_node",
-      "runtime": {
-        "backend": "python",
-        "script": "crates/operators_lib/pattern_mutate.py"
-      },
-      "reads": [
-        "pattern.plan"
-      ],
-      "writes": [
-        "state/topology_mutations.jsonl"
-      ],
-      "locks": [
-        "patterns"
-      ],
-      "governance": {
-        "self_modification": true
-      }
-    },
-    {
-      "name": "Event::PatternMutated",
-      "kind": "event_node",
-      "runtime": {
-        "backend": "noop"
-      },
-      "reads": [],
-      "writes": [],
-      "locks": []
-    },
-    {
-      "name": "State::MutationReview",
-      "kind": "boundary_node",
-      "runtime": {
-        "backend": "python",
-        "script": "crates/operators_lib/mutation_review.py"
-      },
-      "reads": [
-        "state/mutation_queue.jsonl"
-      ],
-      "writes": [
-        "mutation.review"
-      ],
-      "locks": [],
-      "governance": {
-        "review": true
-      }
-    },
-    {
-      "name": "Event::MutationReviewed",
-      "kind": "event_node",
-      "runtime": {
-        "backend": "noop"
-      },
-      "reads": [],
-      "writes": [],
-      "locks": []
-    },
-    {
-      "name": "State::GoalIntrospect",
-      "kind": "host_node",
-      "runtime": {
-        "backend": "python",
-        "script": "crates/operators_lib/goal_introspect.py"
-      },
-      "reads": [
-        "goals.source",
-        "state/quantale.tlog"
-      ],
-      "writes": [
-        "goal.report"
-      ],
-      "locks": []
-    },
-    {
-      "name": "State::GoalProposal",
-      "kind": "boundary_node",
-      "runtime": {
-        "backend": "python",
-        "script": "crates/operators_lib/call_llm.py",
-        "template": "goal_proposal"
-      },
-      "reads": [
-        "goals.source",
-        "goal.policy",
-        "goal.report"
-      ],
-      "writes": [
-        "goal.proposal"
-      ],
-      "locks": [],
-      "governance": {
-        "network": true,
-        "allowed_hosts": [
-          "browser-router",
-          "chatgpt"
-        ],
-        "purpose": "propose bounded goal deltas only"
-      }
-    },
-    {
-      "name": "Control::GoalReview",
-      "kind": "policy_node",
-      "runtime": {
-        "backend": "python",
-        "script": "crates/operators_lib/goal_review.py"
-      },
-      "reads": [
-        "goals.source",
-        "goal.policy",
-        "goal.proposal"
-      ],
-      "writes": [
-        "goal.review"
-      ],
-      "locks": []
-    },
-    {
-      "name": "Control::GoalMutate",
-      "kind": "boundary_node",
-      "runtime": {
-        "backend": "python",
-        "script": "crates/operators_lib/goal_mutate.py"
-      },
-      "reads": [
-        "goals.source",
-        "goal.review"
-      ],
-      "writes": [
-        "goals.source",
-        "state/goal_mutations.jsonl"
-      ],
-      "locks": [
-        "goals"
-      ],
-      "governance": {
-        "filesystem": true,
-        "allowed_paths": [
-          "assets/goals.source.json",
-          "state/goal_mutations.jsonl"
-        ],
-        "purpose": "apply reviewed goal deltas with receipt logging"
-      }
-    },
-    {
-      "name": "Event::GoalChanged",
-      "kind": "event_node",
-      "runtime": {
-        "backend": "noop"
-      },
-      "reads": [
-        "state/goal_mutations.jsonl"
-      ],
-      "writes": [],
-      "locks": []
     }
   ],
   "programs": [
@@ -1465,7 +1115,7 @@
         ]
       },
       "confidence": 0.95,
-      "cost": 1.0,
+      "cost": 1,
       "safety": 0.9
     },
     {
@@ -1487,7 +1137,7 @@
         ]
       },
       "confidence": 0.8,
-      "cost": 2.0,
+      "cost": 2,
       "safety": 0.85
     },
     {
@@ -1506,7 +1156,7 @@
         }
       },
       "confidence": 0.7,
-      "cost": 1.0,
+      "cost": 1,
       "safety": 0.9
     },
     {
@@ -1539,16 +1189,16 @@
     {
       "name": "identity_skip_marker",
       "expr": "one",
-      "confidence": 1.0,
-      "cost": 0.0,
-      "safety": 1.0
+      "confidence": 1,
+      "cost": 0,
+      "safety": 1
     },
     {
       "name": "blocked_marker",
       "expr": "zero",
-      "confidence": 0.0,
-      "cost": 0.0,
-      "safety": 0.0
+      "confidence": 0,
+      "cost": 0,
+      "safety": 0
     },
     {
       "name": "market_analysis_trade_seq",
@@ -1570,7 +1220,7 @@
         ]
       },
       "confidence": 0.91,
-      "cost": 1.0,
+      "cost": 1,
       "safety": 0.9
     },
     {
@@ -1589,7 +1239,7 @@
         }
       },
       "confidence": 0.72,
-      "cost": 1.0,
+      "cost": 1,
       "safety": 0.86
     },
     {
@@ -1612,7 +1262,7 @@
         ]
       },
       "confidence": 0.91,
-      "cost": 1.0,
+      "cost": 1,
       "safety": 0.9
     },
     {
@@ -1631,7 +1281,7 @@
         }
       },
       "confidence": 0.74,
-      "cost": 1.0,
+      "cost": 1,
       "safety": 0.86
     },
     {
@@ -1651,25 +1301,8 @@
       },
       "weight": {
         "confidence": 0.95,
-        "cost": 1.0,
+        "cost": 1,
         "safety": 0.98
-      }
-    },
-    {
-      "name": "goal_self_revision_cycle",
-      "kind": "cka_pattern",
-      "confidence": 0.85,
-      "cost": 1.0,
-      "safety": 0.95,
-      "expr": {
-        "seq": [
-          "State::GoalIntrospect",
-          "State::GoalProposal",
-          "Control::GoalReview",
-          "Control::GoalMutate",
-          "Event::GoalChanged",
-          "State::Plan"
-        ]
       }
     }
   ],
@@ -2043,38 +1676,6 @@
       "safety": 0.88
     },
     {
-      "from": "State::Learn",
-      "to": "Control::BuildTopologyOverlay",
-      "policy_effect": "BuildTopologyOverlay",
-      "confidence": 0.34,
-      "cost": 0.66,
-      "safety": 0.95
-    },
-    {
-      "from": "Control::BuildTopologyOverlay",
-      "to": "Event::TopologyOverlayBuilt",
-      "policy_effect": "TopologyOverlayBuilt",
-      "confidence": 0.97,
-      "cost": 0.03,
-      "safety": 0.98
-    },
-    {
-      "from": "Control::BuildTopologyOverlay",
-      "to": "Event::LearnUpdated",
-      "policy_effect": "TopologyOverlayDirectResumeFallback",
-      "confidence": 0.51,
-      "cost": 0.49,
-      "safety": 0.9
-    },
-    {
-      "from": "Event::TopologyOverlayBuilt",
-      "to": "Event::LearnUpdated",
-      "policy_effect": "ResumeAfterTopologyOverlayBuild",
-      "confidence": 0.9,
-      "cost": 0.1,
-      "safety": 0.95
-    },
-    {
       "from": "Control::Block",
       "to": "State::Input",
       "policy_effect": "RecoverFromBlock",
@@ -2127,16 +1728,16 @@
       "to": "Execution::FusedVectorAddScale",
       "policy_effect": "DispatchFusedVectorAddScale",
       "confidence": 0.75,
-      "cost": 2.0,
+      "cost": 2,
       "safety": 0.78
     },
     {
       "from": "Execution::VectorAdd",
       "to": "Execution::VectorScale",
       "policy_effect": "ChainVectorAddToVectorScale",
-      "confidence": 1.0,
+      "confidence": 1,
       "cost": 0.1,
-      "safety": 1.0
+      "safety": 1
     },
     {
       "from": "Execution::VectorAdd",
@@ -2215,7 +1816,7 @@
       "to": "Analysis::Volatility",
       "policy_effect": "ChainReturn1ToVolatility",
       "confidence": 0.9,
-      "cost": 1.0,
+      "cost": 1,
       "safety": 0.9
     },
     {
@@ -2231,7 +1832,7 @@
       "to": "Analysis::SignalScore",
       "policy_effect": "ChainVolatilityToSignalScore",
       "confidence": 0.9,
-      "cost": 1.0,
+      "cost": 1,
       "safety": 0.9
     },
     {
@@ -2331,108 +1932,12 @@
       "safety": 0.8
     },
     {
-      "from": "Control::TopologyMutate",
-      "to": "Event::TopologyMutated",
-      "confidence": 0.97,
-      "cost": 0.03,
-      "safety": 0.98,
-      "policy_effect": "TopologyMutated"
-    },
-    {
-      "from": "Event::TopologyMutated",
-      "to": "Control::BuildTopologyOverlay",
-      "confidence": 0.97,
-      "cost": 0.03,
-      "safety": 0.98,
-      "policy_effect": "BuildTopologyOverlayAfterMutate"
-    },
-    {
-      "from": "State::TopologyPlan",
-      "to": "Control::TopologyMutate",
-      "confidence": 0.97,
-      "cost": 0.03,
-      "safety": 0.98,
-      "policy_effect": "TopologyMutateFromPlan"
-    },
-    {
       "from": "State::Learn",
       "to": "State::Introspect",
       "confidence": 0.97,
       "cost": 0.03,
       "safety": 0.95,
       "policy_effect": "Introspect"
-    },
-    {
-      "from": "State::Introspect",
-      "to": "State::TopologyPlan",
-      "confidence": 0.97,
-      "cost": 0.03,
-      "safety": 0.97,
-      "policy_effect": "TopologyPlanFromIntrospect"
-    },
-    {
-      "from": "Event::TopologyMutated",
-      "to": "State::OperatorPlan",
-      "confidence": 0.65,
-      "cost": 0.35,
-      "safety": 0.95,
-      "policy_effect": "OperatorPlan"
-    },
-    {
-      "from": "State::OperatorPlan",
-      "to": "Control::WriteOperator",
-      "confidence": 0.97,
-      "cost": 0.03,
-      "safety": 0.97,
-      "policy_effect": "WriteOperator"
-    },
-    {
-      "from": "Control::WriteOperator",
-      "to": "Event::OperatorWritten",
-      "confidence": 0.97,
-      "cost": 0.03,
-      "safety": 0.98,
-      "policy_effect": "OperatorWritten"
-    },
-    {
-      "from": "Event::OperatorWritten",
-      "to": "Control::BuildTopologyOverlay",
-      "confidence": 0.5,
-      "cost": 0.5,
-      "safety": 0.97,
-      "policy_effect": "BuildOverlayAfterWrite"
-    },
-    {
-      "from": "State::Learn",
-      "to": "State::PatternPlan",
-      "confidence": 0.25,
-      "cost": 0.75,
-      "safety": 0.95,
-      "policy_effect": "PatternPlan"
-    },
-    {
-      "from": "State::PatternPlan",
-      "to": "Control::PatternMutate",
-      "confidence": 0.97,
-      "cost": 0.03,
-      "safety": 0.97,
-      "policy_effect": "PatternMutate"
-    },
-    {
-      "from": "Control::PatternMutate",
-      "to": "Event::PatternMutated",
-      "confidence": 0.97,
-      "cost": 0.03,
-      "safety": 0.98,
-      "policy_effect": "PatternMutated"
-    },
-    {
-      "from": "Event::PatternMutated",
-      "to": "Event::LearnUpdated",
-      "confidence": 0.9,
-      "cost": 0.1,
-      "safety": 0.95,
-      "policy_effect": "ResumeAfterPatternMutate"
     },
     {
       "from": "State::Introspect",
@@ -2443,114 +1948,12 @@
       "policy_effect": "IntrospectBypass"
     },
     {
-      "from": "Control::WriteOperator",
-      "to": "Control::Repair",
-      "confidence": 0.62,
-      "cost": 0.38,
-      "safety": 0.9
-    },
-    {
-      "from": "Control::PatternMutate",
-      "to": "Control::Repair",
-      "confidence": 0.62,
-      "cost": 0.38,
-      "safety": 0.9
-    },
-    {
-      "from": "Event::TopologyMutated",
-      "to": "State::MutationReview",
-      "confidence": 0.92,
-      "cost": 0.08,
-      "safety": 0.99,
-      "policy_effect": "ReviewTopologyMutationQueue"
-    },
-    {
-      "from": "Event::OperatorWritten",
-      "to": "State::MutationReview",
-      "confidence": 0.92,
-      "cost": 0.08,
-      "safety": 0.99,
-      "policy_effect": "ReviewOperatorMutationQueue"
-    },
-    {
-      "from": "Event::PatternMutated",
-      "to": "State::MutationReview",
-      "confidence": 0.92,
-      "cost": 0.08,
-      "safety": 0.99,
-      "policy_effect": "ReviewPatternMutationQueue"
-    },
-    {
-      "from": "State::MutationReview",
-      "to": "Event::MutationReviewed",
-      "confidence": 0.98,
-      "cost": 0.02,
-      "safety": 0.99,
-      "policy_effect": "MutationQueueReviewed"
-    },
-    {
-      "from": "State::MutationReview",
+      "from": "State::Learn",
       "to": "Event::LearnUpdated",
-      "confidence": 0.4,
-      "cost": 0.6,
-      "safety": 0.98,
-      "policy_effect": "MutationReviewBypass"
-    },
-    {
-      "from": "Event::MutationReviewed",
-      "to": "Event::LearnUpdated",
+      "policy_effect": "LearnUpdated",
       "confidence": 0.9,
       "cost": 0.1,
-      "safety": 0.98,
-      "policy_effect": "LearnAfterMutationReview"
-    },
-    {
-      "from": "State::Learn",
-      "to": "State::GoalIntrospect",
-      "confidence": 0.35,
-      "cost": 0.65,
-      "safety": 0.95,
-      "policy_effect": "GoalSelfRevisionEntry"
-    },
-    {
-      "from": "State::GoalIntrospect",
-      "to": "State::GoalProposal",
-      "confidence": 0.85,
-      "cost": 1.0,
-      "safety": 0.95,
-      "policy_effect": "goal_self_revision_cycle"
-    },
-    {
-      "from": "State::GoalProposal",
-      "to": "Control::GoalReview",
-      "confidence": 0.85,
-      "cost": 1.0,
-      "safety": 0.95,
-      "policy_effect": "goal_self_revision_cycle"
-    },
-    {
-      "from": "Control::GoalReview",
-      "to": "Control::GoalMutate",
-      "confidence": 0.85,
-      "cost": 1.0,
-      "safety": 0.95,
-      "policy_effect": "goal_self_revision_cycle"
-    },
-    {
-      "from": "Control::GoalMutate",
-      "to": "Event::GoalChanged",
-      "confidence": 0.85,
-      "cost": 1.0,
-      "safety": 0.95,
-      "policy_effect": "goal_self_revision_cycle"
-    },
-    {
-      "from": "Event::GoalChanged",
-      "to": "State::Plan",
-      "confidence": 0.85,
-      "cost": 1.0,
-      "safety": 0.95,
-      "policy_effect": "goal_self_revision_cycle"
+      "safety": 0.95
     }
   ],
   "pages": [
@@ -2613,14 +2016,7 @@
         "Event::PaperTradeRejected",
         "Analysis::Return1",
         "Analysis::Volatility",
-        "Analysis::SignalScore",
-        "Control::BuildTopologyOverlay",
-        "Event::TopologyOverlayBuilt",
-        "State::GoalIntrospect",
-        "State::GoalProposal",
-        "Control::GoalReview",
-        "Control::GoalMutate",
-        "Event::GoalChanged"
+        "Analysis::SignalScore"
       ]
     }
   ]

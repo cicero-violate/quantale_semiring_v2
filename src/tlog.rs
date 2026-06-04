@@ -39,7 +39,13 @@ pub struct TlogWriter {
 
 impl TlogWriter {
     pub fn open(path: impl AsRef<Path>) -> io::Result<Self> {
-        let next_sequence = count_jsonl_records(path.as_ref())?;
+        let path = path.as_ref();
+        if let Some(parent) = path.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            std::fs::create_dir_all(parent)?;
+        }
+        let next_sequence = count_jsonl_records(path)?;
         // O_APPEND: every write() extends the file atomically at the OS level.
         // Combined with formatting the entire record + newline in memory before
         // calling write_all(), this prevents interleaved records when multiple

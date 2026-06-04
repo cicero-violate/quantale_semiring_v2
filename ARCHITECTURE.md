@@ -32,9 +32,9 @@ Node universe:
 Current topology: 74 nodes
 Source of truth:  assets/topology.source.json
 Generated graph:  assets/topology.generated.json  (runtime input)
-Rust constant:    TENSOR_NODE_COUNT = 60 (must match N in quantale_world.cu)
-MATRIX_LEN        = 3600
-TENSOR_LEN        = 10800
+Rust constant:    TENSOR_NODE_COUNT is derived from generated topology at build time
+MATRIX_LEN        = TENSOR_NODE_COUNT * TENSOR_NODE_COUNT
+TENSOR_LEN        = 3 * MATRIX_LEN
 ```
 
 No Rust code encodes the node list. `topology.rs::NodeRegistry` loads it from the generated JSON at startup. Adding a node requires only a topology source edit followed by `cargo run -- topology build-overlay`.
@@ -139,21 +139,13 @@ cuda/quantale_world.cu
             update_edge, decay, seed_exploration, expand_tokens,
             score_tokens, select_topk_tokens, commit_exploration
 
-cuda/trading_execution_kernels.cu
-  Compiled: nvcc at build time (build.rs, --features cuda)
-  Output:   $OUT_DIR/trading_execution_kernels.ptx  (embedded via include_bytes!)
-  Loaded:   CudaDevice::load_ptx at runtime
-  Kernels:  fused_alpha_and_risk_kernel
-            fused_orderbook_and_alpha_kernel
-            fused_feed_alpha_and_risk_kernel
-
 JIT fusion kernels (src/jit_kernel_fusion/)
   Compiled: NVRTC at runtime via JitCache::get_or_compile
   Source:   synthesize_kernel(&JitChain, &registry) → CUDA C
   Regions:  loaded from assets/topology.fusion.json via FusionDispatch
 ```
 
-`quantale_world.cu` uses NVRTC for rapid iteration. Operator kernels use nvcc for `-O3` and cooperative group access. Fusion kernels use NVRTC to specialize at runtime once fusion regions are identified.
+`quantale_world.cu` provides the deterministic tensor execution core. Fusion kernels use NVRTC to specialize operator chains at runtime once fusion regions are identified.
 
 ## Fusion architecture
 
@@ -409,7 +401,7 @@ scalar CUDA world
 scalar LLM plan format
 CPU routing planner
 policy side-channel files
-assets/patterns.json             (deleted; replaced by generated patterns.source.json)
+legacy assets/patterns.json      (deleted; replaced by generated patterns.source.json)
 search/ingress/dsl/paging layers
 PyTorch/JAX/Triton runtime
 hard-coded StateNode/ControlNode/EventNode constants
@@ -419,8 +411,8 @@ runtime PTX stitching or FusionPlan types
 fake CUDA planned-success receipts
 QuantaleAction enum / selected_action()
 batch_contains_cuda_ptx / CUDA-specific batch branching
-runtime fallback to assets/topology.json     (generated only)
-runtime fallback to assets/patterns.json     (source-generated only)
+runtime fallback to legacy topology assets
+runtime fallback to legacy pattern assets
 ```
 
 ## Benchmark baseline

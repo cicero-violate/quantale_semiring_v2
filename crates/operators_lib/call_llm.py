@@ -50,6 +50,13 @@ def asset_path(env_name: str, filename: str) -> pathlib.Path:
 TOPOLOGY_PATH     = asset_path("QUANTALE_TOPOLOGY", "topology.generated.json")
 OPERATORS_PATH    = asset_path("QUANTALE_OPERATORS", "operators.generated.json")
 TEMPLATES_PATH    = asset_path("QUANTALE_TEMPLATES", "call_llm_templates.json")
+MUTATION_TEMPLATES = frozenset({
+    "topology_mutate",
+    "operator_write",
+    "pattern_mutate",
+    "goal_proposal",
+})
+ENABLE_MUTATION_TOOLS = os.environ.get("QUANTALE_ENABLE_MUTATION_TOOLS") == "1"
 
 _EDGE_SCHEMA = """\
 Output ONLY a JSON array of tensor edge objects — no prose, no markdown fences.
@@ -92,11 +99,6 @@ _BUILTIN_TEMPLATES = {
         '- Use confidence 0.85-0.99 for well-established steps, 0.50-0.84 for speculative ones.\n'
         '- Prefer low cost for acknowledgement/event nodes; accept higher cost for compute work.\n'
         '- Skip stub nodes (executable=true) in the primary chain — they are no-ops.\n'
-        '\n'
-        'DEVELOPMENT ROUTING — State::Learn always routes through State::Introspect (hardwired, do not propose).\n'
-        'From State::Introspect, the primary path is State::TopologyPlan (confidence 0.95-0.99).\n'
-        'The bypass State::Introspect -> Event::LearnUpdated (confidence 0.3-0.5) short-circuits dev work;\n'
-        'only propose it at low confidence so the topology-plan chain normally wins.\n'
         '\n'
         'Do not invent node names, slot names, operators, kernels, Rust symbols, or CUDA code.\n'
         'Do not output a separate chains object; the edge array is the complete plan.\n'
@@ -327,17 +329,34 @@ def load_templates() -> dict[str, str]:
         data = json.loads(TEMPLATES_PATH.read_text())
         result = {}
         for k, v in data.items():
+            if k in MUTATION_TEMPLATES and not ENABLE_MUTATION_TOOLS:
+                continue
             if k in _EDGE_SCHEMA_TEMPLATES:
                 result[k] = v + "\n\n" + _EDGE_SCHEMA
             else:
                 result[k] = v
-        result["operator_write"] = _BUILTIN_TEMPLATES["operator_write"]
+        if ENABLE_MUTATION_TOOLS:
+            for key in MUTATION_TEMPLATES:
+                if key not in result and key in _BUILTIN_TEMPLATES:
+                    result[key] = _BUILTIN_TEMPLATES[key]
         return result
     except FileNotFoundError:
-        return _BUILTIN_TEMPLATES
+        if ENABLE_MUTATION_TOOLS:
+            return _BUILTIN_TEMPLATES
+        return {
+            key: value
+            for key, value in _BUILTIN_TEMPLATES.items()
+            if key not in MUTATION_TEMPLATES
+        }
     except Exception as exc:
         sys.stderr.write(f"[call_llm] template load failed ({TEMPLATES_PATH}): {exc}\n")
-        return _BUILTIN_TEMPLATES
+        if ENABLE_MUTATION_TOOLS:
+            return _BUILTIN_TEMPLATES
+        return {
+            key: value
+            for key, value in _BUILTIN_TEMPLATES.items()
+            if key not in MUTATION_TEMPLATES
+        }
 
 
 def load_asset_json_str(filename: str) -> str:

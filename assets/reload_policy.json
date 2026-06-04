@@ -9,15 +9,10 @@
     "assets/runtime_context.json",
     "assets/runtime_invariants.json",
     "assets/lock_policy.json",
-    "assets/side_effect_policy.json",
-    "assets/governance_policy.json",
-    "assets/mutation_review_policy.json",
     "assets/exploration.json",
     "assets/learning_policy.json",
     "assets/patterns.source.json",
     "assets/topology.fusion.json",
-    "assets/reload_policy.json",
-    "assets/goals.source.json",
-    "assets/goal_policy.json"
+    "assets/reload_policy.json"
   ]
 }

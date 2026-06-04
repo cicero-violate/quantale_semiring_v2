@@ -39,7 +39,7 @@ import sys
 
 import mutation_policy
 
-_PROJECT_ROOT = pathlib.Path(__file__).resolve().parent.parent.parent
+_PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[3]
 SOURCE_TOPOLOGY_PATH = _PROJECT_ROOT / "assets" / "topology.source.json"
 SOURCE_TOPOLOGY_BAK  = _PROJECT_ROOT / "assets" / "topology.source.json.bak"
 MUTATIONS_LOG = _PROJECT_ROOT / "state" / "pattern_mutations.jsonl"

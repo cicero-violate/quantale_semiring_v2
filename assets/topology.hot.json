@@ -32,7 +32,7 @@
       "type": "Analysis"
     },
     {
-      "id": 79,
+      "id": 61,
       "name": "Region::CommitReceipt",
       "type": "gpu_region"
     }
@@ -53,16 +53,16 @@
   ],
   "transitions": [
     {
-      "confidence": 1.0,
+      "confidence": 1,
       "cost": 0.1,
       "from": "Execution::VectorAdd",
       "policy_effect": "ChainVectorAddToVectorScale",
-      "safety": 1.0,
+      "safety": 1,
       "to": "Execution::VectorScale"
     },
     {
       "confidence": 0.9,
-      "cost": 1.0,
+      "cost": 1,
       "from": "Analysis::Return1",
       "policy_effect": "ChainReturn1ToVolatility",
       "safety": 0.9,
@@ -78,7 +78,7 @@
     },
     {
       "confidence": 0.9,
-      "cost": 1.0,
+      "cost": 1,
       "from": "Analysis::Volatility",
       "policy_effect": "ChainVolatilityToSignalScore",
       "safety": 0.9,
