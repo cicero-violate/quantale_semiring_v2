@@ -114,12 +114,14 @@ Topology DSL compiler (crates/topology_core)
 CKA pattern compilation (build time; edges embedded at epoch start)
 FusionDispatch: fusion region loading and JitChain construction
 JitCache: NVRTC/PTX compilation and kernel caching (#[cfg(feature="cuda")])
-ParGroupGpuData: par group table + eligibility mask upload at epoch start
+ParGroupGpuData: par group table (node_id, region_id pairs) + eligibility mask upload at epoch start
 Static topology invariant checking
 Runtime decision invariant checking
 Base tensor CPU snapshot for hard reset
 Operator eligibility mask computation (jit_cuda / fusion / hot-region)
+Per-member hot-region id table construction (encoded in par_table; emitted in ParGroupStepOutput)
 Host-side operator dispatch after GPU commit (jit_cuda and fusion only)
+Device-ring receipt routing for hot-region par members (gpu_dispatch_region + drain_device_receipts)
 Edge-delta upload
 Compact report decoding
 Append-only transaction logging
@@ -241,12 +243,15 @@ each tick:
        update receipt priors + lattice
        continue
   4. par_group_step(par_group_data, bias)   ← one kernel: select + validate + commit
-       → iterates GPU-resident par group table
+       → iterates GPU-resident par group table [(node_id, region_id) pairs]
        → projects each member toward target node on device
        → first all-ready, eligible group committed atomically on device
-       → CPU reads (group_idx, decisions)
+       → CPU reads (group_idx, decisions, per-member region_ids)
        dispatch_gpu_parallel_group           ← concurrent: jit_cuda / fusion / hot
-       update receipt priors + lattice
+       for hot-region members: gpu_dispatch_region → device receipt ring
+       for other members:      queue_lattice_update → CPU drain
+       drain_device_receipts + drain_lattice_queue
+       update receipt priors + tlog
        continue  (if group was selected)
   5. frontier_step
        execute_active_node_blocking     ← same single dispatch path
@@ -255,7 +260,7 @@ each tick:
 
 `execute_active_node_blocking` checks `FusionDispatch.get_by_entry` first, then `HotRegionRegistry`, then falls back to `UniversalExecutor::execute_abstract_node_blocking`. All paths emit a `ProcessReceipt`.
 
-The GPU-native parallel tier (step 4) is active when `par_group_data` is present (CUDA device available and at least one eligible par group declared in the topology). Eligible = all operators in the group are `jit_cuda`, fusion-entry, or hot-region.
+The GPU-native parallel tier (step 4) is active when `par_group_data` is present (CUDA device available and at least one eligible par group declared in the topology). Eligible = all operators in the group are `jit_cuda`, fusion-entry, or hot-region. The packed table stores `(node_id, region_id)` pairs per member; the kernel emits `region_ids[i]` in `ParGroupStepOutput` so the CPU uses kernel-native routing info rather than re-querying the hot-region registry per tick. Hot-region par members route receipts through the device ring (`gpu_dispatch_region` + `drain_device_receipts`); others use the CPU lattice queue.
 
 ## CKA layer
 
