@@ -1,33 +1,25 @@
-use std::collections::HashMap;
-
-use super::chain::JitChain;
-
 #[cfg(feature = "cuda")]
 use {
+    super::chain::JitChain,
     super::synth::{JIT_KERNEL_NAME, synthesize_kernel},
     cudarc::driver::{CudaDevice, CudaFunction},
     cudarc::nvrtc::compile_ptx,
     serde_json::Value,
+    std::collections::HashMap,
     std::sync::Arc,
 };
 
 #[derive(Default)]
 pub struct JitCache {
+    #[cfg(feature = "cuda")]
     modules: HashMap<Vec<String>, String>,
+    #[cfg(feature = "cuda")]
     compile_count: usize,
 }
 
 impl JitCache {
     pub fn new() -> Self {
         Self::default()
-    }
-
-    pub fn compile_count(&self) -> usize {
-        self.compile_count
-    }
-
-    pub fn contains(&self, chain: &JitChain) -> bool {
-        self.modules.contains_key(&chain.operators)
     }
 }
 
@@ -57,26 +49,5 @@ impl JitCache {
         device
             .get_func(&module_name, JIT_KERNEL_NAME)
             .ok_or_else(|| format!("JIT function missing from module '{module_name}'"))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn cache_key_is_operator_sequence() {
-        let chain = JitChain {
-            operators: vec!["a".to_string(), "b".to_string()],
-            inputs: vec![],
-            outputs: vec!["o".to_string()],
-            internals: vec![],
-        };
-        let mut cache = JitCache::new();
-        assert!(!cache.contains(&chain));
-        cache
-            .modules
-            .insert(chain.operators.clone(), "module".to_string());
-        assert!(cache.contains(&chain));
     }
 }

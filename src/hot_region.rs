@@ -85,4 +85,23 @@ impl HotRegionRegistry {
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
+
+    /// Validate that every region's reads and writes are within `declared_slots`.
+    ///
+    /// Returns a list of `(region_name, slot_name)` pairs for any undeclared
+    /// slot.  An empty vec means the registry is consistent.
+    pub fn validate_slots<'a>(
+        &'a self,
+        declared_slots: &std::collections::HashSet<String>,
+    ) -> Vec<(&'a str, &'a str)> {
+        let mut violations = Vec::new();
+        for entry in &self.entries {
+            for slot in entry.reads.iter().chain(entry.writes.iter()) {
+                if !declared_slots.contains(slot.as_str()) {
+                    violations.push((entry.name.as_str(), slot.as_str()));
+                }
+            }
+        }
+        violations
+    }
 }

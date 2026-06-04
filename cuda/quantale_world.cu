@@ -184,13 +184,15 @@ struct DeviceReceipt {
 
 #define DEVICE_RECEIPT_RING_SIZE 256
 
-// Mailbox used by the hot dispatch path: quantale selects a region, the host
-// (or a persistent kernel) reads pending_region_id, runs the GPU kernel, and
-// the GPU writes back the receipt without a CPU tensor update.
+// Mailbox used by the hot dispatch path: the host fills pending_region_id,
+// src_node, dst_node, and outcome (from JIT exit code), then launches
+// tensor_quantale_gpu_dispatch which writes a DeviceReceipt with the correct
+// outcome — never hard-codes success.
 struct GpuDispatchMailbox {
     int pending_region_id; // -1 = empty
     int src_node;
     int dst_node;
+    int outcome;           // 0=success,1=failure,2=timeout,3=safety_violation
     int dispatched;        // set to 1 by tensor_quantale_gpu_dispatch
 };
 
@@ -994,12 +996,12 @@ extern "C" __global__ void tensor_quantale_gpu_dispatch(
     int slot = tail % ring_size;
 
     DeviceReceipt r;
-    r.region_id   = rid;
-    r.src         = mailbox->src_node;
-    r.dst         = mailbox->dst_node;
-    r.outcome     = 0; // success — JIT kernel ran before this dispatch call
-    r.latency     = 0.0f;
-    r.valid       = 1;
+    r.region_id    = rid;
+    r.src          = mailbox->src_node;
+    r.dst          = mailbox->dst_node;
+    r.outcome      = mailbox->outcome; // propagated from host JIT exit code
+    r.latency      = 0.0f;
+    r.valid        = 1;
     r.output_flags = (1 << rid);
 
     receipt_ring[slot] = r;

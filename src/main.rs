@@ -42,9 +42,11 @@ struct ActiveExecution {
     /// Set when the execution used the GPU hot path: caller must call
     /// `world.gpu_dispatch_region(region_id, src, dst)` followed by
     /// `world.drain_device_receipts()` to fold the receipt into the tensor.
+    #[cfg(feature = "cuda")]
     hot_dispatch: Option<HotDispatchInfo>,
 }
 
+#[cfg(feature = "cuda")]
 struct HotDispatchInfo {
     region_id: u32,
     src: i32,
@@ -1064,8 +1066,13 @@ fn filter_static_topology_edges(
 fn apply_hot_dispatch_if_needed(world: &mut TensorQuantaleWorld, execution: &ActiveExecution) {
     #[cfg(feature = "cuda")]
     if let Some(ref info) = execution.hot_dispatch {
+        let outcome = match execution.receipt.exit_code {
+            0   => 0, // success
+            124 => 2, // timeout
+            _   => 1, // failure
+        };
         let result = world
-            .gpu_dispatch_region(info.region_id as i32, info.src, info.dst)
+            .gpu_dispatch_region(info.region_id as i32, info.src, info.dst, outcome)
             .and_then(|_| world.drain_device_receipts());
         if let Err(err) = result {
             console::warn(
@@ -1079,6 +1086,7 @@ fn apply_hot_dispatch_if_needed(world: &mut TensorQuantaleWorld, execution: &Act
     let _ = (world, execution);
 }
 
+#[cfg(feature = "cuda")]
 fn is_hot_dispatch(node_name: &str, config: &SystemConfig, executor: &UniversalExecutor) -> bool {
     config.hot_region_registry.is_hot(node_name) || executor.is_hot_node(node_name)
 }
@@ -1090,11 +1098,34 @@ fn execute_active_node_blocking(
     active_node_name: &str,
     current_payload: &Value,
 ) -> ActiveExecution {
+    // ── Fusion region path (checked first — takes priority over hot-single dispatch) ──
+    if let Some(entry) = config.fusion_dispatch.get_by_entry(active_node_name) {
+        console::info(
+            "fusion",
+            "dispatch",
+            &[
+                ("entry", active_node_name.to_string()),
+                ("region", entry.region.clone()),
+                ("nodes", entry.nodes.join(" -> ")),
+            ],
+        );
+        let receipt = epoch
+            .executor
+            .execute_fusion_entry_blocking(entry, current_payload);
+        let fusion = build_fusion_logical_advance(entry, decision, epoch.topology.registry());
+        return ActiveExecution {
+            receipt,
+            fusion,
+            #[cfg(feature = "cuda")]
+            hot_dispatch: None,
+        };
+    }
+
     // ── Hot GPU path ──────────────────────────────────────────────────────────
-    // Hot nodes (jit_cuda or registered GPU regions) bypass process-spawning.
-    // The JIT kernel runs on-device; the caller is responsible for calling
-    // world.gpu_dispatch_region() and drain_device_receipts() using the
-    // returned `hot_dispatch` info so the tensor update stays GPU-side.
+    // Hot nodes (jit_cuda or registered GPU regions) that are not covered by a
+    // fusion chain run here. The JIT kernel executes; the caller drives the
+    // device receipt via apply_hot_dispatch_if_needed.
+    #[cfg(feature = "cuda")]
     if is_hot_dispatch(active_node_name, config, &epoch.executor) {
         if let Some(region_id) = config.hot_region_registry.region_id_for(active_node_name) {
             let jit_receipt = epoch
@@ -1112,30 +1143,13 @@ fn execute_active_node_blocking(
         }
     }
 
-    // ── Fusion region path ────────────────────────────────────────────────────
-    if let Some(entry) = config.fusion_dispatch.get_by_entry(active_node_name) {
-        console::info(
-            "fusion",
-            "dispatch",
-            &[
-                ("entry", active_node_name.to_string()),
-                ("region", entry.region.clone()),
-                ("nodes", entry.nodes.join(" -> ")),
-            ],
-        );
-        let receipt = epoch
-            .executor
-            .execute_fusion_entry_blocking(entry, current_payload);
-        let fusion = build_fusion_logical_advance(entry, decision, epoch.topology.registry());
-        return ActiveExecution { receipt, fusion, hot_dispatch: None };
-    }
-
     let receipt = epoch
         .executor
         .execute_abstract_node_blocking(active_node_name, current_payload);
     ActiveExecution {
         receipt,
         fusion: None,
+        #[cfg(feature = "cuda")]
         hot_dispatch: None,
     }
 }

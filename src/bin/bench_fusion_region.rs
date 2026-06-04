@@ -1,21 +1,28 @@
+#[cfg(feature = "cuda")]
 use std::env;
+#[cfg(feature = "cuda")]
 use std::time::{Duration, Instant};
 
+#[cfg(feature = "cuda")]
 use quantale_semiring_v2::{
     FusionDispatch, JitCache, OperatorRegistry, UniversalExecutor, load_operator_registry,
 };
+#[cfg(feature = "cuda")]
 use serde_json::{Value, json};
 
 #[cfg(feature = "cuda")]
 use cudarc::driver::{CudaDevice, LaunchAsync, LaunchConfig};
 
+#[cfg(feature = "cuda")]
 const ANALYSIS_ENTRY: &str = "Analysis::Return1";
+#[cfg(feature = "cuda")]
 const ANALYSIS_CHAIN: [&str; 3] = [
     "Analysis::Return1",
     "Analysis::Volatility",
     "Analysis::SignalScore",
 ];
 
+#[cfg(feature = "cuda")]
 fn parse_iterations() -> usize {
     env::args()
         .nth(1)
@@ -24,6 +31,7 @@ fn parse_iterations() -> usize {
         .unwrap_or(1000)
 }
 
+#[cfg(feature = "cuda")]
 fn analysis_payload() -> Value {
     json!({
         "market.price": [110.0, 120.0, 90.0, 105.0, 101.0, 99.0, 130.0, 80.0],
@@ -31,6 +39,7 @@ fn analysis_payload() -> Value {
     })
 }
 
+#[cfg(feature = "cuda")]
 fn receipt_results(receipt_stdout: &str) -> Result<Vec<f32>, String> {
     let value: Value = serde_json::from_str(receipt_stdout)
         .map_err(|error| format!("parse receipt stdout: {error}: {receipt_stdout}"))?;
@@ -47,6 +56,7 @@ fn receipt_results(receipt_stdout: &str) -> Result<Vec<f32>, String> {
         .collect()
 }
 
+#[cfg(feature = "cuda")]
 fn canonical_once(
     executor: &UniversalExecutor,
     payload: &Value,
@@ -134,10 +144,12 @@ impl FusedRegion {
     }
 }
 
+#[cfg(feature = "cuda")]
 fn duration_ms(duration: Duration) -> f64 {
     duration.as_secs_f64() * 1_000.0
 }
 
+#[cfg(feature = "cuda")]
 fn avg_us(duration: Duration, iterations: usize) -> f64 {
     duration.as_secs_f64() * 1_000_000.0 / iterations as f64
 }
@@ -145,12 +157,7 @@ fn avg_us(duration: Duration, iterations: usize) -> f64 {
 #[cfg(not(feature = "cuda"))]
 fn main() {
     println!(
-        "{}",
-        json!({
-            "status": "skipped",
-            "reason": "cuda feature disabled",
-            "region": ANALYSIS_CHAIN
-        })
+        "{{\"status\":\"skipped\",\"reason\":\"cuda feature disabled\"}}"
     );
 }
 
@@ -158,8 +165,7 @@ fn main() {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let iterations = parse_iterations();
     let payload = analysis_payload();
-    let registry = load_operator_registry("assets/operators.generated.json")
-        .or_else(|_| load_operator_registry("assets/operators.json"))?;
+    let registry = load_operator_registry("assets/operators.generated.json")?;
 
     let setup_start = Instant::now();
     let executor = UniversalExecutor::new(registry.clone());

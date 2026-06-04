@@ -152,6 +152,10 @@ pub struct GpuDispatchMailboxHost {
     pub pending_region_id: i32,
     pub src_node: i32,
     pub dst_node: i32,
+    /// Outcome derived from the JIT kernel exit code: 0=success, 1=failure,
+    /// 2=timeout, 3=safety_violation.  Must be set correctly before launching
+    /// tensor_quantale_gpu_dispatch so the receipt truth is preserved.
+    pub outcome: i32,
     pub dispatched: i32,
 }
 
@@ -701,12 +705,14 @@ impl TensorQuantaleWorld {
         region_id: i32,
         src_node: i32,
         dst_node: i32,
+        outcome: i32,
     ) -> Result<(), CudaError> {
         use crate::tensor::GpuDispatchMailboxHost;
         let mailbox = GpuDispatchMailboxHost {
             pending_region_id: region_id,
             src_node,
             dst_node,
+            outcome,
             dispatched: 0,
         };
         let mailbox_buf = self
