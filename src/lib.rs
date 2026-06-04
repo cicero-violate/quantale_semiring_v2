@@ -24,6 +24,8 @@ pub use batch::*;
 pub use config::*;
 pub use console::*;
 pub use contracts::*;
+#[cfg(feature = "cuda")]
+pub use device_slots::PinnedHostBuffer;
 pub use device_slots::{
     AsyncUploadQueue, DeviceBufferPool, DeviceRingBuffer, DeviceSlot, DeviceSlotRegistry,
     HostStagingBuffer,

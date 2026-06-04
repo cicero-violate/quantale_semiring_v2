@@ -211,10 +211,8 @@ impl FusionDispatch {
             ));
         }
 
-        let chains =
-            crate::jit_kernel_fusion::detect_jit_chains(&nodes, &transient).map_err(|e| {
-                format!("entry_from_ir_pipeline '{}': {e}", pipeline.name)
-            })?;
+        let chains = crate::jit_kernel_fusion::detect_jit_chains(&nodes, &transient)
+            .map_err(|e| format!("entry_from_ir_pipeline '{}': {e}", pipeline.name))?;
 
         if chains.len() != 1 {
             return Err(format!(
@@ -226,8 +224,7 @@ impl FusionDispatch {
         }
 
         let chain = chains.into_iter().next().unwrap();
-        let metadata =
-            crate::jit_kernel_fusion::chain_metadata(&chain, 0);
+        let metadata = crate::jit_kernel_fusion::chain_metadata(&chain, 0);
 
         let reads = pipeline.external_reads();
         let writes = pipeline.external_writes();

@@ -156,9 +156,7 @@ fn avg_us(duration: Duration, iterations: usize) -> f64 {
 
 #[cfg(not(feature = "cuda"))]
 fn main() {
-    println!(
-        "{{\"status\":\"skipped\",\"reason\":\"cuda feature disabled\"}}"
-    );
+    println!("{{\"status\":\"skipped\",\"reason\":\"cuda feature disabled\"}}");
 }
 
 #[cfg(feature = "cuda")]

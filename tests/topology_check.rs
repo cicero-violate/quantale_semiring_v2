@@ -273,6 +273,7 @@ const KNOWN_CONSUMED_BLOCK_POINTS: &[&str] = &[
     "Control::BuildTopologyOverlay",
     "Control::Repair",
     "Event::AnalysisFinished",
+    "Execution::VectorScale", // hot VectorAdd→VectorScale chain adds VectorAdd as an alternate predecessor
     "State::Input",
     "State::Score", // parallel_prepare adds Parse→Score (was only CandidateFound→Score)
     "State::Search", // parallel_prepare adds Map→Search (was only MapReady→Search)

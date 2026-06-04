@@ -119,7 +119,14 @@ fn emit_split_topologies(
     let node_count = nodes.len();
 
     emit_control_topology(root, &hot_set, nodes, transitions)?;
-    emit_hot_topology(root, source, &hot_names_ordered, &hot_set, nodes, node_count)?;
+    emit_hot_topology(
+        root,
+        source,
+        &hot_names_ordered,
+        &hot_set,
+        nodes,
+        node_count,
+    )?;
     emit_hot_regions(root, source_nodes, &hot_set)?;
 
     Ok(())
@@ -233,13 +240,15 @@ fn emit_hot_topology(
     let leaf_edges: Vec<Value> = hot_names_ordered
         .iter()
         .filter(|name| !has_outgoing.contains(*name))
-        .map(|name| serde_json::json!({
-            "from":       name,
-            "to":         "Region::CommitReceipt",
-            "confidence": 1.0,
-            "cost":       0.0,
-            "safety":     1.0
-        }))
+        .map(|name| {
+            serde_json::json!({
+                "from":       name,
+                "to":         "Region::CommitReceipt",
+                "confidence": 1.0,
+                "cost":       0.0,
+                "safety":     1.0
+            })
+        })
         .collect();
     hot_transitions.extend(leaf_edges);
 
@@ -722,9 +731,6 @@ mod tests {
 
         build_overlay_assets(&root).unwrap();
 
-        // topology.fusion.json is only emitted when linear-chain jit_cuda
-        // subgraphs are detected; it is absent when shortcut edges prevent
-        // linear chain fusion (e.g. Return1DirectSignalFallback bypass edge).
         for asset in [
             "topology.generated.json",
             "operators.generated.json",
@@ -732,6 +738,7 @@ mod tests {
             "topology.control.json",
             "topology.hot.json",
             "regions.hot.json",
+            "topology.fusion.json",
         ] {
             assert!(
                 assets.join(asset).exists(),
@@ -743,7 +750,10 @@ mod tests {
         let topology = read_json(assets.join("topology.generated.json")).unwrap();
         assert!(topology.get("quantale").is_some());
         assert!(topology.get("source_version").is_some());
-        let gen_transitions = topology.get("transitions").and_then(Value::as_array).unwrap();
+        let gen_transitions = topology
+            .get("transitions")
+            .and_then(Value::as_array)
+            .unwrap();
         assert!(
             gen_transitions
                 .iter()
@@ -753,47 +763,159 @@ mod tests {
 
         // Split-topology invariants.
         let ctrl = read_json(assets.join("topology.control.json")).unwrap();
-        let hot  = read_json(assets.join("topology.hot.json")).unwrap();
+        let hot = read_json(assets.join("topology.hot.json")).unwrap();
         let regions = read_json(assets.join("regions.hot.json")).unwrap();
+        let fusion = read_json(assets.join("topology.fusion.json")).unwrap();
 
         let ctrl_names: std::collections::HashSet<&str> = ctrl
-            .get("nodes").and_then(Value::as_array).unwrap()
-            .iter().filter_map(|n| n.get("name").and_then(Value::as_str)).collect();
+            .get("nodes")
+            .and_then(Value::as_array)
+            .unwrap()
+            .iter()
+            .filter_map(|n| n.get("name").and_then(Value::as_str))
+            .collect();
         let hot_names: std::collections::HashSet<&str> = hot
-            .get("nodes").and_then(Value::as_array).unwrap()
-            .iter().filter_map(|n| n.get("name").and_then(Value::as_str))
+            .get("nodes")
+            .and_then(Value::as_array)
+            .unwrap()
+            .iter()
+            .filter_map(|n| n.get("name").and_then(Value::as_str))
             .filter(|&n| n != "Region::CommitReceipt")
             .collect();
 
         // Invariant: control ∩ hot = ∅
         let overlap: Vec<&&str> = ctrl_names.intersection(&hot_names).collect();
-        assert!(overlap.is_empty(), "control ∩ hot must be empty; found {overlap:?}");
+        assert!(
+            overlap.is_empty(),
+            "control ∩ hot must be empty; found {overlap:?}"
+        );
 
         // Invariant: hot topology has at least one transition.
         let hot_transitions = hot.get("transitions").and_then(Value::as_array).unwrap();
-        assert!(!hot_transitions.is_empty(), "hot topology must have at least one transition");
+        assert!(
+            !hot_transitions.is_empty(),
+            "hot topology must have at least one transition"
+        );
 
         // Invariant: every hot node (except CommitReceipt) has a region entry.
         let region_names: std::collections::HashSet<&str> = regions
-            .get("regions").and_then(Value::as_array).unwrap()
-            .iter().filter_map(|r| r.get("name").and_then(Value::as_str))
+            .get("regions")
+            .and_then(Value::as_array)
+            .unwrap()
+            .iter()
+            .filter_map(|r| r.get("name").and_then(Value::as_str))
             .filter(|&n| n != "Region::CommitReceipt")
             .collect();
         for name in &hot_names {
-            assert!(region_names.contains(name), "hot node '{name}' missing from regions.hot.json");
+            assert!(
+                region_names.contains(name),
+                "hot node '{name}' missing from regions.hot.json"
+            );
         }
+
+        let fusion_regions = fusion
+            .get("regions")
+            .and_then(Value::as_array)
+            .expect("fusion regions");
+        assert!(
+            fusion_regions.iter().any(|region| {
+                region
+                    .get("nodes")
+                    .and_then(Value::as_array)
+                    .is_some_and(|nodes| {
+                        nodes
+                            == &[
+                                Value::String("Analysis::Return1".to_string()),
+                                Value::String("Analysis::Volatility".to_string()),
+                                Value::String("Analysis::SignalScore".to_string()),
+                            ]
+                    })
+            }),
+            "generated fusion asset must retain the analysis linear chain"
+        );
 
         // Invariant: all hot transitions reference known nodes in hot topology.
         for t in hot_transitions {
             let from = t.get("from").and_then(Value::as_str).unwrap();
-            let to   = t.get("to").and_then(Value::as_str).unwrap();
+            let to = t.get("to").and_then(Value::as_str).unwrap();
             let all_hot: std::collections::HashSet<&str> = hot
-                .get("nodes").and_then(Value::as_array).unwrap()
-                .iter().filter_map(|n| n.get("name").and_then(Value::as_str)).collect();
-            assert!(all_hot.contains(from), "transition 'from' '{from}' not in hot nodes");
-            assert!(all_hot.contains(to),   "transition 'to' '{to}' not in hot nodes");
+                .get("nodes")
+                .and_then(Value::as_array)
+                .unwrap()
+                .iter()
+                .filter_map(|n| n.get("name").and_then(Value::as_str))
+                .collect();
+            assert!(
+                all_hot.contains(from),
+                "transition 'from' '{from}' not in hot nodes"
+            );
+            assert!(
+                all_hot.contains(to),
+                "transition 'to' '{to}' not in hot nodes"
+            );
         }
 
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn build_overlay_is_deterministic() {
+        // Running build_overlay_assets twice on the same source must produce
+        // byte-identical output for every generated artifact.
+        let ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let workspace_assets =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets");
+
+        let make_root = |suffix: &str| {
+            let r = std::env::temp_dir().join(format!(
+                "quantale_det_test_{}_{}_{suffix}",
+                std::process::id(),
+                ts
+            ));
+            let a = r.join("assets");
+            fs::create_dir_all(&a).unwrap();
+            fs::copy(
+                workspace_assets.join("topology.source.json"),
+                a.join("topology.source.json"),
+            )
+            .unwrap();
+            fs::copy(
+                workspace_assets.join("operators.json"),
+                a.join("operators.json"),
+            )
+            .unwrap();
+            r
+        };
+
+        let root1 = make_root("a");
+        let root2 = make_root("b");
+        build_overlay_assets(&root1).expect("first build_overlay run");
+        build_overlay_assets(&root2).expect("second build_overlay run");
+
+        let artifacts = [
+            "topology.generated.json",
+            "operators.generated.json",
+            "topology.control.json",
+            "topology.hot.json",
+            "regions.hot.json",
+            "topology.fusion.json",
+        ];
+
+        for artifact in artifacts {
+            let content1 =
+                fs::read_to_string(root1.join("assets").join(artifact)).unwrap_or_default();
+            let content2 =
+                fs::read_to_string(root2.join("assets").join(artifact)).unwrap_or_default();
+            assert_eq!(
+                content1, content2,
+                "build_overlay_assets must be deterministic for '{artifact}'"
+            );
+        }
+
+        fs::remove_dir_all(root1).unwrap();
+        fs::remove_dir_all(root2).unwrap();
     }
 }

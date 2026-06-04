@@ -29,6 +29,36 @@
       "writes": [
         "analysis.signal_score"
       ]
+    },
+    {
+      "backend": "cuda_jit",
+      "fusion": "linear_chain",
+      "locks": [],
+      "nodes": [
+        "Execution::VectorAdd",
+        "Execution::VectorScale"
+      ],
+      "quantale": {
+        "compose": [
+          "times",
+          "plus",
+          "min"
+        ],
+        "join": [
+          "max",
+          "min",
+          "max"
+        ]
+      },
+      "reads": [
+        "math.a",
+        "math.b",
+        "math.scale"
+      ],
+      "region": "Execution::VectorAdd__Execution::VectorScale",
+      "writes": [
+        "math.out"
+      ]
     }
   ]
 }

@@ -6,6 +6,8 @@ use std::process::{Command, Stdio};
 #[cfg(feature = "cuda")]
 use std::sync::Mutex;
 
+#[cfg(feature = "cuda")]
+pub use crate::device_slots::PinnedHostBuffer;
 pub use crate::device_slots::{AsyncUploadQueue, HostStagingBuffer};
 
 use serde_json::Value;
@@ -91,6 +93,22 @@ impl UniversalExecutor {
             .and_then(|op| op["executable"].as_str())
             .map(|e| e == "jit_cuda")
             .unwrap_or(false)
+    }
+
+    #[cfg(feature = "cuda")]
+    pub fn dispatch_hot_region_with_slots(
+        &self,
+        world: &mut crate::TensorQuantaleWorld,
+        region_id: i32,
+        src_node: i32,
+        dst_node: i32,
+        outcome: i32,
+    ) -> Result<(), crate::CudaError> {
+        let buffers = self
+            .slot_buffers
+            .lock()
+            .map_err(|_| crate::CudaError::invalid_input("slot buffer lock poisoned"))?;
+        world.gpu_dispatch_region_with_slots(&buffers, region_id, src_node, dst_node, outcome)
     }
 
     /// Return the declared `output_mode` for a node operator, if any.
@@ -373,6 +391,16 @@ fn execute_jit_chain_blocking(
     };
     if let Err(error) = launch_result {
         return cuda_err_receipt(node_name, format!("kernel launch failed: {error}"));
+    }
+
+    {
+        let mut buffers = slot_buffers
+            .lock()
+            .map_err(|_| cuda_err_receipt(node_name, "slot buffer lock poisoned"));
+        let Ok(ref mut buffers) = buffers else {
+            return buffers.err().unwrap();
+        };
+        buffers.insert(chain.outputs[0].clone(), dev_out.clone());
     }
 
     let results = match device.dtoh_sync_copy(&dev_out) {

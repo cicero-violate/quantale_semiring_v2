@@ -102,7 +102,9 @@ impl TypedIrOp {
         match self {
             Self::Map { input, .. } | Self::Filter { input, .. } => vec![input.as_str()],
             Self::Reduce { input, .. } => vec![input.as_str()],
-            Self::Join { left, right, key, .. } => {
+            Self::Join {
+                left, right, key, ..
+            } => {
                 vec![left.as_str(), right.as_str(), key.as_str()]
             }
             Self::Sort { input, key, .. } => vec![input.as_str(), key.as_str()],
@@ -208,13 +210,11 @@ pub fn ir_op_to_jit_body(op: &TypedIrOp) -> Result<String, String> {
              `parallel_reduce` in quantale_world.cu)"
                 .into(),
         ),
-        TypedIrOp::Window { body, size, .. } => {
-            Ok(format!(
-                "float acc = 0.0f; \
+        TypedIrOp::Window { body, size, .. } => Ok(format!(
+            "float acc = 0.0f; \
                  for (int w = 0; w < {size} && (i + w) < n; ++w) {{ acc += in0[i + w]; }} \
                  out[i] = {body};"
-            ))
-        }
+        )),
         TypedIrOp::TopK { .. } => Err(
             "TopK cannot be lowered to a scalar element body: requires bitonic sort \
              over the full input (device helper `topk_bitonic` in quantale_world.cu)"
@@ -225,12 +225,8 @@ pub fn ir_op_to_jit_body(op: &TypedIrOp) -> Result<String, String> {
              shared-memory GEMM or a cuBLAS binding"
                 .into(),
         ),
-        TypedIrOp::Embed { dim, .. } => {
-            Ok(format!("out[i] = in0[i / {dim}];"))
-        }
-        TypedIrOp::Verify { predicate, .. } => {
-            Ok(format!("out[i] = ({predicate}) ? 1.0f : 0.0f;"))
-        }
+        TypedIrOp::Embed { dim, .. } => Ok(format!("out[i] = in0[i / {dim}];")),
+        TypedIrOp::Verify { predicate, .. } => Ok(format!("out[i] = ({predicate}) ? 1.0f : 0.0f;")),
         TypedIrOp::Join { .. } => Err(
             "Join cannot be lowered to a scalar element body: requires a device \
              hash table for key-based joining"

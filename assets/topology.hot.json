@@ -53,6 +53,14 @@
   ],
   "transitions": [
     {
+      "confidence": 1.0,
+      "cost": 0.1,
+      "from": "Execution::VectorAdd",
+      "policy_effect": "ChainVectorAddToVectorScale",
+      "safety": 1.0,
+      "to": "Execution::VectorScale"
+    },
+    {
       "confidence": 0.9,
       "cost": 1.0,
       "from": "Analysis::Return1",
@@ -75,13 +83,6 @@
       "policy_effect": "ChainVolatilityToSignalScore",
       "safety": 0.9,
       "to": "Analysis::SignalScore"
-    },
-    {
-      "confidence": 1.0,
-      "cost": 0.0,
-      "from": "Execution::VectorAdd",
-      "safety": 1.0,
-      "to": "Region::CommitReceipt"
     },
     {
       "confidence": 1.0,

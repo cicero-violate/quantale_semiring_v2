@@ -153,8 +153,7 @@ impl SplitTopologyRuntime {
 
         let control_names: HashSet<String> =
             control_doc.nodes.iter().map(|n| n.name.clone()).collect();
-        let hot_names: HashSet<String> =
-            hot_doc.nodes.iter().map(|n| n.name.clone()).collect();
+        let hot_names: HashSet<String> = hot_doc.nodes.iter().map(|n| n.name.clone()).collect();
 
         // Invariant 1: disjoint node sets.
         let overlap: Vec<&str> = control_names
@@ -207,7 +206,9 @@ impl SplitTopologyRuntime {
         }
 
         Ok(Self {
-            control: ControlTopologyRuntime { node_names: control_names },
+            control: ControlTopologyRuntime {
+                node_names: control_names,
+            },
             hot: HotTopologyRuntime {
                 node_names: hot_names,
                 transitions: hot_doc.transitions,

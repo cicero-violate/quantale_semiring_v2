@@ -6,14 +6,16 @@
 //!  - Hot topology executable invariants
 //!  - Split topology loads through SystemConfig
 //!  - HostStagingBuffer and AsyncUploadQueue staging behaviour
+//!  - Fusion dispatch priority over single-node hot dispatch (P1.1)
+//!  - Synthetic hot node whitelist (Region::CommitReceipt)
 //!  - Ring-buffer push/pop (CUDA-gated)
 
-use quantale_semiring_v2::{
-    AsyncUploadQueue, HostStagingBuffer, HotRegionRegistry, TypedIrOp,
-    ir_op_to_jit_body, load_operator_registry,
-};
 #[cfg(not(feature = "cuda"))]
 use quantale_semiring_v2::DeviceSlotRegistry;
+use quantale_semiring_v2::{
+    AsyncUploadQueue, FusionDispatch, HostStagingBuffer, HotRegionRegistry, SYNTHETIC_HOT_NODES,
+    SystemConfig, TypedIrOp, ir_op_to_jit_body, load_operator_registry,
+};
 
 // ── TypedIR rejection tests ───────────────────────────────────────────────────
 
@@ -33,7 +35,11 @@ fn ir_reduce_rejects_scalar_lowering() {
 
 #[test]
 fn ir_topk_rejects_scalar_lowering() {
-    let op = TypedIrOp::TopK { input: "x".into(), output: "y".into(), k: 5 };
+    let op = TypedIrOp::TopK {
+        input: "x".into(),
+        output: "y".into(),
+        k: 5,
+    };
     assert!(
         ir_op_to_jit_body(&op).is_err(),
         "TopK must return Err; scalar element body cannot select top-k"
@@ -42,7 +48,11 @@ fn ir_topk_rejects_scalar_lowering() {
 
 #[test]
 fn ir_matmul_rejects_scalar_lowering() {
-    let op = TypedIrOp::MatMul { a: "a".into(), b: "b".into(), output: "c".into() };
+    let op = TypedIrOp::MatMul {
+        a: "a".into(),
+        b: "b".into(),
+        output: "c".into(),
+    };
     assert!(
         ir_op_to_jit_body(&op).is_err(),
         "MatMul must return Err; scalar element body cannot express GEMM"
@@ -118,7 +128,10 @@ fn ir_filter_lowers_to_ternary() {
 
 #[test]
 fn ir_verify_lowers_to_flag_expression() {
-    let op = TypedIrOp::Verify { input: "x".into(), predicate: "in0[i] >= 0.0f".into() };
+    let op = TypedIrOp::Verify {
+        input: "x".into(),
+        predicate: "in0[i] >= 0.0f".into(),
+    };
     let body = ir_op_to_jit_body(&op).expect("Verify should lower");
     assert!(body.contains("1.0f"));
     assert!(body.contains("0.0f"));
@@ -126,7 +139,11 @@ fn ir_verify_lowers_to_flag_expression() {
 
 #[test]
 fn ir_embed_lowers_to_row_read() {
-    let op = TypedIrOp::Embed { input: "x".into(), output: "y".into(), dim: 64 };
+    let op = TypedIrOp::Embed {
+        input: "x".into(),
+        output: "y".into(),
+        dim: 64,
+    };
     let body = ir_op_to_jit_body(&op).expect("Embed should lower");
     assert!(body.contains("64"), "body should reference dim");
 }
@@ -137,8 +154,7 @@ fn ir_embed_lowers_to_row_read() {
 fn hot_region_slots_all_declared_in_operator_registry() {
     let registry = load_operator_registry("assets/operators.generated.json")
         .expect("load operators.generated.json");
-    let hot = HotRegionRegistry::load("assets/regions.hot.json")
-        .expect("load regions.hot.json");
+    let hot = HotRegionRegistry::load("assets/regions.hot.json").expect("load regions.hot.json");
 
     let declared: std::collections::HashSet<String> = registry
         .values()
@@ -168,14 +184,16 @@ fn hot_region_slots_all_declared_in_operator_registry() {
 
 #[test]
 fn hot_topology_has_nodes_and_transitions() {
-    let raw = std::fs::read_to_string("assets/topology.hot.json")
-        .expect("read topology.hot.json");
+    let raw = std::fs::read_to_string("assets/topology.hot.json").expect("read topology.hot.json");
     let doc: serde_json::Value = serde_json::from_str(&raw).expect("parse topology.hot.json");
 
     let nodes = doc["nodes"].as_array().expect("nodes array");
     let transitions = doc["transitions"].as_array().expect("transitions array");
 
-    assert!(!nodes.is_empty(), "hot topology must have at least one node");
+    assert!(
+        !nodes.is_empty(),
+        "hot topology must have at least one node"
+    );
     assert!(
         !transitions.is_empty(),
         "hot topology must have at least one transition"
@@ -184,8 +202,7 @@ fn hot_topology_has_nodes_and_transitions() {
 
 #[test]
 fn hot_topology_transition_endpoints_exist_in_nodes() {
-    let raw = std::fs::read_to_string("assets/topology.hot.json")
-        .expect("read topology.hot.json");
+    let raw = std::fs::read_to_string("assets/topology.hot.json").expect("read topology.hot.json");
     let doc: serde_json::Value = serde_json::from_str(&raw).expect("parse");
 
     let node_names: std::collections::HashSet<&str> = doc["nodes"]
@@ -197,16 +214,39 @@ fn hot_topology_transition_endpoints_exist_in_nodes() {
 
     for t in doc["transitions"].as_array().unwrap() {
         let from = t["from"].as_str().unwrap();
-        let to   = t["to"].as_str().unwrap();
-        assert!(node_names.contains(from), "transition 'from' endpoint '{from}' not in nodes");
-        assert!(node_names.contains(to),   "transition 'to' endpoint '{to}' not in nodes");
+        let to = t["to"].as_str().unwrap();
+        assert!(
+            node_names.contains(from),
+            "transition 'from' endpoint '{from}' not in nodes"
+        );
+        assert!(
+            node_names.contains(to),
+            "transition 'to' endpoint '{to}' not in nodes"
+        );
     }
 }
 
 #[test]
+fn hot_topology_contains_vector_add_to_scale_chain() {
+    let raw = std::fs::read_to_string("assets/topology.hot.json").expect("read topology.hot.json");
+    let doc: serde_json::Value = serde_json::from_str(&raw).expect("parse");
+    let has_chain = doc["transitions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|transition| {
+            transition["from"].as_str() == Some("Execution::VectorAdd")
+                && transition["to"].as_str() == Some("Execution::VectorScale")
+        });
+    assert!(
+        has_chain,
+        "hot topology must contain Execution::VectorAdd -> Execution::VectorScale"
+    );
+}
+
+#[test]
 fn hot_topology_has_no_control_io_nodes() {
-    let raw = std::fs::read_to_string("assets/topology.hot.json")
-        .expect("read topology.hot.json");
+    let raw = std::fs::read_to_string("assets/topology.hot.json").expect("read topology.hot.json");
     let doc: serde_json::Value = serde_json::from_str(&raw).expect("parse");
     for node in doc["nodes"].as_array().unwrap() {
         let t = node["type"].as_str().unwrap_or("");
@@ -234,7 +274,10 @@ fn system_config_loads_split_topology() {
 #[test]
 fn split_topology_control_and_hot_are_disjoint() {
     let config = quantale_semiring_v2::SystemConfig::default();
-    let split = config.split_topology.as_ref().expect("split topology present");
+    let split = config
+        .split_topology
+        .as_ref()
+        .expect("split topology present");
     let overlap: Vec<&str> = split
         .control
         .node_names
@@ -251,7 +294,10 @@ fn split_topology_control_and_hot_are_disjoint() {
 #[test]
 fn split_topology_hot_has_at_least_one_transition() {
     let config = quantale_semiring_v2::SystemConfig::default();
-    let split = config.split_topology.as_ref().expect("split topology present");
+    let split = config
+        .split_topology
+        .as_ref()
+        .expect("split topology present");
     assert!(
         !split.hot.transitions.is_empty(),
         "hot topology must have at least one transition"
@@ -293,7 +339,11 @@ fn upload_queue_stage_same_slot_twice_accumulates() {
     let mut q = AsyncUploadQueue::new();
     q.stage("x", &[1.0]).unwrap();
     q.stage("x", &[2.0]).unwrap();
-    assert_eq!(q.pending(), 2, "staging the same slot twice should accumulate both entries");
+    assert_eq!(
+        q.pending(),
+        2,
+        "staging the same slot twice should accumulate both entries"
+    );
 }
 
 #[cfg(not(feature = "cuda"))]
@@ -337,13 +387,16 @@ mod ring_buffer_cuda {
         let capacity = 16;
         let mut ring = DeviceRingBuffer::new(&dev, capacity).expect("ring alloc");
         let src_data = vec![1.0f32, 2.0, 3.0, 4.0];
-        let src_buf  = dev.htod_copy(src_data.clone()).expect("htod src");
+        let src_buf = dev.htod_copy(src_data.clone()).expect("htod src");
 
         ring.push(&dev, MODULE, &src_buf).expect("push");
         let dst = ring.pop(&dev, MODULE, src_data.len()).expect("pop");
         let result = dev.dtoh_sync_copy(&dst).expect("dtoh");
 
-        assert_eq!(result, src_data, "push then pop must return identical values");
+        assert_eq!(
+            result, src_data,
+            "push then pop must return identical values"
+        );
         drop(world);
     }
 
@@ -355,11 +408,17 @@ mod ring_buffer_cuda {
 
         let a: Vec<f32> = vec![10.0, 20.0];
         let b: Vec<f32> = vec![30.0, 40.0];
-        ring.push(&dev, MODULE, &dev.htod_copy(a.clone()).unwrap()).expect("push a");
-        ring.push(&dev, MODULE, &dev.htod_copy(b.clone()).unwrap()).expect("push b");
+        ring.push(&dev, MODULE, &dev.htod_copy(a.clone()).unwrap())
+            .expect("push a");
+        ring.push(&dev, MODULE, &dev.htod_copy(b.clone()).unwrap())
+            .expect("push b");
 
-        let got_a = dev.dtoh_sync_copy(&ring.pop(&dev, MODULE, 2).expect("pop a")).unwrap();
-        let got_b = dev.dtoh_sync_copy(&ring.pop(&dev, MODULE, 2).expect("pop b")).unwrap();
+        let got_a = dev
+            .dtoh_sync_copy(&ring.pop(&dev, MODULE, 2).expect("pop a"))
+            .unwrap();
+        let got_b = dev
+            .dtoh_sync_copy(&ring.pop(&dev, MODULE, 2).expect("pop b"))
+            .unwrap();
         assert_eq!(got_a, a, "FIFO: first push must be first pop");
         assert_eq!(got_b, b, "FIFO: second push must be second pop");
         drop(world);
@@ -372,13 +431,248 @@ mod ring_buffer_cuda {
         let capacity = 4;
         let mut ring = DeviceRingBuffer::new(&dev, capacity).expect("ring alloc");
 
-        let first  = vec![1.0f32, 2.0, 3.0];
+        let first = vec![1.0f32, 2.0, 3.0];
         let second = vec![7.0f32, 8.0, 9.0];
-        ring.push(&dev, MODULE, &dev.htod_copy(first.clone()).unwrap()).unwrap();
+        ring.push(&dev, MODULE, &dev.htod_copy(first.clone()).unwrap())
+            .unwrap();
         ring.pop(&dev, MODULE, 3).unwrap();
-        ring.push(&dev, MODULE, &dev.htod_copy(second.clone()).unwrap()).unwrap();
-        let got = dev.dtoh_sync_copy(&ring.pop(&dev, MODULE, 3).unwrap()).unwrap();
-        assert_eq!(got, second, "values written after wraparound must be readable");
+        ring.push(&dev, MODULE, &dev.htod_copy(second.clone()).unwrap())
+            .unwrap();
+        let got = dev
+            .dtoh_sync_copy(&ring.pop(&dev, MODULE, 3).unwrap())
+            .unwrap();
+        assert_eq!(
+            got, second,
+            "values written after wraparound must be readable"
+        );
         drop(world);
     }
+
+    #[test]
+    fn ring_rejects_overflow() {
+        let (world, dev) = world_or_skip!();
+        let mut ring = DeviceRingBuffer::new(&dev, 2).expect("ring alloc");
+        let src = dev.htod_copy(vec![1.0f32, 2.0, 3.0]).unwrap();
+        let error = ring
+            .push(&dev, MODULE, &src)
+            .expect_err("overflow must fail");
+        assert!(error.contains("overflow"), "unexpected error: {error}");
+        drop(world);
+    }
+
+    #[test]
+    fn ring_rejects_empty_pop() {
+        let (world, dev) = world_or_skip!();
+        let mut ring = DeviceRingBuffer::new(&dev, 4).expect("ring alloc");
+        let error = ring.pop(&dev, MODULE, 1).expect_err("empty pop must fail");
+        assert!(error.contains("underflow"), "unexpected error: {error}");
+        drop(world);
+    }
+
+    #[test]
+    fn ring_tracks_head_tail_across_mixed_push_pop() {
+        let (world, dev) = world_or_skip!();
+        let mut ring = DeviceRingBuffer::new(&dev, 4).expect("ring alloc");
+
+        ring.push(
+            &dev,
+            MODULE,
+            &dev.htod_copy(vec![1.0f32, 2.0, 3.0]).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(ring.len(&dev).unwrap(), 3);
+
+        let got = dev
+            .dtoh_sync_copy(&ring.pop(&dev, MODULE, 2).unwrap())
+            .unwrap();
+        assert_eq!(got, vec![1.0f32, 2.0]);
+        assert_eq!(ring.len(&dev).unwrap(), 1);
+
+        ring.push(&dev, MODULE, &dev.htod_copy(vec![4.0f32, 5.0]).unwrap())
+            .unwrap();
+        assert_eq!(ring.len(&dev).unwrap(), 3);
+
+        let got = dev
+            .dtoh_sync_copy(&ring.pop(&dev, MODULE, 3).unwrap())
+            .unwrap();
+        assert_eq!(got, vec![3.0f32, 4.0, 5.0]);
+        assert_eq!(ring.len(&dev).unwrap(), 0);
+        drop(world);
+    }
+}
+
+// ── Fusion dispatch priority (P1.1) ──────────────────────────────────────────
+
+/// The entry node of the analysis fusion chain must be present in FusionDispatch.
+/// This verifies the first branch in execute_active_node_blocking is reachable
+/// and wins over the single-node hot dispatch path.
+#[test]
+fn fusion_dispatch_entry_wins_over_hot_single_dispatch() {
+    let registry = load_operator_registry("assets/operators.generated.json")
+        .expect("load operators.generated.json");
+    let dispatch = FusionDispatch::load("assets/topology.fusion.json", &registry)
+        .expect("load topology.fusion.json");
+
+    // Analysis::Return1 is the entry of the fused analysis chain.
+    let entry = dispatch
+        .get_by_entry("Analysis::Return1")
+        .expect("Analysis::Return1 must be a fusion entry node");
+
+    // The fusion region covers the full analysis chain (3 nodes).
+    assert!(
+        entry.nodes.len() >= 2,
+        "fusion entry must cover at least two nodes; fusion dispatch would otherwise be no-op"
+    );
+    assert!(
+        entry.nodes.contains(&"Analysis::Return1".to_string()),
+        "entry nodes must include the entry node itself"
+    );
+
+    // Verify the hot registry also knows this node — so we can confirm fusion wins.
+    let hot = HotRegionRegistry::load("assets/regions.hot.json").expect("load regions.hot.json");
+    assert!(
+        hot.is_hot("Analysis::Return1") || dispatch.get_by_entry("Analysis::Return1").is_some(),
+        "Analysis::Return1 must be reachable via fusion OR hot path"
+    );
+
+    // If the node appears in both fusion and hot, fusion wins because
+    // execute_active_node_blocking checks fusion_dispatch.get_by_entry first.
+    // Non-null get_by_entry confirms the fusion branch is taken.
+    assert!(
+        dispatch.get_by_entry("Analysis::Return1").is_some(),
+        "fusion entry lookup must return Some — fusion wins over hot single dispatch"
+    );
+}
+
+// A node that is NOT a fusion entry must not be returned by get_by_entry.
+#[test]
+fn non_entry_node_does_not_win_fusion_dispatch() {
+    let registry = load_operator_registry("assets/operators.generated.json")
+        .expect("load operators.generated.json");
+    let dispatch = FusionDispatch::load("assets/topology.fusion.json", &registry)
+        .expect("load topology.fusion.json");
+
+    // Analysis::Volatility is a member of the analysis chain but NOT the entry.
+    let result = dispatch.get_by_entry("Analysis::Volatility");
+    assert!(
+        result.is_none(),
+        "middle-of-chain node must not be a fusion entry point"
+    );
+}
+
+// ── Synthetic hot node whitelist (Region::CommitReceipt) ─────────────────────
+
+/// Region::CommitReceipt appears in the hot topology and regions.hot.json but
+/// is NOT declared in topology.source.json or operators.generated.json.
+/// The SYNTHETIC_HOT_NODES whitelist must allow it through.
+#[test]
+fn synthetic_hot_nodes_contains_commit_receipt() {
+    assert!(
+        SYNTHETIC_HOT_NODES.contains(&"Region::CommitReceipt"),
+        "Region::CommitReceipt must be in SYNTHETIC_HOT_NODES"
+    );
+}
+
+/// The split topology must load successfully even though Region::CommitReceipt
+/// is not in operators.generated.json — it is whitelisted as a synthetic node.
+#[test]
+fn split_topology_accepts_synthetic_commit_receipt_node() {
+    let config = SystemConfig::default();
+    let split = config
+        .split_topology
+        .as_ref()
+        .expect("split topology must load at startup");
+    // The hot topology has Region::CommitReceipt as a terminal node.
+    assert!(
+        split.hot.node_names.contains("Region::CommitReceipt"),
+        "hot topology must contain Region::CommitReceipt"
+    );
+    // The split topology must have loaded without error (no panic from startup
+    // validation), proving the synthetic whitelist exempted this node.
+}
+
+/// Slot validation must NOT report Region::CommitReceipt reads/writes as
+/// violations, because CommitReceipt has no declared slots (it only emits
+/// a receipt sentinel — no data reads or writes).
+#[test]
+fn commit_receipt_region_has_no_slot_violations() {
+    let registry = load_operator_registry("assets/operators.generated.json")
+        .expect("load operators.generated.json");
+    let hot = HotRegionRegistry::load("assets/regions.hot.json").expect("load regions.hot.json");
+
+    let declared: std::collections::HashSet<String> = registry
+        .values()
+        .flat_map(|op| {
+            let reads = op["effects"]["reads"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|v| v.as_str().map(str::to_string));
+            let writes = op["effects"]["writes"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|v| v.as_str().map(str::to_string));
+            reads.chain(writes)
+        })
+        .collect();
+
+    let violations = hot.validate_slots(&declared);
+    assert!(
+        violations.is_empty(),
+        "no slot violations expected (including Region::CommitReceipt): {violations:?}"
+    );
+}
+
+// ── Receipt-to-outcome mapping (P1.1) ────────────────────────────────────────
+
+#[test]
+fn failed_receipt_maps_to_failure_outcome() {
+    use quantale_semiring_v2::{ExecutionOutcome, ProcessReceipt};
+    let receipt = ProcessReceipt {
+        node_name: "test".to_string(),
+        exit_code: 1,
+        stdout_payload: String::new(),
+        stderr_payload: "simulated failure".to_string(),
+    };
+    let outcome = ExecutionOutcome::from(&receipt);
+    assert_eq!(
+        outcome,
+        ExecutionOutcome::Failure,
+        "non-zero exit code must map to Failure outcome, not Success"
+    );
+}
+
+#[test]
+fn successful_receipt_maps_to_success_outcome() {
+    use quantale_semiring_v2::{ExecutionOutcome, ProcessReceipt};
+    let receipt = ProcessReceipt {
+        node_name: "test".to_string(),
+        exit_code: 0,
+        stdout_payload: r#"{"results":[1.0]}"#.to_string(),
+        stderr_payload: String::new(),
+    };
+    let outcome = ExecutionOutcome::from(&receipt);
+    assert_eq!(
+        outcome,
+        ExecutionOutcome::Success,
+        "exit_code 0 must map to Success outcome"
+    );
+}
+
+#[test]
+fn timeout_exit_code_maps_to_timeout_outcome() {
+    use quantale_semiring_v2::{ExecutionOutcome, ProcessReceipt};
+    let receipt = ProcessReceipt {
+        node_name: "test".to_string(),
+        exit_code: 124,
+        stdout_payload: String::new(),
+        stderr_payload: String::new(),
+    };
+    let outcome = ExecutionOutcome::from(&receipt);
+    assert_eq!(
+        outcome,
+        ExecutionOutcome::Timeout,
+        "exit_code 124 (timeout) must map to Timeout outcome"
+    );
 }

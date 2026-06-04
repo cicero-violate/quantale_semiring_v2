@@ -194,6 +194,9 @@ fn build_adj(
         fusible.keys().map(|k| (k.clone(), vec![])).collect();
 
     for t in transitions {
+        if is_fallback_transition(t) {
+            continue;
+        }
         let from = t.get("from").and_then(Value::as_str).unwrap_or("");
         let to = t.get("to").and_then(Value::as_str).unwrap_or("");
         if fusible.contains_key(from) && fusible.contains_key(to) {
@@ -209,6 +212,13 @@ fn build_adj(
     }
 
     (adj_out, adj_in)
+}
+
+fn is_fallback_transition(t: &Value) -> bool {
+    t.get("policy_effect")
+        .and_then(Value::as_str)
+        .map(|effect| effect.contains("Fallback"))
+        .unwrap_or(false)
 }
 
 /// Find connected components via DFS on the undirected view of the graph.
@@ -369,6 +379,17 @@ mod tests {
         json!({ "from": from, "to": to, "confidence": 0.9, "cost": 1.0, "safety": 0.9 })
     }
 
+    fn fallback_trans(from: &str, to: &str) -> Value {
+        json!({
+            "from": from,
+            "to": to,
+            "policy_effect": "DirectFallback",
+            "confidence": 0.5,
+            "cost": 2.0,
+            "safety": 0.8
+        })
+    }
+
     #[test]
     fn empty_source_produces_no_regions() {
         let src = json!({ "nodes": [] });
@@ -503,6 +524,23 @@ mod tests {
         ]));
         let ts = vec![trans("K::A", "K::B"), trans("K::A", "K::C")];
         assert!(partition_fusible_regions(&src, &ts).is_empty());
+    }
+
+    #[test]
+    fn fallback_edge_does_not_break_linear_chain() {
+        let src = source_with_kernels(json!([
+            cuda_kernel("K::A", &["a"], &["b"]),
+            cuda_kernel("K::B", &["b"], &["c"]),
+            cuda_kernel("K::C", &["c"], &["d"])
+        ]));
+        let ts = vec![
+            trans("K::A", "K::B"),
+            fallback_trans("K::A", "K::C"),
+            trans("K::B", "K::C"),
+        ];
+        let regions = partition_fusible_regions(&src, &ts);
+        assert_eq!(regions.len(), 1);
+        assert_eq!(regions[0].nodes, vec!["K::A", "K::B", "K::C"]);
     }
 
     #[test]

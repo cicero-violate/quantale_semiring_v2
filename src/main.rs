@@ -397,7 +397,7 @@ fn main() {
             );
             let process_receipt = &execution.receipt;
             let outcome = ExecutionOutcome::from(process_receipt);
-            apply_hot_dispatch_if_needed(&mut epoch.world, &execution);
+            apply_hot_dispatch_if_needed(&mut epoch.world, &epoch.executor, &execution);
             queue_execution_lattice_updates(&mut epoch.world, &decision, &execution, outcome);
             update_execution_receipt_priors(
                 &mut epoch.exploration_engine,
@@ -898,7 +898,7 @@ fn main() {
         );
         let process_receipt = &execution.receipt;
         let outcome = ExecutionOutcome::from(process_receipt);
-        apply_hot_dispatch_if_needed(&mut epoch.world, &execution);
+        apply_hot_dispatch_if_needed(&mut epoch.world, &epoch.executor, &execution);
 
         console::info(
             "operator",
@@ -1063,16 +1063,26 @@ fn filter_static_topology_edges(
 
 /// If the execution used the GPU hot path, write a device receipt and drain it
 /// into the quantale tensor.  No-ops for control/IO executions.
-fn apply_hot_dispatch_if_needed(world: &mut TensorQuantaleWorld, execution: &ActiveExecution) {
+fn apply_hot_dispatch_if_needed(
+    world: &mut TensorQuantaleWorld,
+    executor: &UniversalExecutor,
+    execution: &ActiveExecution,
+) {
     #[cfg(feature = "cuda")]
     if let Some(ref info) = execution.hot_dispatch {
         let outcome = match execution.receipt.exit_code {
-            0   => 0, // success
+            0 => 0,   // success
             124 => 2, // timeout
-            _   => 1, // failure
+            _ => 1,   // failure
         };
-        let result = world
-            .gpu_dispatch_region(info.region_id as i32, info.src, info.dst, outcome)
+        let result = executor
+            .dispatch_hot_region_with_slots(
+                world,
+                info.region_id as i32,
+                info.src,
+                info.dst,
+                outcome,
+            )
             .and_then(|_| world.drain_device_receipts());
         if let Err(err) = result {
             console::warn(
@@ -1083,12 +1093,18 @@ fn apply_hot_dispatch_if_needed(world: &mut TensorQuantaleWorld, execution: &Act
         }
     }
     #[cfg(not(feature = "cuda"))]
-    let _ = (world, execution);
+    let _ = (world, executor, execution);
 }
 
 #[cfg(feature = "cuda")]
 fn is_hot_dispatch(node_name: &str, config: &SystemConfig, executor: &UniversalExecutor) -> bool {
-    config.hot_region_registry.is_hot(node_name) || executor.is_hot_node(node_name)
+    config
+        .split_topology
+        .as_ref()
+        .map(|split| split.hot.contains(node_name))
+        .unwrap_or_else(|| {
+            config.hot_region_registry.is_hot(node_name) || executor.is_hot_node(node_name)
+        })
 }
 
 fn execute_active_node_blocking(

@@ -101,6 +101,67 @@ impl DeviceSlotRegistry {
     pub fn iter(&self) -> impl Iterator<Item = (&DeviceSlot, &cudarc::driver::CudaSlice<f32>)> {
         self.slots.values().map(|(slot, buf)| (slot, buf))
     }
+
+    /// Build a device-resident `float**` pointer table for `slot_names`.
+    ///
+    /// The returned slice contains CUDA device addresses for the named f32
+    /// slots in exactly the requested order. All slots must exist, be f32, and
+    /// have the same element count because the hot-region kernels run one
+    /// element loop length across every read/write slot.
+    pub fn device_slot_ptr_table(
+        &self,
+        dev: &std::sync::Arc<cudarc::driver::CudaDevice>,
+        slot_names: &[&str],
+    ) -> Result<
+        (
+            cudarc::driver::CudaSlice<cudarc::driver::sys::CUdeviceptr>,
+            i32,
+        ),
+        String,
+    > {
+        use cudarc::driver::{DevicePtr, DeviceSlice};
+
+        let mut ptrs = Vec::with_capacity(slot_names.len());
+        let mut element_count: Option<usize> = None;
+
+        for &name in slot_names {
+            let (slot, buf) = self
+                .slots
+                .get(name)
+                .ok_or_else(|| format!("missing device slot '{name}'"))?;
+            if slot.dtype != "f32" {
+                return Err(format!(
+                    "device slot '{name}' has dtype '{}', expected f32",
+                    slot.dtype
+                ));
+            }
+            let len = buf.len();
+            if len == 0 {
+                return Err(format!("device slot '{name}' is empty"));
+            }
+            match element_count {
+                Some(expected) if expected != len => {
+                    return Err(format!(
+                        "device slot '{name}' has len {len}, expected {expected}"
+                    ));
+                }
+                None => element_count = Some(len),
+                _ => {}
+            }
+            ptrs.push(*buf.device_ptr());
+        }
+
+        let element_count = element_count.unwrap_or(0);
+        if element_count > i32::MAX as usize {
+            return Err(format!(
+                "slot element count {element_count} exceeds i32::MAX"
+            ));
+        }
+        let ptr_table = dev
+            .htod_copy(ptrs)
+            .map_err(|e| format!("DeviceSlotRegistry pointer table htod_copy: {e}"))?;
+        Ok((ptr_table, element_count as i32))
+    }
 }
 
 #[cfg(not(feature = "cuda"))]
@@ -111,6 +172,20 @@ pub struct DeviceSlotRegistry;
 impl DeviceSlotRegistry {
     pub fn new() -> Self {
         Self
+    }
+
+    pub fn device_slot_ptr_table(
+        &self,
+        _dev: &std::sync::Arc<cudarc::driver::CudaDevice>,
+        _slot_names: &[&str],
+    ) -> Result<
+        (
+            cudarc::driver::CudaSlice<cudarc::driver::sys::CUdeviceptr>,
+            i32,
+        ),
+        String,
+    > {
+        Err("DeviceSlotRegistry pointer tables require the cuda feature".to_string())
     }
 }
 
@@ -198,7 +273,41 @@ impl DeviceRingBuffer {
         let tail = dev
             .htod_copy(vec![0i32])
             .map_err(|e| format!("DeviceRingBuffer tail alloc: {e}"))?;
-        Ok(Self { data, head, tail, capacity })
+        Ok(Self {
+            data,
+            head,
+            tail,
+            capacity,
+        })
+    }
+
+    fn indices(
+        &self,
+        dev: &std::sync::Arc<cudarc::driver::CudaDevice>,
+    ) -> Result<(i32, i32), String> {
+        let head = dev
+            .dtoh_sync_copy(&self.head)
+            .map_err(|e| format!("DeviceRingBuffer head read: {e}"))?
+            .first()
+            .copied()
+            .ok_or_else(|| "DeviceRingBuffer head missing".to_string())?;
+        let tail = dev
+            .dtoh_sync_copy(&self.tail)
+            .map_err(|e| format!("DeviceRingBuffer tail read: {e}"))?
+            .first()
+            .copied()
+            .ok_or_else(|| "DeviceRingBuffer tail missing".to_string())?;
+        Ok((head, tail))
+    }
+
+    pub fn len(&self, dev: &std::sync::Arc<cudarc::driver::CudaDevice>) -> Result<usize, String> {
+        let (head, tail) = self.indices(dev)?;
+        if tail < head {
+            return Err(format!(
+                "DeviceRingBuffer invalid indices: head={head} tail={tail}"
+            ));
+        }
+        Ok((tail - head) as usize)
     }
 
     /// Push `src` into the ring using the GPU-side `device_ring_push` kernel.
@@ -215,7 +324,24 @@ impl DeviceRingBuffer {
         if n == 0 {
             return Ok(());
         }
-        let cfg = LaunchConfig { grid_dim: (1, 1, 1), block_dim: (1, 1, 1), shared_mem_bytes: 0 };
+        if n as usize > self.capacity {
+            return Err(format!(
+                "DeviceRingBuffer overflow: push len {n} exceeds capacity {}",
+                self.capacity
+            ));
+        }
+        let used = self.len(dev)?;
+        let available = self.capacity.saturating_sub(used);
+        if n as usize > available {
+            return Err(format!(
+                "DeviceRingBuffer overflow: push len {n} exceeds available {available}"
+            ));
+        }
+        let cfg = LaunchConfig {
+            grid_dim: (1, 1, 1),
+            block_dim: (1, 1, 1),
+            shared_mem_bytes: 0,
+        };
         let cap = self.capacity as i32;
         let kernel = dev
             .get_func(module, "device_ring_push")
@@ -233,10 +359,20 @@ impl DeviceRingBuffer {
     ) -> Result<cudarc::driver::CudaSlice<f32>, String> {
         use cudarc::driver::LaunchAsync;
         use cudarc::driver::LaunchConfig;
+        let used = self.len(dev)?;
+        if n > used {
+            return Err(format!(
+                "DeviceRingBuffer underflow: pop len {n} exceeds available {used}"
+            ));
+        }
         let dst = dev
             .htod_copy(vec![0.0f32; n])
             .map_err(|e| format!("DeviceRingBuffer pop alloc: {e}"))?;
-        let cfg = LaunchConfig { grid_dim: (1, 1, 1), block_dim: (1, 1, 1), shared_mem_bytes: 0 };
+        let cfg = LaunchConfig {
+            grid_dim: (1, 1, 1),
+            block_dim: (1, 1, 1),
+            shared_mem_bytes: 0,
+        };
         let cap = self.capacity as i32;
         let ni32 = n as i32;
         let kernel = dev
@@ -259,15 +395,9 @@ impl DeviceRingBuffer {
     }
 }
 
-// ── Staged ingress pipeline ───────────────────────────────────────────────────
+// ── Ingress pipeline ──────────────────────────────────────────────────────────
 
 /// Host-side staging buffer for CPU→GPU data upload.
-///
-/// Uses a regular heap `Vec<f32>`.  This is a *staging* buffer, not a
-/// page-locked (pinned) allocation — true pinned memory would require
-/// `cudaMallocHost` / `cudaHostRegister` and avoids the intermediate DMA
-/// bounce buffer.  If low-latency H2D transfer matters, replace the `Vec`
-/// with a `cudaMallocHost` allocation via the `cuda-sys` crate.
 pub struct HostStagingBuffer {
     pub data: Vec<f32>,
 }
@@ -286,19 +416,97 @@ impl HostStagingBuffer {
     }
 }
 
-/// Staged upload queue: accumulates CPU data and copies it to the device
-/// slot registry in one `flush` call.
+#[cfg(feature = "cuda")]
+pub struct PinnedHostBuffer {
+    ptr: std::ptr::NonNull<f32>,
+    len: usize,
+}
+
+#[cfg(feature = "cuda")]
+unsafe impl Send for PinnedHostBuffer {}
+
+#[cfg(feature = "cuda")]
+impl PinnedHostBuffer {
+    pub fn from_slice(src: &[f32]) -> Result<Self, String> {
+        use cudarc::driver::sys;
+        use std::ffi::c_void;
+
+        let byte_len = std::mem::size_of_val(src);
+        let alloc_len = byte_len.max(1);
+        let mut raw: *mut c_void = std::ptr::null_mut();
+        unsafe {
+            sys::lib()
+                .cuMemHostAlloc(&mut raw, alloc_len, sys::CU_MEMHOSTALLOC_PORTABLE)
+                .result()
+                .map_err(|e| format!("cuMemHostAlloc: {e:?}"))?;
+        }
+        let ptr = std::ptr::NonNull::new(raw.cast::<f32>())
+            .ok_or_else(|| "cuMemHostAlloc returned null".to_string())?;
+        if !src.is_empty() {
+            unsafe {
+                std::ptr::copy_nonoverlapping(src.as_ptr(), ptr.as_ptr(), src.len());
+            }
+        }
+        Ok(Self {
+            ptr,
+            len: src.len(),
+        })
+    }
+
+    pub fn as_slice(&self) -> &[f32] {
+        unsafe { std::slice::from_raw_parts(self.ptr.as_ptr(), self.len) }
+    }
+
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+}
+
+#[cfg(feature = "cuda")]
+impl Drop for PinnedHostBuffer {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = cudarc::driver::sys::lib().cuMemFreeHost(self.ptr.as_ptr().cast());
+        }
+    }
+}
+
+#[cfg(feature = "cuda")]
+struct InFlightUpload {
+    _slot: String,
+}
+
+/// Upload queue: accumulates CPU data and uploads it to the device slot registry
+/// in one `flush` call.
 ///
-/// `flush` currently performs *synchronous* `htod_copy` transfers in series.
-/// It is named "upload queue" rather than "async queue" because no CUDA
-/// streams are used yet — async multi-stream upload is a future optimisation.
+/// Staging is `Vec`-based (synchronous copy on `stage`).  The H2D transfer in
+/// `flush` is performed via `htod_copy`, which is synchronous.  The "upload
+/// queue" abstraction separates the staging phase from the transfer phase so
+/// callers can batch multiple slots before paying the H2D cost, but the flush
+/// itself is not a CUDA async transfer (no stream; no `cudaMemcpyAsync`).
+/// A future refactor can introduce a CUDA stream and pinned host buffers here
+/// once the correctness baseline is established.
 pub struct AsyncUploadQueue {
     staged: Vec<(String, HostStagingBuffer)>,
+    #[cfg(feature = "cuda")]
+    in_flight: Vec<InFlightUpload>,
+    #[cfg(feature = "cuda")]
+    in_flight_device: Option<std::sync::Arc<cudarc::driver::CudaDevice>>,
 }
 
 impl Default for AsyncUploadQueue {
     fn default() -> Self {
-        Self { staged: Vec::new() }
+        Self {
+            staged: Vec::new(),
+            #[cfg(feature = "cuda")]
+            in_flight: Vec::new(),
+            #[cfg(feature = "cuda")]
+            in_flight_device: None,
+        }
     }
 }
 
@@ -307,39 +515,67 @@ impl AsyncUploadQueue {
         Self::default()
     }
 
-    /// Stage `data` for upload under `slot`.  The copy into `HostStagingBuffer`
-    /// is synchronous; the H2D transfer happens on `flush`.
+    /// Stage `data` for upload under `slot`.  The copy into the staging buffer
+    /// is synchronous (Vec copy on the CPU); the H2D transfer happens on `flush`.
     pub fn stage(&mut self, slot: &str, data: &[f32]) -> Result<(), String> {
-        self.staged.push((slot.to_string(), HostStagingBuffer::from_slice(data)));
+        self.staged
+            .push((slot.to_string(), HostStagingBuffer::from_slice(data)));
         Ok(())
     }
 
     #[cfg(feature = "cuda")]
     /// Upload all staged buffers to the device slot registry and clear the queue.
+    ///
+    /// The transfer uses `htod_copy` (synchronous H2D DMA).  Staged buffers are
+    /// cleared on success; on failure the queue state is undefined.
     pub fn flush(
         &mut self,
         registry: &mut DeviceSlotRegistry,
         dev: &std::sync::Arc<cudarc::driver::CudaDevice>,
     ) -> Result<(), String> {
+        self.synchronize()?;
         for (slot, buf) in self.staged.drain(..) {
             let device_buf = dev
                 .htod_copy(buf.data)
-                .map_err(|e| format!("AsyncUploadQueue flush htod_copy '{slot}': {e}"))?;
-            registry.insert(slot, device_buf);
+                .map_err(|e| format!("AsyncUploadQueue htod '{slot}': {e}"))?;
+            registry.insert(slot.clone(), device_buf);
+            self.in_flight.push(InFlightUpload { _slot: slot });
         }
+        self.in_flight_device = Some(dev.clone());
+        Ok(())
+    }
+
+    #[cfg(feature = "cuda")]
+    /// Wait for all queued async uploads to finish and clear in-flight markers.
+    pub fn synchronize(&mut self) -> Result<(), String> {
+        if let Some(dev) = &self.in_flight_device {
+            dev.synchronize()
+                .map_err(|e| format!("AsyncUploadQueue synchronize: {e}"))?;
+        }
+        self.in_flight.clear();
+        self.in_flight_device = None;
         Ok(())
     }
 
     #[cfg(not(feature = "cuda"))]
-    pub fn flush(
-        &mut self,
-        _registry: &mut DeviceSlotRegistry,
-    ) -> Result<(), String> {
+    pub fn flush(&mut self, _registry: &mut DeviceSlotRegistry) -> Result<(), String> {
         self.staged.clear();
         Ok(())
     }
 
     pub fn pending(&self) -> usize {
         self.staged.len()
+    }
+
+    #[cfg(feature = "cuda")]
+    pub fn in_flight(&self) -> usize {
+        self.in_flight.len()
+    }
+}
+
+#[cfg(feature = "cuda")]
+impl Drop for AsyncUploadQueue {
+    fn drop(&mut self) {
+        let _ = self.synchronize();
     }
 }

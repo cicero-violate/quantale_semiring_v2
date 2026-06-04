@@ -45,9 +45,8 @@ struct RegionsFile {
 
 impl HotRegionRegistry {
     pub fn load(path: impl AsRef<Path>) -> Result<Self, String> {
-        let raw = fs::read_to_string(path.as_ref()).map_err(|e| {
-            format!("read regions file '{}': {e}", path.as_ref().display())
-        })?;
+        let raw = fs::read_to_string(path.as_ref())
+            .map_err(|e| format!("read regions file '{}': {e}", path.as_ref().display()))?;
         Self::from_json_str(&raw)
     }
 

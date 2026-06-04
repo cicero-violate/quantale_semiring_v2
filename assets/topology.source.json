@@ -2132,6 +2132,14 @@
     },
     {
       "from": "Execution::VectorAdd",
+      "to": "Execution::VectorScale",
+      "policy_effect": "ChainVectorAddToVectorScale",
+      "confidence": 1.0,
+      "cost": 0.1,
+      "safety": 1.0
+    },
+    {
+      "from": "Execution::VectorAdd",
       "to": "Control::GateExecution",
       "policy_effect": "GateAfterVectorAdd",
       "confidence": 0.88,

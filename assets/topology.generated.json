@@ -1248,6 +1248,14 @@
       "to": "Execution::FusedVectorAddScale"
     },
     {
+      "confidence": 1.0,
+      "cost": 0.1,
+      "from": "Execution::VectorAdd",
+      "policy_effect": "ChainVectorAddToVectorScale",
+      "safety": 1.0,
+      "to": "Execution::VectorScale"
+    },
+    {
       "confidence": 0.88,
       "cost": 0.8,
       "from": "Execution::VectorAdd",

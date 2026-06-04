@@ -1003,9 +1003,9 @@ extern "C" __global__ void device_ring_pop(
 //
 // One __device__ function per hot region.  The dispatch kernel selects the
 // right function via a switch table and calls it.  When slot_ptrs == NULL the
-// function runs in stub mode: it records output_flags but performs no element-
-// wise work.  Full compute wiring (passing actual slot pointer arrays) is done
-// when DeviceSlotRegistry provides pointers at dispatch time.
+// function runs in receipt-only mode: it records output_flags but performs no
+// element-wise work. Passing a DeviceSlotRegistry-built float** table enables
+// true in-kernel computation.
 //
 // Slot layout per region matches regions.hot.json / operators.generated.json.
 
@@ -1080,15 +1080,18 @@ __device__ void region_commit_receipt(float** slot_ptrs, int n, DeviceReceipt* r
 // Selects the appropriate __device__ region function via a switch table and
 // writes a DeviceReceipt to the ring — all without returning to the CPU.
 //
-// When slot_ptrs == NULL the region functions run in stub mode (receipt-only);
-// pass actual device slot pointer arrays to enable true in-kernel computation.
+// When slot_ptrs == NULL the region functions run in receipt-only mode; pass
+// actual device slot pointer arrays plus element_count to enable true in-kernel
+// computation.
 
 extern "C" __global__ void tensor_quantale_gpu_dispatch(
     const GpuDispatchMailbox* mailbox,
     DeviceReceipt*            receipt_ring,
     int*                      ring_tail,
     int                       ring_size,
-    int                       region_count
+    int                       region_count,
+    float**                   slot_ptrs,
+    int                       element_count
 ) {
     int rid = mailbox->pending_region_id;
     if (rid < 0 || rid >= region_count) return;
@@ -1102,15 +1105,14 @@ extern "C" __global__ void tensor_quantale_gpu_dispatch(
     r.valid        = 1;
     r.output_flags = 0;
 
-    // Device function dispatch table (stub mode: slot_ptrs = NULL).
     switch (rid) {
-        case 0: region_vector_add           (NULL, 0, &r); break;
-        case 1: region_vector_scale         (NULL, 0, &r); break;
-        case 2: region_fused_add_scale      (NULL, 0, &r); break;
-        case 3: region_analysis_return1     (NULL, 0, &r); break;
-        case 4: region_analysis_volatility  (NULL, 0, &r); break;
-        case 5: region_analysis_signal_score(NULL, 0, &r); break;
-        case 6: region_commit_receipt       (NULL, 0, &r); break;
+        case 0: region_vector_add           (slot_ptrs, element_count, &r); break;
+        case 1: region_vector_scale         (slot_ptrs, element_count, &r); break;
+        case 2: region_fused_add_scale      (slot_ptrs, element_count, &r); break;
+        case 3: region_analysis_return1     (slot_ptrs, element_count, &r); break;
+        case 4: region_analysis_volatility  (slot_ptrs, element_count, &r); break;
+        case 5: region_analysis_signal_score(slot_ptrs, element_count, &r); break;
+        case 6: region_commit_receipt       (slot_ptrs, element_count, &r); break;
         default: break;
     }
 

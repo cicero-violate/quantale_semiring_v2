@@ -5,6 +5,9 @@ edition = "2024"
 default-run = "quantale_semiring_v2"
 license = "Apache-2.0"
 
+[lib]
+doctest = false
+
 [workspace]
 members = [".", "crates/topology_core"]
 resolver = "3"

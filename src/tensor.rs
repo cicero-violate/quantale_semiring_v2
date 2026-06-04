@@ -12,6 +12,7 @@ use cudarc::nvrtc::compile_ptx;
 use serde::{Deserialize, Serialize};
 
 use crate::config::{DEFAULT_BLOCK_SIZE, RuntimeContext};
+use crate::device_slots::DeviceSlotRegistry;
 use crate::error::CudaError;
 use crate::exploration::{ExplorationCandidate, ExplorationEngine, ExplorationToken};
 use crate::graph::{DecisionReport, Node, reconstruct_path_from_witness_matrix};
@@ -57,6 +58,32 @@ pub const DEVICE_RECEIPT_RING_SIZE: usize = 256;
 pub const EXPLORATION_MAX_TOKENS: usize = TENSOR_NODE_COUNT * TENSOR_NODE_COUNT;
 pub const EXPLORATION_MAX_SELECTED: usize = TENSOR_NODE_COUNT;
 const KERNEL_SOURCE_TEMPLATE: &str = include_str!("../cuda/quantale_world.cu");
+
+const REGION_VECTOR_ADD_SLOTS: &[&str] = &["math.a", "math.b", "math.add_out"];
+const REGION_VECTOR_SCALE_SLOTS: &[&str] = &["math.add_out", "math.scale", "math.out"];
+const REGION_FUSED_ADD_SCALE_SLOTS: &[&str] = &["math.a", "math.b", "math.scale", "math.out"];
+const REGION_ANALYSIS_RETURN1_SLOTS: &[&str] = &["market.price", "market.open", "analysis.return"];
+const REGION_ANALYSIS_VOLATILITY_SLOTS: &[&str] =
+    &["market.price", "analysis.return", "analysis.volatility"];
+const REGION_ANALYSIS_SIGNAL_SCORE_SLOTS: &[&str] = &[
+    "analysis.return",
+    "analysis.volatility",
+    "analysis.signal_score",
+];
+const REGION_COMMIT_RECEIPT_SLOTS: &[&str] = &[];
+
+fn gpu_region_slots(region_id: i32) -> Option<&'static [&'static str]> {
+    match region_id {
+        0 => Some(REGION_VECTOR_ADD_SLOTS),
+        1 => Some(REGION_VECTOR_SCALE_SLOTS),
+        2 => Some(REGION_FUSED_ADD_SCALE_SLOTS),
+        3 => Some(REGION_ANALYSIS_RETURN1_SLOTS),
+        4 => Some(REGION_ANALYSIS_VOLATILITY_SLOTS),
+        5 => Some(REGION_ANALYSIS_SIGNAL_SCORE_SLOTS),
+        6 => Some(REGION_COMMIT_RECEIPT_SLOTS),
+        _ => None,
+    }
+}
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
@@ -742,10 +769,68 @@ impl TensorQuantaleWorld {
                     &mut self.device_receipt_buffer.tail,
                     ring_size,
                     region_count,
+                    0_u64,
+                    0_i32,
                 ),
             )
         }
         .map_err(|error| CudaError::new("tensor_quantale_gpu_dispatch", error))
+    }
+
+    /// Dispatch a hot GPU region with real device-slot backing.
+    ///
+    /// `DeviceSlotRegistry` supplies the region's ordered `float**` slot table,
+    /// so the CUDA dispatch switch calls the region function and writes output
+    /// slots before appending the device receipt.
+    pub fn gpu_dispatch_region_with_slots(
+        &mut self,
+        registry: &DeviceSlotRegistry,
+        region_id: i32,
+        src_node: i32,
+        dst_node: i32,
+        outcome: i32,
+    ) -> Result<(), CudaError> {
+        let slot_names = gpu_region_slots(region_id).ok_or_else(|| {
+            CudaError::invalid_input(format!("unknown GPU hot region id {region_id}"))
+        })?;
+        let mailbox = GpuDispatchMailboxHost {
+            pending_region_id: region_id,
+            src_node,
+            dst_node,
+            outcome,
+            dispatched: 0,
+        };
+        let mailbox_buf = self
+            .dev
+            .htod_copy(vec![mailbox])
+            .map_err(|error| CudaError::new("htod_copy gpu dispatch mailbox", error))?;
+        let (slot_ptrs, element_count) = registry
+            .device_slot_ptr_table(&self.dev, slot_names)
+            .map_err(CudaError::invalid_input)?;
+        let region_count = 64_i32;
+        let ring_size = DEVICE_RECEIPT_RING_SIZE as i32;
+        let kernel = self
+            .dev
+            .get_func(MODULE_NAME, GPU_DISPATCH_KERNEL)
+            .ok_or(CudaError::missing_function(GPU_DISPATCH_KERNEL))?;
+        unsafe {
+            kernel.launch(
+                kernel_config(),
+                (
+                    &mailbox_buf,
+                    &mut self.device_receipt_buffer.ring,
+                    &mut self.device_receipt_buffer.tail,
+                    ring_size,
+                    region_count,
+                    &slot_ptrs,
+                    element_count,
+                ),
+            )
+        }
+        .map_err(|error| CudaError::new("tensor_quantale_gpu_dispatch", error))?;
+        self.dev
+            .synchronize()
+            .map_err(|error| CudaError::new("synchronize gpu dispatch", error))
     }
 
     pub fn decay(&mut self, factor: f32) -> Result<(), CudaError> {

@@ -194,8 +194,10 @@ impl Default for SystemConfig {
             );
         }
 
-        let split_topology =
-            SplitTopologyRuntime::load_checked(&hot_region_registry).ok();
+        let split_topology = Some(
+            SplitTopologyRuntime::load_checked(&hot_region_registry)
+                .unwrap_or_else(|error| panic!("split topology validation failed: {error}")),
+        );
 
         Self {
             matrix_dim,
@@ -278,8 +280,10 @@ impl SystemConfig {
                 detail.join("; ")
             ));
         }
-        self.split_topology =
-            SplitTopologyRuntime::load_checked(&self.hot_region_registry).ok();
+        self.split_topology = Some(
+            SplitTopologyRuntime::load_checked(&self.hot_region_registry)
+                .map_err(|error| format!("split topology validation failed: {error}"))?,
+        );
         Ok(())
     }
 

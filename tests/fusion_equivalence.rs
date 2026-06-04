@@ -4,11 +4,11 @@ fn fusion_equivalence_skipped_without_cuda_feature() {}
 
 #[cfg(feature = "cuda")]
 mod cuda_fusion {
+    use cudarc::driver::{CudaDevice, LaunchAsync, LaunchConfig};
     use quantale_semiring_v2::{
         FusionDispatch, JitCache, OperatorRegistry, UniversalExecutor, load_operator_registry,
     };
     use serde_json::{Value, json};
-    use cudarc::driver::{CudaDevice, LaunchAsync, LaunchConfig};
 
     const ANALYSIS_ENTRY: &str = "Analysis::Return1";
     const TOLERANCE: f32 = 1e-5;
@@ -110,9 +110,7 @@ mod cuda_fusion {
                 _ => return Err(format!("unexpected input count {}", inputs.len())),
             }
         }
-        let actual = device
-            .dtoh_sync_copy(&out)
-            .map_err(|e| e.to_string())?;
+        let actual = device.dtoh_sync_copy(&out).map_err(|e| e.to_string())?;
         Ok(Some(actual))
     }
 
