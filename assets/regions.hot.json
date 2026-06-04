@@ -1,67 +1,98 @@
 {
   "regions": [
     {
-      "region_id": 0,
+      "kernel": "jit_fused",
+      "kind": "gpu_region",
       "name": "Execution::VectorAdd",
-      "kind": "gpu_region",
-      "reads": ["math.a", "math.b"],
-      "writes": ["math.add_out"],
-      "kernel": "jit_fused",
-      "pure": true
+      "pure": true,
+      "reads": [
+        "math.a",
+        "math.b"
+      ],
+      "region_id": 0,
+      "writes": [
+        "math.add_out"
+      ]
     },
     {
-      "region_id": 1,
+      "kernel": "jit_fused",
+      "kind": "gpu_region",
       "name": "Execution::VectorScale",
-      "kind": "gpu_region",
-      "reads": ["math.add_out", "math.scale"],
-      "writes": ["math.out"],
-      "kernel": "jit_fused",
-      "pure": true
+      "pure": true,
+      "reads": [
+        "math.add_out",
+        "math.scale"
+      ],
+      "region_id": 1,
+      "writes": [
+        "math.out"
+      ]
     },
     {
-      "region_id": 2,
+      "kernel": "jit_fused",
+      "kind": "gpu_region",
       "name": "Execution::FusedVectorAddScale",
-      "kind": "gpu_region",
-      "reads": ["math.a", "math.b", "math.scale"],
-      "writes": ["math.out"],
-      "kernel": "jit_fused",
-      "pure": true
+      "pure": true,
+      "reads": [
+        "math.a",
+        "math.b",
+        "math.scale"
+      ],
+      "region_id": 2,
+      "writes": [
+        "math.out"
+      ]
     },
     {
-      "region_id": 3,
+      "kernel": "jit_fused",
+      "kind": "gpu_region",
       "name": "Analysis::Return1",
-      "kind": "gpu_region",
-      "reads": ["market.price", "market.open"],
-      "writes": ["analysis.return"],
-      "kernel": "jit_fused",
-      "pure": true
+      "pure": true,
+      "reads": [
+        "market.price",
+        "market.open"
+      ],
+      "region_id": 3,
+      "writes": [
+        "analysis.return"
+      ]
     },
     {
-      "region_id": 4,
+      "kernel": "jit_fused",
+      "kind": "gpu_region",
       "name": "Analysis::Volatility",
-      "kind": "gpu_region",
-      "reads": ["market.price", "analysis.return"],
-      "writes": ["analysis.volatility"],
-      "kernel": "jit_fused",
-      "pure": true
+      "pure": true,
+      "reads": [
+        "market.price",
+        "analysis.return"
+      ],
+      "region_id": 4,
+      "writes": [
+        "analysis.volatility"
+      ]
     },
     {
-      "region_id": 5,
+      "kernel": "jit_fused",
+      "kind": "gpu_region",
       "name": "Analysis::SignalScore",
-      "kind": "gpu_region",
-      "reads": ["analysis.return", "analysis.volatility"],
-      "writes": ["analysis.signal_score"],
-      "kernel": "jit_fused",
-      "pure": true
+      "pure": true,
+      "reads": [
+        "analysis.return",
+        "analysis.volatility"
+      ],
+      "region_id": 5,
+      "writes": [
+        "analysis.signal_score"
+      ]
     },
     {
-      "region_id": 6,
-      "name": "Region::CommitReceipt",
-      "kind": "gpu_region",
-      "reads": [],
-      "writes": [],
       "kernel": "terminal",
-      "pure": true
+      "kind": "gpu_region",
+      "name": "Region::CommitReceipt",
+      "pure": true,
+      "reads": [],
+      "region_id": 6,
+      "writes": []
     }
   ]
 }
