@@ -296,6 +296,31 @@ pub(super) fn record_learning_edges(
     }
 }
 
+/// Record a single edge delta after a successful non-fusion execution.
+/// Convenience wrapper for callers that don't have an `ActiveExecution`.
+pub(super) fn record_learning_edge_for_pair(
+    learning_buffer: &mut quantale_semiring_v2::LearningBuffer,
+    topology: &TopologyRuntime,
+    src: i32,
+    dst: i32,
+    learning_policy: &LearningPolicy,
+) {
+    let registry = topology.registry();
+    let tensor_edges = topology.tensor_edges();
+    let boost = learning_policy.max_confidence_above_base * 0.5;
+    let Some(src_name) = registry.name_of(src as usize) else {
+        return;
+    };
+    let Some(dst_name) = registry.name_of(dst as usize) else {
+        return;
+    };
+    let Some(base) = tensor_edges.iter().find(|e| e.src == src && e.dst == dst) else {
+        return;
+    };
+    let confidence = (base.confidence + boost).min(1.0);
+    learning_buffer.record(src_name, dst_name, confidence, base.cost, base.safety);
+}
+
 impl ActiveExecution {
     pub(super) fn output_origin<'a>(&'a self, fallback: &'a str) -> &'a str {
         self.fusion

@@ -60,6 +60,12 @@ pub struct GraphTopology {
     pub transitions: Vec<TopologyTransition>,
     #[serde(default)]
     pub pages: Vec<TopologyPage>,
+    /// CKA `par` groups compiled from source topology programs.
+    /// Each group is a list of node names that can execute in parallel when
+    /// effect-independent.  Emitted by `build_overlay_assets` into
+    /// `topology.generated.json`; absent in other topology files.
+    #[serde(default)]
+    pub parallel_groups: Vec<Vec<String>>,
 }
 
 #[derive(Clone, Debug, PartialEq)]

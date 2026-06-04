@@ -4,13 +4,16 @@ Progressive gaps in the current system. Items here are forward improvements only
 
 ---
 
-## 1. `TensorQuantaleWorld::project_parallel_group` / `commit_decision_batch` are dormant public API
+## ~~1. GPU-native parallel tier~~ ✓ Implemented
 
-**What:** `src/tensor.rs` exposes `project_parallel_group` and `commit_decision_batch`, backed by the `tensor_quantale_project_batch` and `tensor_quantale_commit_batch` CUDA kernels in `quantale_world.cu`. The CPU batch scheduler that called them is gone, but both methods have full integration-test coverage in `tests/tensor_quantale.rs` and the CUDA kernel implementations are correct.
+`src/runtime_parallel.rs` added. `try_dispatch_parallel_group` projects a CKA `par` group on the GPU (read-only), validates pairwise effect independence, calls `commit_decision_batch` for an atomic GPU commit, then dispatches operators concurrently with `std::thread::scope`.
 
-**Decision:** Keep as dormant GPU-parallel substrate. These are the natural execution primitives for a future GPU-native parallel commit tier that bypasses a CPU scheduler entirely. The test coverage means they are not dead code — they are a tested capability waiting for a policy layer.
+The main loop now has three tiers between `close` and `frontier_step`:
+1. Exploration-first (existing)
+2. **GPU-native parallel**: iterates `epoch.topology.parallel_groups` (from `topology.generated.json`), commits and dispatches the first ready group, continues the tick
+3. Single frontier step fallback (existing)
 
-**Action when ready:** Wire `project_parallel_group` into `execute_active_node_blocking` under a new dispatch branch, replacing the old CPU-side `batch.rs` policy with a GPU-side decision. Keep the kernel implementations unchanged.
+`GraphTopology.parallel_groups` field added (serde default = `[]`). `TopologyRuntime.parallel_groups` resolves names to IDs at load time. Receipt processing, tlog, learning, and consecutive-block accounting mirror the other dispatch paths.
 
 ---
 

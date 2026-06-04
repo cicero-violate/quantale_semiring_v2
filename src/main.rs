@@ -19,13 +19,15 @@ use topology_core::build_overlay_assets;
 mod cli;
 mod runtime_dispatch;
 mod runtime_epoch;
+mod runtime_parallel;
 mod runtime_reset;
 
 use runtime_dispatch::{
     FusionLogicalAdvance, apply_hot_dispatch_if_needed, execute_active_node_blocking,
     filter_static_topology_edges, node_name, queue_execution_lattice_updates,
-    record_learning_edges, update_execution_receipt_priors,
+    record_learning_edge_for_pair, record_learning_edges, update_execution_receipt_priors,
 };
+use runtime_parallel::try_dispatch_parallel_group;
 use runtime_epoch::{RuntimeEpoch, build_runtime_epoch, changed_asset_fingerprint};
 use runtime_reset::maybe_hard_reset_after_blocks;
 
@@ -398,6 +400,198 @@ fn main() {
             if let Err(error) = epoch.world.decay(config.decay_normal) {
                 fatal!("tensor", "decay_failed", error);
             }
+            continue;
+        }
+
+        // ── GPU-native parallel tier ──────────────────────────────────────────
+        // Try each CKA `par` group from the topology.  If one group has all
+        // members unblocked and effect-independent, commit it atomically on the
+        // GPU and dispatch operators concurrently, then skip the frontier step
+        // for this tick.
+        let parallel_committed = 'par_tier: {
+            for group in &epoch.topology.parallel_groups {
+                let result = try_dispatch_parallel_group(
+                    &mut epoch.world,
+                    &epoch.executor,
+                    &config.operator_registry,
+                    group,
+                    epoch.topology.registry(),
+                    projection_bias,
+                    &current_payload,
+                );
+                match result {
+                    Err(error) => {
+                        console::warn(
+                            "parallel",
+                            "dispatch_error",
+                            &[("error", error.to_string())],
+                        );
+                        continue;
+                    }
+                    Ok(None) => continue,
+                    Ok(Some(outcome)) => {
+                        console::info(
+                            "parallel",
+                            "group_committed",
+                            &[
+                                ("nodes", outcome.node_names.join(" || ")),
+                                ("size", outcome.node_names.len().to_string()),
+                            ],
+                        );
+                        let mut par_failures = 0usize;
+                        let mut par_stdout: Vec<Value> = Vec::new();
+                        for ((decision, receipt), par_node_name) in outcome
+                            .decisions
+                            .iter()
+                            .zip(outcome.receipts.iter())
+                            .zip(outcome.node_names.iter())
+                        {
+                            if let Err(error) = tlog.append_decision(decision) {
+                                fatal!("tlog", "append_decision_failed", error);
+                            }
+                            console::info(
+                                "parallel",
+                                "operator_receipt",
+                                &[
+                                    ("node", par_node_name.clone()),
+                                    ("exit", receipt.exit_code.to_string()),
+                                    (
+                                        "outcome",
+                                        format!("{:?}", ExecutionOutcome::from(receipt)),
+                                    ),
+                                ],
+                            );
+                            if !receipt.stderr_payload.is_empty() {
+                                console::warn(
+                                    "parallel",
+                                    "operator_stderr",
+                                    &[
+                                        ("node", par_node_name.clone()),
+                                        ("stderr", receipt.stderr_payload.trim().to_string()),
+                                    ],
+                                );
+                            }
+                            let par_outcome = ExecutionOutcome::from(receipt);
+                            epoch.world.queue_lattice_update(
+                                decision.selected_src,
+                                decision.first_hop,
+                                par_outcome,
+                            );
+                            epoch
+                                .exploration_engine
+                                .update_receipt_prior(decision.first_hop, receipt);
+                            if let Err(error) = tlog.append_exploration_receipt(&json!({
+                                "node": par_node_name,
+                                "exit_code": receipt.exit_code,
+                                "prior": epoch.exploration_engine.receipt_prior_for(decision.first_hop),
+                            })) {
+                                fatal!("tlog", "append_exploration_receipt_failed", error);
+                            }
+                            if let Err(error) = tlog.log_step(receipt, decision) {
+                                fatal!("tlog", "log_step_failed", error);
+                            }
+                            if receipt.exit_code != 0 {
+                                par_failures += 1;
+                            } else {
+                                record_learning_edge_for_pair(
+                                    &mut epoch.learning_buffer,
+                                    &epoch.topology,
+                                    decision.selected_src,
+                                    decision.first_hop,
+                                    &learning_policy,
+                                );
+                                if !receipt.stdout_payload.is_empty() {
+                                    if epoch.executor.output_mode(par_node_name)
+                                        == Some("tensor_plan")
+                                    {
+                                        match compile_tensor_plan(&receipt.stdout_payload) {
+                                            Ok(plan_edges) => {
+                                                let plan_edges = filter_static_topology_edges(
+                                                    plan_edges,
+                                                    epoch.topology.tensor_edges(),
+                                                );
+                                                if !plan_edges.is_empty() {
+                                                    if let Err(error) =
+                                                        epoch.world.embed_tensor_edges(&plan_edges)
+                                                    {
+                                                        fatal!(
+                                                            "tensor",
+                                                            "embed_tensor_edges_failed",
+                                                            error
+                                                        );
+                                                    }
+                                                    epoch
+                                                        .accumulated_edges
+                                                        .extend(plan_edges.clone());
+                                                    if let Err(error) = tlog.append_tensor_edges(
+                                                        "plan:tensor_parallel",
+                                                        &plan_edges,
+                                                    ) {
+                                                        fatal!(
+                                                            "tlog",
+                                                            "append_tensor_edges_failed",
+                                                            error
+                                                        );
+                                                    }
+                                                }
+                                            }
+                                            Err(reason) => {
+                                                console::warn(
+                                                    "parallel",
+                                                    "plan_invalid",
+                                                    &[("reason", reason)],
+                                                );
+                                                epoch.world.queue_lattice_update(
+                                                    decision.selected_src,
+                                                    decision.first_hop,
+                                                    ExecutionOutcome::Failure,
+                                                );
+                                            }
+                                        }
+                                    } else {
+                                        par_stdout.push(json!({
+                                            "node": par_node_name,
+                                            "stdout": receipt.stdout_payload,
+                                        }));
+                                    }
+                                }
+                            }
+                        }
+                        if let Err(error) = epoch.world.drain_lattice_queue() {
+                            fatal!("tensor", "drain_lattice_queue_failed", error);
+                        }
+                        if par_failures > 0 {
+                            consecutive_blocks += par_failures;
+                            maybe_hard_reset_after_blocks(
+                                &mut consecutive_blocks,
+                                &mut epoch.world,
+                                &epoch.accumulated_edges,
+                                &mut current_payload,
+                                std::time::Duration::from_millis(config.hard_reset_sleep_ms),
+                                projection_bias,
+                                &runtime_context,
+                            );
+                            if consecutive_blocks == 0 {
+                                current_payload_origin = None;
+                            }
+                            break 'par_tier true;
+                        }
+                        consecutive_blocks = 0;
+                        if !par_stdout.is_empty() {
+                            current_payload = json!({ "context": par_stdout });
+                            current_payload_origin =
+                                Some("parallel:cka_par".to_string());
+                        }
+                        if let Err(error) = epoch.world.decay(config.decay_normal) {
+                            fatal!("tensor", "decay_failed", error);
+                        }
+                        break 'par_tier true;
+                    }
+                }
+            }
+            false
+        };
+        if parallel_committed {
             continue;
         }
 

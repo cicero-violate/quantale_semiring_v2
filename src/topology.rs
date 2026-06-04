@@ -35,6 +35,10 @@ pub struct TopologyRuntime {
     pub document: GraphTopology,
     pub compiled: CompiledTopology,
     pub tensor_edges: Vec<TensorEdge>,
+    /// CKA `par` groups from the generated topology, with node names resolved
+    /// to integer IDs.  Groups with any unknown node are silently dropped.
+    /// Each group has at least two members.
+    pub parallel_groups: Vec<Vec<i32>>,
 }
 
 impl TopologyRuntime {
@@ -71,10 +75,22 @@ impl TopologyRuntime {
             .copied()
             .map(TensorEdge::from)
             .collect();
+        let parallel_groups = document
+            .parallel_groups
+            .iter()
+            .filter_map(|group| {
+                let ids: Vec<i32> = group
+                    .iter()
+                    .filter_map(|name| compiled.registry.id_of(name).map(|id| id as i32))
+                    .collect();
+                (ids.len() >= 2 && ids.len() == group.len()).then_some(ids)
+            })
+            .collect();
         Ok(Self {
             document,
             compiled,
             tensor_edges,
+            parallel_groups,
         })
     }
 
