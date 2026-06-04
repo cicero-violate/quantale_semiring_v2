@@ -18,7 +18,6 @@ pub enum TlogRecordKind {
     TensorEdges,
     AgentStep,
     ExplorationSeed,
-    ExplorationExpand,
     ExplorationTopK,
     ExplorationCommit,
     ExplorationReceipt,
@@ -93,10 +92,6 @@ impl TlogWriter {
 
     pub fn append_exploration_seed<T: Serialize>(&mut self, payload: &T) -> io::Result<u64> {
         self.append_record(TlogRecordKind::ExplorationSeed, payload)
-    }
-
-    pub fn append_exploration_expand<T: Serialize>(&mut self, payload: &T) -> io::Result<u64> {
-        self.append_record(TlogRecordKind::ExplorationExpand, payload)
     }
 
     pub fn append_exploration_topk<T: Serialize>(&mut self, payload: &T) -> io::Result<u64> {

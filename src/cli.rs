@@ -9,27 +9,32 @@ pub(super) fn handle(args: &[String]) -> CliCommand {
     if args.get(1).map(String::as_str) == Some("topology")
         && args.get(2).map(String::as_str) == Some("build-overlay")
     {
-        return match build_overlay_assets(".") {
-            Ok(()) => {
-                console::info(
-                    "topology",
-                    "overlay_written",
-                    &[
-                        ("topology", "assets/topology.generated.json".to_string()),
-                        ("operators", "assets/operators.generated.json".to_string()),
-                    ],
-                );
-                CliCommand::Exit(0)
-            }
-            Err(error) => {
-                console::error(
-                    "topology",
-                    "build_overlay_failed",
-                    &[("error", error.to_string())],
-                );
-                CliCommand::Exit(1)
-            }
-        };
+        if let Err(error) = build_overlay_assets(".") {
+            console::error(
+                "topology",
+                "build_overlay_failed",
+                &[("error", error.to_string())],
+            );
+            return CliCommand::Exit(1);
+        }
+        if let Err(error) = compile_and_emit_pattern_edges(".") {
+            console::error(
+                "topology",
+                "pattern_compile_failed",
+                &[("error", error.to_string())],
+            );
+            return CliCommand::Exit(1);
+        }
+        console::info(
+            "topology",
+            "overlay_written",
+            &[
+                ("topology", "assets/topology.generated.json".to_string()),
+                ("operators", "assets/operators.generated.json".to_string()),
+                ("patterns", "assets/patterns.compiled.json".to_string()),
+            ],
+        );
+        return CliCommand::Exit(0);
     }
 
     if args.iter().any(|a| a == "--check-topology") {

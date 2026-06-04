@@ -4,6 +4,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::fusion::{FusionRegion, partition_fusible_regions};
+use crate::math::{apply_compiled_math_operators, compile_math_source};
 use crate::programs::{
     build_effects_map, compile_source_programs, emit_patterns_compat, validate_boundary_governance,
     validate_kernel_slot_purity, validate_known_backends, validate_quantale_layers,
@@ -20,6 +21,15 @@ pub fn build_overlay_assets(root: impl AsRef<Path>) -> Result<(), String> {
     let mut nodes = take_array(&mut topology, "nodes")?;
     let mut transitions = take_array_default(&mut topology, "transitions")?;
     let mut operator_contracts = take_array(&mut operators, "operators")?;
+
+    // Build-time math layer: compile typed formulas into ordinary jit_cuda
+    // operator contracts before overlays and duplicate-contract checks.
+    let math_path = root.join("assets/math.source.json");
+    if math_path.exists() {
+        let math_source = read_json(math_path)?;
+        let compiled_math = compile_math_source(&math_source, &source)?;
+        apply_compiled_math_operators(&mut operator_contracts, compiled_math)?;
+    }
 
     for overlay in read_overlay_dir(root.join("overlays/topology"))? {
         let mut overlay = overlay;

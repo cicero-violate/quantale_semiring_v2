@@ -1,4 +1,4 @@
-//! Learned tensor-edge checkpoint ingress.
+//! Learned tensor-edge checkpoint ingress and egress.
 //!
 //! JSONL state is evidence/checkpoint storage only. The runtime representation
 //! of learned path weights is still the GPU tensor after these sparse edges are
@@ -6,7 +6,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::path::Path;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 use serde_json::Value;
@@ -140,6 +141,104 @@ pub fn load_learned_tensor_edges(
     Ok(deduped.into_values().collect())
 }
 
+// ── Egress ────────────────────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+struct NamedLearningEdge {
+    from: String,
+    to: String,
+    confidence: f32,
+    cost: f32,
+    safety: f32,
+}
+
+/// Buffers learned tensor-edge deltas and flushes them to the JSONL checkpoint
+/// file in batches.  The file is created on first flush if absent.
+///
+/// Records are only written for successful (exit_code == 0) topology edges.
+/// The load path (`load_learned_tensor_edges`) deduplicates by latest-wins, so
+/// repeated flushes of the same edge are safe.
+pub struct LearningBuffer {
+    path: PathBuf,
+    pending: Vec<NamedLearningEdge>,
+    flush_threshold: usize,
+}
+
+impl LearningBuffer {
+    pub fn new(path: impl Into<PathBuf>, flush_threshold: usize) -> Self {
+        Self {
+            path: path.into(),
+            pending: Vec::new(),
+            flush_threshold,
+        }
+    }
+
+    /// Queue one learned edge.  Auto-flushes when the pending count reaches
+    /// `flush_threshold`.  Flush errors are logged to stderr but do not panic.
+    pub fn record(&mut self, from: &str, to: &str, confidence: f32, cost: f32, safety: f32) {
+        self.pending.push(NamedLearningEdge {
+            from: from.to_string(),
+            to: to.to_string(),
+            confidence,
+            cost,
+            safety,
+        });
+        if self.pending.len() >= self.flush_threshold {
+            if let Err(error) = self.flush() {
+                eprintln!("[learning] flush failed: {error}");
+            }
+        }
+    }
+
+    /// Write all pending records to the JSONL file and clear the buffer.
+    pub fn flush(&mut self) -> Result<(), String> {
+        if self.pending.is_empty() {
+            return Ok(());
+        }
+        if let Some(parent) = self.path.parent() {
+            if !parent.as_os_str().is_empty() {
+                fs::create_dir_all(parent).map_err(|e| {
+                    format!("create learned-edges dir '{}': {e}", parent.display())
+                })?;
+            }
+        }
+        let file = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.path)
+            .map_err(|e| {
+                format!("open learned-edges '{}': {e}", self.path.display())
+            })?;
+        let mut writer = std::io::BufWriter::new(file);
+        for edge in &self.pending {
+            let line = serde_json::json!({
+                "from":       edge.from,
+                "to":         edge.to,
+                "confidence": edge.confidence,
+                "cost":       edge.cost,
+                "safety":     edge.safety,
+            });
+            let mut bytes = serde_json::to_vec(&line)
+                .map_err(|e| format!("serialize learned edge: {e}"))?;
+            bytes.push(b'\n');
+            writer.write_all(&bytes)
+                .map_err(|e| format!("write learned-edges '{}': {e}", self.path.display()))?;
+        }
+        writer.flush()
+            .map_err(|e| format!("flush learned-edges '{}': {e}", self.path.display()))?;
+        self.pending.clear();
+        Ok(())
+    }
+
+    pub fn len(&self) -> usize {
+        self.pending.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.pending.is_empty()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -256,5 +355,81 @@ mod tests {
             "expected 0.85, got {}",
             edges[0].confidence
         );
+    }
+
+    fn temp_path(suffix: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "learning_buf_test_{}_{}_{suffix}.jsonl",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ))
+    }
+
+    #[test]
+    fn learning_buffer_flush_writes_readable_jsonl() {
+        let path = temp_path("flush");
+        let topology = compile_two_node(0.8);
+        let static_edges: Vec<TensorEdge> = topology
+            .transitions
+            .iter()
+            .copied()
+            .map(TensorEdge::from)
+            .collect();
+
+        let mut buf = LearningBuffer::new(&path, 100);
+        buf.record("State::A", "State::B", 0.85, 0.5, 0.9);
+        assert_eq!(buf.len(), 1);
+        buf.flush().unwrap();
+        assert!(buf.is_empty());
+
+        let policy = LearningPolicy::default();
+        let edges =
+            load_learned_tensor_edges(&path, &topology.registry, &static_edges, &policy).unwrap();
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(edges.len(), 1);
+        // base=0.8, delta=0.15 → cap=min(0.95,0.85)=0.85; recorded=0.85 ≤ cap → 0.85
+        assert!((edges[0].confidence - 0.85).abs() < 1e-5);
+        assert_eq!(edges[0].cost, 0.5);
+        assert_eq!(edges[0].safety, 0.9);
+    }
+
+    #[test]
+    fn learning_buffer_auto_flushes_at_threshold() {
+        let path = temp_path("autof");
+        let topology = compile_two_node(0.8);
+        let static_edges: Vec<TensorEdge> = topology
+            .transitions
+            .iter()
+            .copied()
+            .map(TensorEdge::from)
+            .collect();
+
+        let mut buf = LearningBuffer::new(&path, 2);
+        buf.record("State::A", "State::B", 0.82, 0.5, 0.9);
+        assert_eq!(buf.len(), 1);
+        // Second record triggers auto-flush (threshold=2).
+        buf.record("State::A", "State::B", 0.84, 0.5, 0.9);
+        assert!(buf.is_empty(), "auto-flush must clear pending");
+
+        let policy = LearningPolicy::default();
+        let edges =
+            load_learned_tensor_edges(&path, &topology.registry, &static_edges, &policy).unwrap();
+        let _ = std::fs::remove_file(&path);
+
+        // latest-wins dedup: second record (0.84) survives
+        assert_eq!(edges.len(), 1);
+        assert!((edges[0].confidence - 0.84).abs() < 1e-5);
+    }
+
+    #[test]
+    fn learning_buffer_empty_flush_is_noop() {
+        let path = temp_path("noop");
+        let mut buf = LearningBuffer::new(&path, 10);
+        buf.flush().unwrap();
+        assert!(!path.exists(), "empty flush must not create file");
     }
 }

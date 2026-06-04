@@ -16,6 +16,9 @@ pub(super) struct RuntimeEpoch {
     pub(super) accumulated_edges: Vec<quantale_semiring_v2::TensorEdge>,
     pub(super) world: TensorQuantaleWorld,
     pub(super) exploration_engine: ExplorationEngine,
+    /// Buffers successful execution edge deltas for persistence to
+    /// `state/learned_edges.jsonl`.  Flushed on epoch reload and shutdown.
+    pub(super) learning_buffer: quantale_semiring_v2::LearningBuffer,
 }
 
 pub(super) fn build_runtime_epoch(
@@ -24,6 +27,8 @@ pub(super) fn build_runtime_epoch(
     learning_policy: &LearningPolicy,
     tlog: &mut TlogWriter,
 ) -> Result<RuntimeEpoch, String> {
+    // Const: flush learned edges every 10 successful executions.
+    const LEARNING_FLUSH_THRESHOLD: usize = 10;
     config.reload_default_operator_registry()?;
     config.reload_hot_region_registry()?;
 
@@ -63,14 +68,31 @@ pub(super) fn build_runtime_epoch(
         tensor_edges.extend(learned_edges);
     }
 
-    let patterns = load_default_patterns().map_err(|error| error.to_string())?;
-    for pattern in &patterns.patterns {
-        let compiled = compile_pattern(pattern, &topology.compiled, &config.operator_registry)
-            .map_err(|error| error.to_string())?;
-        tlog.append_tensor_edges(&format!("pattern:cka:epoch:{id}"), &compiled.edges)
-            .map_err(|error| error.to_string())?;
-        tensor_edges.extend(compiled.edges.clone());
-    }
+    // Prefer pre-compiled pattern edges from build-overlay; fall back to
+    // runtime CKA compilation when the file is absent (e.g. first run before
+    // build-overlay has been executed).
+    let pattern_edges = match load_compiled_pattern_edges(
+        "assets/patterns.compiled.json",
+        topology.registry(),
+    )
+    .map_err(|e| e.to_string())?
+    {
+        Some(edges) => edges,
+        None => {
+            let patterns = load_default_patterns().map_err(|error| error.to_string())?;
+            let mut edges = Vec::new();
+            for pattern in &patterns.patterns {
+                let compiled =
+                    compile_pattern(pattern, &topology.compiled, &config.operator_registry)
+                        .map_err(|error| error.to_string())?;
+                edges.extend(compiled.edges);
+            }
+            edges
+        }
+    };
+    tlog.append_tensor_edges(&format!("pattern:cka:epoch:{id}"), &pattern_edges)
+        .map_err(|error| error.to_string())?;
+    tensor_edges.extend(pattern_edges);
 
     let world =
         TensorQuantaleWorld::from_tensor_edges(&tensor_edges).map_err(|error| error.to_string())?;
@@ -135,6 +157,10 @@ pub(super) fn build_runtime_epoch(
         accumulated_edges: tensor_edges,
         world,
         exploration_engine,
+        learning_buffer: quantale_semiring_v2::LearningBuffer::new(
+            &config.learned_edges_path,
+            LEARNING_FLUSH_THRESHOLD,
+        ),
     })
 }
 

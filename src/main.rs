@@ -7,11 +7,11 @@ use serde_json::{Value, json};
 use quantale_semiring_v2::{
     ContractContext, ContractViolation, DecisionReport, ExecutionOutcome, ExplorationConfig,
     ExplorationEngine, GraphTopology, LAYER_CONFIDENCE, LearningPolicy, Node, NodeContracts,
-    ProcessReceipt, ProjectionBias, ReloadPolicy, RuntimeContext, SystemConfig, TensorQuantaleWorld,
-    TlogWriter, TopologyInvariants, TopologyRuntime, UniversalExecutor, ViolationKind, action_label,
-    check, check_with_operators, compile_pattern, compile_tensor_plan, console,
-    format_quantale_value, format_violations, load_default_patterns, load_learned_tensor_edges,
-    runtime_check,
+    ProcessReceipt, ProjectionBias, ReloadPolicy, RuntimeContext, SystemConfig,
+    TensorQuantaleWorld, TlogWriter, TopologyInvariants, TopologyRuntime, UniversalExecutor,
+    ViolationKind, action_label, check, check_with_operators, compile_and_emit_pattern_edges,
+    compile_pattern, compile_tensor_plan, console, format_quantale_value, format_violations,
+    load_compiled_pattern_edges, load_default_patterns, load_learned_tensor_edges, runtime_check,
 };
 
 use topology_core::build_overlay_assets;
@@ -24,7 +24,7 @@ mod runtime_reset;
 use runtime_dispatch::{
     FusionLogicalAdvance, apply_hot_dispatch_if_needed, execute_active_node_blocking,
     filter_static_topology_edges, node_name, queue_execution_lattice_updates,
-    update_execution_receipt_priors,
+    record_learning_edges, update_execution_receipt_priors,
 };
 use runtime_epoch::{RuntimeEpoch, build_runtime_epoch, changed_asset_fingerprint};
 use runtime_reset::maybe_hard_reset_after_blocks;
@@ -105,6 +105,9 @@ fn main() {
         if let Some(next_fingerprint) = changed_asset_fingerprint(&epoch.fingerprint) {
             match build_runtime_epoch(epoch.id + 1, &mut config, &learning_policy, &mut tlog) {
                 Ok(next_epoch) => {
+                    if let Err(error) = epoch.learning_buffer.flush() {
+                        console::warn("learning", "flush_failed", &[("error", error)]);
+                    }
                     runtime_context = match RuntimeContext::default_asset() {
                         Ok(context) => context,
                         Err(error) => {
@@ -307,6 +310,7 @@ fn main() {
             let outcome = ExecutionOutcome::from(process_receipt);
             apply_hot_dispatch_if_needed(&mut epoch.world, &epoch.executor, &execution);
             queue_execution_lattice_updates(&mut epoch.world, &decision, &execution, outcome);
+            record_learning_edges(&mut epoch.learning_buffer, &epoch.topology, &decision, &execution, &learning_policy);
             update_execution_receipt_priors(
                 &mut epoch.exploration_engine,
                 &decision,
@@ -627,6 +631,7 @@ fn main() {
         }
 
         queue_execution_lattice_updates(&mut epoch.world, &decision, &execution, outcome);
+        record_learning_edges(&mut epoch.learning_buffer, &epoch.topology, &decision, &execution, &learning_policy);
         update_execution_receipt_priors(
             &mut epoch.exploration_engine,
             &decision,
@@ -721,6 +726,10 @@ fn main() {
         if let Some(dur) = sleep_dur {
             std::thread::sleep(dur);
         }
+    }
+
+    if let Err(error) = epoch.learning_buffer.flush() {
+        console::warn("learning", "shutdown_flush_failed", &[("error", error)]);
     }
 
     if let Err(error) = tlog.flush() {

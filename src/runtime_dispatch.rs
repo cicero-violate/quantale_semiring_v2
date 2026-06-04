@@ -256,6 +256,46 @@ impl FusionLogicalAdvance {
     }
 }
 
+/// Record edge deltas for a successful execution into the learning buffer.
+/// Only topology edges (those present in the static edge set) are persisted;
+/// ephemeral CKA-pattern-only edges are skipped.
+///
+/// Takes topology and buffer as separate references so the caller can split-borrow
+/// the enclosing RuntimeEpoch without a mutable-immutable conflict.
+pub(super) fn record_learning_edges(
+    learning_buffer: &mut quantale_semiring_v2::LearningBuffer,
+    topology: &TopologyRuntime,
+    decision: &DecisionReport,
+    execution: &ActiveExecution,
+    learning_policy: &LearningPolicy,
+) {
+    if execution.receipt.exit_code != 0 {
+        return;
+    }
+    let registry = topology.registry();
+    let tensor_edges = topology.tensor_edges();
+    let boost = learning_policy.max_confidence_above_base * 0.5;
+
+    let pairs: Vec<(i32, i32)> = match &execution.fusion {
+        Some(fusion) => fusion.edges.clone(),
+        None => vec![(decision.selected_src, decision.first_hop)],
+    };
+
+    for (src, dst) in pairs {
+        let Some(src_name) = registry.name_of(src as usize) else {
+            continue;
+        };
+        let Some(dst_name) = registry.name_of(dst as usize) else {
+            continue;
+        };
+        let Some(base) = tensor_edges.iter().find(|e| e.src == src && e.dst == dst) else {
+            continue;
+        };
+        let confidence = (base.confidence + boost).min(1.0);
+        learning_buffer.record(src_name, dst_name, confidence, base.cost, base.safety);
+    }
+}
+
 impl ActiveExecution {
     pub(super) fn output_origin<'a>(&'a self, fallback: &'a str) -> &'a str {
         self.fusion

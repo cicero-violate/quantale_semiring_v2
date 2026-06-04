@@ -929,6 +929,7 @@
       "static_args": []
     },
     {
+      "description": "Generated vector addition formula",
       "effects": {
         "locks": [],
         "reads": [
@@ -940,11 +941,11 @@
         ]
       },
       "executable": "jit_cuda",
-      "jit_body": "out[i] = in0[i] + in1[i];",
-      "node_name": "Execution::VectorAdd",
-      "static_args": []
+      "jit_body": "out[i] = (in0[i] + in1[i]);",
+      "node_name": "Execution::VectorAdd"
     },
     {
+      "description": "Generated vector scaling formula",
       "effects": {
         "locks": [],
         "reads": [
@@ -956,11 +957,11 @@
         ]
       },
       "executable": "jit_cuda",
-      "jit_body": "out[i] = in0[i] * in1[i];",
-      "node_name": "Execution::VectorScale",
-      "static_args": []
+      "jit_body": "out[i] = (in0[i] * in1[i]);",
+      "node_name": "Execution::VectorScale"
     },
     {
+      "description": "Generated fused vector add-scale formula",
       "effects": {
         "locks": [],
         "reads": [
@@ -973,9 +974,8 @@
         ]
       },
       "executable": "jit_cuda",
-      "jit_body": "out[i] = (in0[i] + in1[i]) * in2[i];",
-      "node_name": "Execution::FusedVectorAddScale",
-      "static_args": []
+      "jit_body": "out[i] = ((in0[i] + in1[i]) * in2[i]);",
+      "node_name": "Execution::FusedVectorAddScale"
     },
     {
       "effects": {
@@ -1193,6 +1193,7 @@
       ]
     },
     {
+      "description": "Generated one-period return formula",
       "effects": {
         "locks": [],
         "reads": [
@@ -1204,11 +1205,11 @@
         ]
       },
       "executable": "jit_cuda",
-      "jit_body": "out[i] = (in0[i] - in1[i]) / (in1[i] + 1e-8f);",
-      "node_name": "Analysis::Return1",
-      "static_args": []
+      "jit_body": "out[i] = ((in0[i] - in1[i]) / (in1[i] + 1.000000000e-8f));",
+      "node_name": "Analysis::Return1"
     },
     {
+      "description": "Generated volatility proxy formula",
       "effects": {
         "locks": [],
         "reads": [
@@ -1220,11 +1221,11 @@
         ]
       },
       "executable": "jit_cuda",
-      "jit_body": "out[i] = fabsf(in0[i] - in1[i]) / (in1[i] + 1e-8f);",
-      "node_name": "Analysis::Volatility",
-      "static_args": []
+      "jit_body": "out[i] = (fabsf((in0[i] - in1[i])) / (in1[i] + 1.000000000e-8f));",
+      "node_name": "Analysis::Volatility"
     },
     {
+      "description": "Generated normalized signal score formula",
       "effects": {
         "locks": [],
         "reads": [
@@ -1236,9 +1237,8 @@
         ]
       },
       "executable": "jit_cuda",
-      "jit_body": "out[i] = in0[i] / (1.0f + fabsf(in1[i]));",
-      "node_name": "Analysis::SignalScore",
-      "static_args": []
+      "jit_body": "out[i] = (in0[i] / (1.0f + fabsf(in1[i])));",
+      "node_name": "Analysis::SignalScore"
     },
     {
       "effects": {

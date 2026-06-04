@@ -2,6 +2,7 @@ pub mod check;
 pub mod compile;
 pub mod error;
 pub mod fusion;
+pub mod math;
 pub mod model;
 pub mod overlay;
 pub mod programs;

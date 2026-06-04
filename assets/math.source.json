@@ -1,0 +1,67 @@
+{
+  "formulas": [
+    {
+      "name": "vector_add",
+      "node": "Execution::VectorAdd",
+      "inputs": ["math.a", "math.b"],
+      "output": "math.add_out",
+      "expr": { "add": ["math.a", "math.b"] },
+      "description": "Generated vector addition formula"
+    },
+    {
+      "name": "vector_scale",
+      "node": "Execution::VectorScale",
+      "inputs": ["math.add_out", "math.scale"],
+      "output": "math.out",
+      "expr": { "mul": ["math.add_out", "math.scale"] },
+      "description": "Generated vector scaling formula"
+    },
+    {
+      "name": "fused_vector_add_scale",
+      "node": "Execution::FusedVectorAddScale",
+      "inputs": ["math.a", "math.b", "math.scale"],
+      "output": "math.out",
+      "expr": { "mul": [{ "add": ["math.a", "math.b"] }, "math.scale"] },
+      "description": "Generated fused vector add-scale formula"
+    },
+    {
+      "name": "analysis_return_1",
+      "node": "Analysis::Return1",
+      "inputs": ["market.price", "market.open"],
+      "output": "analysis.return",
+      "expr": {
+        "div": [
+          { "sub": ["market.price", "market.open"] },
+          { "add": ["market.open", 0.00000001] }
+        ]
+      },
+      "description": "Generated one-period return formula"
+    },
+    {
+      "name": "analysis_volatility",
+      "node": "Analysis::Volatility",
+      "inputs": ["market.price", "analysis.return"],
+      "output": "analysis.volatility",
+      "expr": {
+        "div": [
+          { "abs": [{ "sub": ["market.price", "analysis.return"] }] },
+          { "add": ["analysis.return", 0.00000001] }
+        ]
+      },
+      "description": "Generated volatility proxy formula"
+    },
+    {
+      "name": "analysis_signal_score",
+      "node": "Analysis::SignalScore",
+      "inputs": ["analysis.return", "analysis.volatility"],
+      "output": "analysis.signal_score",
+      "expr": {
+        "div": [
+          "analysis.return",
+          { "add": [1.0, { "abs": ["analysis.volatility"] }] }
+        ]
+      },
+      "description": "Generated normalized signal score formula"
+    }
+  ]
+}

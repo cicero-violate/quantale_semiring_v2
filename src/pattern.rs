@@ -49,7 +49,6 @@ pub struct CkaPatternSet {
 pub struct CompiledCkaPattern {
     pub name: String,
     pub edges: Vec<TensorEdge>,
-    pub parallel_groups: Vec<Vec<i32>>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -126,6 +125,107 @@ pub fn compile_patterns_to_tensor_edges(
     Ok(edges)
 }
 
+/// Build-step helper: compile `assets/patterns.source.json` and emit
+/// `assets/patterns.compiled.json` with pre-resolved, name-keyed tensor edges.
+///
+/// Called by `cargo run -- topology build-overlay` after the generated
+/// topology and operator artifacts are fresh.  The runtime prefers this file
+/// and skips the CKA compilation pass on epoch start.
+pub fn compile_and_emit_pattern_edges(root: impl AsRef<Path>) -> Result<(), CudaError> {
+    let root = root.as_ref();
+
+    let patterns = load_patterns(root.join("assets/patterns.source.json"))?;
+    let topology_path = root.join("assets/topology.generated.json");
+    let operators_path = root.join("assets/operators.generated.json");
+
+    let topology = GraphTopology::from_json_file(&topology_path)
+        .map_err(|e| CudaError::invalid_input(format!("load topology: {e}")))?
+        .compile()
+        .map_err(|e| CudaError::invalid_input(format!("compile topology: {e}")))?;
+    let operator_registry = load_operator_registry(&operators_path)
+        .map_err(|e| CudaError::invalid_input(format!("load operators: {e}")))?;
+
+    let mut named_edges: Vec<serde_json::Value> = Vec::new();
+    for pattern in &patterns.patterns {
+        let compiled = compile_pattern(pattern, &topology, &operator_registry)?;
+        for edge in &compiled.edges {
+            let from = topology.registry.name_of(edge.src as usize).ok_or_else(|| {
+                CudaError::invalid_input(format!("no name for node id {}", edge.src))
+            })?;
+            let to = topology.registry.name_of(edge.dst as usize).ok_or_else(|| {
+                CudaError::invalid_input(format!("no name for node id {}", edge.dst))
+            })?;
+            named_edges.push(serde_json::json!({
+                "from": from,
+                "to": to,
+                "confidence": edge.confidence,
+                "cost": edge.cost,
+                "safety": edge.safety,
+            }));
+        }
+    }
+    let output = serde_json::json!({ "edges": named_edges });
+    let content = format!(
+        "{}\n",
+        serde_json::to_string_pretty(&output)
+            .map_err(|e| CudaError::invalid_input(format!("serialize: {e}")))?
+    );
+    let out_path = root.join("assets/patterns.compiled.json");
+    if fs::read_to_string(&out_path).ok().as_deref() != Some(content.as_str()) {
+        fs::write(&out_path, &content)
+            .map_err(|e| CudaError::invalid_input(format!("write patterns.compiled.json: {e}")))?;
+    }
+    Ok(())
+}
+
+/// Load pre-compiled CKA pattern edges from `patterns.compiled.json`.
+///
+/// Returns `Ok(None)` when the file is absent so callers can fall back to
+/// runtime compilation.
+pub fn load_compiled_pattern_edges(
+    path: impl AsRef<Path>,
+    registry: &crate::topology::NodeRegistry,
+) -> Result<Option<Vec<TensorEdge>>, CudaError> {
+    let path = path.as_ref();
+    if !path.exists() {
+        return Ok(None);
+    }
+    let content = fs::read_to_string(path)
+        .map_err(|e| CudaError::invalid_input(format!("read patterns.compiled.json: {e}")))?;
+    let doc: serde_json::Value = serde_json::from_str(&content)
+        .map_err(|e| CudaError::invalid_input(format!("parse patterns.compiled.json: {e}")))?;
+    let arr = doc
+        .get("edges")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| CudaError::invalid_input("patterns.compiled.json missing 'edges' array"))?;
+    let mut edges = Vec::with_capacity(arr.len());
+    for (idx, item) in arr.iter().enumerate() {
+        let from = item["from"].as_str().ok_or_else(|| {
+            CudaError::invalid_input(format!("edge {idx}: missing 'from'"))
+        })?;
+        let to = item["to"].as_str().ok_or_else(|| {
+            CudaError::invalid_input(format!("edge {idx}: missing 'to'"))
+        })?;
+        let confidence = item["confidence"].as_f64().ok_or_else(|| {
+            CudaError::invalid_input(format!("edge {idx}: missing 'confidence'"))
+        })? as f32;
+        let cost = item["cost"].as_f64().ok_or_else(|| {
+            CudaError::invalid_input(format!("edge {idx}: missing 'cost'"))
+        })? as f32;
+        let safety = item["safety"].as_f64().ok_or_else(|| {
+            CudaError::invalid_input(format!("edge {idx}: missing 'safety'"))
+        })? as f32;
+        let src = registry.id_of(from).ok_or_else(|| {
+            CudaError::invalid_input(format!("edge {idx}: unknown node '{from}'"))
+        })? as i32;
+        let dst = registry.id_of(to).ok_or_else(|| {
+            CudaError::invalid_input(format!("edge {idx}: unknown node '{to}'"))
+        })? as i32;
+        edges.push(TensorEdge::new(src, dst, confidence, cost, safety));
+    }
+    Ok(Some(edges))
+}
+
 pub fn compile_pattern(
     pattern: &CkaPattern,
     topology: &CompiledTopology,
@@ -133,19 +233,10 @@ pub fn compile_pattern(
 ) -> Result<CompiledCkaPattern, CudaError> {
     validate_cka_expr(&pattern.expr, topology, operator_registry)?;
     let mut edges = Vec::new();
-    let mut parallel_groups = Vec::new();
-    compile_expr(
-        &pattern.expr,
-        pattern,
-        topology,
-        operator_registry,
-        &mut edges,
-        &mut parallel_groups,
-    )?;
+    compile_expr(&pattern.expr, pattern, topology, operator_registry, &mut edges)?;
     Ok(CompiledCkaPattern {
         name: pattern.name.clone(),
         edges,
-        parallel_groups,
     })
 }
 
@@ -219,52 +310,27 @@ fn compile_expr(
     topology: &CompiledTopology,
     operator_registry: &OperatorRegistry,
     edges: &mut Vec<TensorEdge>,
-    parallel_groups: &mut Vec<Vec<i32>>,
 ) -> Result<Endpoints, CudaError> {
     match expr {
         CkaExpr::Zero | CkaExpr::One => Ok(Endpoints::default()),
         CkaExpr::Node(node) => Ok(Endpoints::from_node(node.clone())),
-        CkaExpr::Seq(items) => compile_seq(
-            items,
-            pattern,
-            topology,
-            operator_registry,
-            edges,
-            parallel_groups,
-        ),
+        CkaExpr::Seq(items) => compile_seq(items, pattern, topology, operator_registry, edges),
         CkaExpr::Choice(items) => {
             let mut endpoints = Endpoints::default();
             for item in items {
-                let compiled = compile_expr(
-                    item,
-                    pattern,
-                    topology,
-                    operator_registry,
-                    edges,
-                    parallel_groups,
-                )?;
+                let compiled =
+                    compile_expr(item, pattern, topology, operator_registry, edges)?;
                 endpoints.starts.extend(compiled.starts);
                 endpoints.ends.extend(compiled.ends);
             }
             Ok(endpoints)
         }
-        CkaExpr::Star { body, max_unroll } => compile_star(
-            body,
-            *max_unroll,
-            pattern,
-            topology,
-            operator_registry,
-            edges,
-            parallel_groups,
-        ),
-        CkaExpr::Par(branches) => compile_par(
-            branches,
-            pattern,
-            topology,
-            operator_registry,
-            edges,
-            parallel_groups,
-        ),
+        CkaExpr::Star { body, max_unroll } => {
+            compile_star(body, *max_unroll, pattern, topology, operator_registry, edges)
+        }
+        CkaExpr::Par(branches) => {
+            compile_par(branches, pattern, topology, operator_registry, edges)
+        }
     }
 }
 
@@ -274,31 +340,16 @@ fn compile_seq(
     topology: &CompiledTopology,
     operator_registry: &OperatorRegistry,
     edges: &mut Vec<TensorEdge>,
-    parallel_groups: &mut Vec<Vec<i32>>,
 ) -> Result<Endpoints, CudaError> {
     let mut iter = items.iter();
     let Some(first) = iter.next() else {
         return Ok(Endpoints::default());
     };
-    let mut aggregate = compile_expr(
-        first,
-        pattern,
-        topology,
-        operator_registry,
-        edges,
-        parallel_groups,
-    )?;
+    let mut aggregate = compile_expr(first, pattern, topology, operator_registry, edges)?;
     let mut previous_ends = aggregate.ends.clone();
 
     for item in iter {
-        let current = compile_expr(
-            item,
-            pattern,
-            topology,
-            operator_registry,
-            edges,
-            parallel_groups,
-        )?;
+        let current = compile_expr(item, pattern, topology, operator_registry, edges)?;
         if !previous_ends.is_empty() && !current.starts.is_empty() {
             for from in &previous_ends {
                 for to in &current.starts {
@@ -324,20 +375,12 @@ fn compile_star(
     topology: &CompiledTopology,
     operator_registry: &OperatorRegistry,
     edges: &mut Vec<TensorEdge>,
-    parallel_groups: &mut Vec<Vec<i32>>,
 ) -> Result<Endpoints, CudaError> {
     let mut first_iteration = Endpoints::default();
     let mut previous_ends: Vec<String> = Vec::new();
 
     for index in 0..max_unroll {
-        let current = compile_expr(
-            body,
-            pattern,
-            topology,
-            operator_registry,
-            edges,
-            parallel_groups,
-        )?;
+        let current = compile_expr(body, pattern, topology, operator_registry, edges)?;
         if index == 0 {
             first_iteration = current.clone();
         } else {
@@ -366,32 +409,15 @@ fn compile_par(
     topology: &CompiledTopology,
     operator_registry: &OperatorRegistry,
     edges: &mut Vec<TensorEdge>,
-    parallel_groups: &mut Vec<Vec<i32>>,
 ) -> Result<Endpoints, CudaError> {
     validate_parallel_independence(branches, operator_registry)?;
 
     let mut endpoints = Endpoints::default();
-    let mut group = Vec::new();
     for branch in branches {
-        let compiled = compile_expr(
-            branch,
-            pattern,
-            topology,
-            operator_registry,
-            edges,
-            parallel_groups,
-        )?;
-        for start in &compiled.starts {
-            let id = topology
-                .registry
-                .id_of(start)
-                .ok_or_else(|| CudaError::invalid_input(format!("unknown CKA node '{start}'")))?;
-            group.push(id as i32);
-        }
+        let compiled = compile_expr(branch, pattern, topology, operator_registry, edges)?;
         endpoints.starts.extend(compiled.starts);
         endpoints.ends.extend(compiled.ends);
     }
-    parallel_groups.push(group);
     Ok(endpoints)
 }
 
@@ -707,8 +733,6 @@ mod tests {
         )
         .unwrap();
         assert_eq!(compiled.edges.len(), 2);
-        assert_eq!(compiled.parallel_groups.len(), 1);
-        assert_eq!(compiled.parallel_groups[0].len(), 2);
     }
 
     #[test]
