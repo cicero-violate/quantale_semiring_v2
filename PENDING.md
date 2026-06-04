@@ -6,18 +6,64 @@ Progressive gaps in the current system. Items here are forward improvements only
 
 ## ~~1. GPU-native parallel tier~~ ✓ Implemented
 
-`src/runtime_parallel.rs` added. `try_dispatch_parallel_group` projects a CKA `par` group on the GPU (read-only), validates pairwise effect independence, calls `commit_decision_batch` for an atomic GPU commit, then dispatches operators concurrently with `std::thread::scope`.
+New kernel `tensor_quantale_par_group_step` in `cuda/quantale_world.cu`:
+- Iterates the GPU-resident par group table (`ParGroupGpuData`)
+- For each eligible group: projects all members toward their target nodes on-device
+- First group where all members are unblocked and unhalted: committed atomically
+- Result (`group_idx`, `decisions`) written to device output buffer
+- CPU reads result, dispatches operators via `dispatch_gpu_parallel_group`
+- CPU does not iterate groups, validate effects, or call `project_parallel_group` + `commit_decision_batch` separately
 
-The main loop now has three tiers between `close` and `frontier_step`:
+The main loop is now three-tiered:
 1. Exploration-first (existing)
-2. **GPU-native parallel**: iterates `epoch.topology.parallel_groups` (from `topology.generated.json`), commits and dispatches the first ready group, continues the tick
+2. **GPU-native parallel** — `par_group_step` one kernel, CPU dispatches only if group was selected
 3. Single frontier step fallback (existing)
 
-`GraphTopology.parallel_groups` field added (serde default = `[]`). `TopologyRuntime.parallel_groups` resolves names to IDs at load time. Receipt processing, tlog, learning, and consecutive-block accounting mirror the other dispatch paths.
+Supporting changes:
+- `GraphTopology.parallel_groups: Vec<Vec<String>>` (serde default = `[]`)
+- `TopologyRuntime.parallel_groups: Vec<Vec<i32>>` resolved at load time
+- `ParGroupGpuData`: packed group table + eligibility mask, uploaded at epoch start
+- Eligibility = every operator in the group is `jit_cuda` / fusion-entry / hot-region
+- `runtime_parallel.rs` reduced to `dispatch_gpu_parallel_group` only
 
 ---
 
-## ~~2. CKA pattern compilation belongs at build time~~ ✓ Implemented
+## 2. Par-tier: remaining gaps to fully GPU-native execution
+
+Current honest classification:
+
+```text
+G_s = 1   GPU selects the par group
+G_c = 1   GPU commits consumed/active state
+E_g = ½   eligibility checked on-device, but mask is CPU-precomputed at epoch start
+D_h = 1   CPU still dispatches operators (thread::scope → execute_*_blocking)
+R_d = 0   receipts are CPU ProcessReceipts; device receipt ring not used for par tier
+```
+
+What changed: the CPU group-selection loop is gone. The GPU now selects and commits. What remains CPU-side:
+
+**Gap A — operator dispatch is still host-bound.**
+`dispatch_gpu_parallel_group` uses `thread::scope → execute_fusion_entry_blocking / execute_abstract_node_blocking`. Operators run on the GPU (jit_cuda/fusion), but the launch is CPU-initiated per member.
+
+**Gap B — effect validation is precomputed, not on-device.**
+The kernel trusts `eligible[g]` from `ParGroupGpuData`. The mask is built at epoch start from `executor.is_hot_node || fusion_dispatch.is_fusion_entry`. Build-overlay already validated `par` independence structurally, so runtime effect conflicts cannot arise. The correct wording is "GPU consumes prevalidated eligibility" not "GPU validates conflicts on-device".
+
+**Gap C — commit is single-threaded control-flow, not CUDA atomic.**
+The kernel runs `threadIdx.x == 0` only. The commit is all-or-nothing by control flow. Correct term: "device-side sequential commit", not "atomic GPU commit" (unless atomic is used in the logical/transactional sense).
+
+**Gap D — par-tier receipts use CPU ProcessReceipt, not the device ring.**
+After commit, GPU operators execute and their results come back as host-side `ProcessReceipt`. The existing `DeviceReceiptBuffer` / `tensor_quantale_drain_device_receipts` path is not used for par-tier receipts. Closing this gap requires: GPU kernel emits dispatch descriptors → GPU executes operators (CUDA dynamic parallelism or pre-compiled hot functions) → device writes receipt to ring → CPU drains ring.
+
+**Correct label for the current state:**
+```text
+GPU-selected parallel dispatch tier with CPU-dispatched GPU operators
+```
+
+Not: "fully GPU-native orchestration" — CPU still handles dispatch and receipts.
+
+---
+
+## ~~3. CKA pattern compilation belongs at build time~~ ✓ Implemented
 
 Build-overlay now emits `assets/patterns.compiled.json`. The runtime loads from it on epoch start; falls back to runtime CKA compilation only when the file is absent. `cli.rs` calls `compile_and_emit_pattern_edges(".")` after `build_overlay_assets`.
 

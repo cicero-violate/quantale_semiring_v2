@@ -50,6 +50,7 @@ Receipts validate actual thought.
 - No scalar sidecar metadata model.
 - No CPU routing planner.
 - No hidden imperative graph traversal.
+- Par group selection happens on the GPU when all members are GPU-eligible; CPU does not iterate groups to decide.
 
 ## Current milestone
 
@@ -80,7 +81,14 @@ Runtime decision invariant checker (runtime_check.rs)
   action/output_mode operator field check (inv 25)
 Single canonical dispatch path through execute_active_node_blocking
   FusionDispatch checked first, hot region second, process fallback last
-Runtime split into sub-modules: cli, runtime_dispatch, runtime_epoch, runtime_reset
+Runtime split into sub-modules: cli, runtime_dispatch, runtime_epoch, runtime_parallel, runtime_reset
+GPU-native parallel tier (Phase 8):
+  tensor_quantale_par_group_step kernel: GPU selects, validates, and commits
+    the first ready CKA par group in one round trip
+  ParGroupGpuData: static par group table + eligibility mask, built at epoch start
+  Eligibility = all group operators are jit_cuda / fusion-entry / hot-region
+  CPU dispatches committed operators concurrently via dispatch_gpu_parallel_group
+  CPU does not iterate groups or validate effects at runtime
 
 Topology DSL — Phases 1–7 (plan.topology.md):
   Phase 1: topology.source.json with programs compiler
@@ -96,7 +104,7 @@ Topology DSL — Phases 1–7 (plan.topology.md):
            patterns.source.json as runtime source, patterns.json deleted
 ```
 
-Validated test count: **135 passed** (10 suites, `--no-default-features`).
+Validated test count: **138 passed** (10 suites, `--no-default-features`).
 
 Fusion region active for:
 

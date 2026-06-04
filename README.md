@@ -19,21 +19,23 @@ Receipts validate actual thought.
 ```text
 assets/topology.source.json              (authoritative DSL source)
   ──▶  cargo run -- topology build-overlay
-         ├─ topology.generated.json      (flat quantale transitions; runtime input)
+         ├─ topology.generated.json      (flat quantale transitions + parallel_groups)
          ├─ operators.generated.json     (compiled operator registry)
          ├─ patterns.source.json         (CKA tensor-weight patterns)
+         ├─ patterns.compiled.json       (pre-compiled CKA tensor edges; runtime input)
          └─ topology.fusion.json         (maximal GPU-safe kernel regions)
 
 assets/topology.generated.json
-  → NodeRegistry + TensorEdge[]
-assets/patterns.source.json
-  → CompiledCkaPattern { edges } → TensorEdge[]
+  → NodeRegistry + TensorEdge[] + parallel_groups (CKA par node-name lists)
+assets/patterns.compiled.json
+  → TensorEdge[] (pre-compiled; skips runtime CKA compilation)
 assets/topology.fusion.json
   → FusionDispatch → JitChain → synthesize_kernel → JitCache (NVRTC)
 
 TensorEdge[]
   → TensorQuantaleWorld → tensor_quantale_closure
   → Exploration scheduler  (seed / expand / score / topk / commit)
+  → GPU-native parallel tier (par_group_step: select + validate + commit, one kernel)
   → Single-step fallback   (frontier_step)
   → ProcessReceipt
   → tensor_quantale_update_edge → T := T ∨ ΔT
@@ -184,10 +186,11 @@ Effects are declared in `topology.source.json` node entries and validated at bui
 ## Main Rust surfaces
 
 ```text
-src/main.rs                runtime loop: exploration-first → frontier fallback
+src/main.rs                runtime loop: exploration → GPU-native parallel → frontier
 src/cli.rs                 CLI command parsing (topology build-overlay, --check-topology)
 src/runtime_dispatch.rs    execute_active_node_blocking, hot/fusion dispatch helpers
 src/runtime_epoch.rs       RuntimeEpoch struct, build_runtime_epoch, asset fingerprint
+src/runtime_parallel.rs    dispatch_gpu_parallel_group (post-commit operator launch)
 src/runtime_reset.rs       maybe_hard_reset_after_blocks
 src/tensor.rs              CUDA tensor world, TensorEdge API, projection/commit
 src/topology.rs            topology.generated.json parser, NodeRegistry
@@ -209,15 +212,16 @@ crates/topology_core/      DSL compiler: programs, validators, fusion partitione
 
 ## Execution loop
 
-1. `cargo run -- topology build-overlay` generates all runtime artifacts from `topology.source.json`.
-2. At startup: learned edge checkpoints + topology + CKA pattern edges are embedded. `FusionDispatch` loads `topology.fusion.json` and builds `JitChain`s; fusion kernels are synthesized (and compiled via NVRTC if `--features cuda`).
-3. CUDA closes the tensor.
-4. Exploration seeds strategies from `assets/exploration.json`, expands CUDA tokens, scores and selects top-K.
+1. `cargo run -- topology build-overlay` generates all runtime artifacts from `topology.source.json`, including `patterns.compiled.json` and `parallel_groups` in `topology.generated.json`.
+2. At startup: learned edge checkpoints + topology + pre-compiled CKA pattern edges are embedded. `FusionDispatch` loads `topology.fusion.json` and builds `JitChain`s. `ParGroupGpuData` is built from `parallel_groups` and the operator eligibility mask, and uploaded to the GPU.
+3. Each tick: CUDA closes the tensor.
+4. Exploration seeds strategies, expands CUDA tokens, scores and selects top-K.
 5. If a best exploration candidate is available, it is committed and dispatched.
-6. If no exploration candidate is ready, CUDA runs a normal single frontier step.
-7. `runtime_check::decision_is_safe()` guards every execution step.
-8. Process results become `ProcessReceipt` evidence; tensor edge feedback and exploration receipt priors are updated.
-9. Asset fingerprint changes (from `assets/reload_policy.json`) trigger epoch reload.
+6. If no exploration candidate: `par_group_step` launches one kernel that iterates the GPU-resident par group table, selects the first group where all members are unblocked and eligible, commits atomically, and returns decisions. CPU dispatches the committed operators concurrently.
+7. If no par group is ready: CUDA runs a normal single frontier step.
+8. `runtime_check::decision_is_safe()` guards every execution step.
+9. Process results become `ProcessReceipt` evidence; tensor edge feedback, exploration receipt priors, and learned edge checkpoints are updated.
+10. Asset fingerprint changes (from `assets/reload_policy.json`) trigger epoch reload.
 
 ## Validation
 
@@ -234,8 +238,8 @@ cargo test --no-default-features
 Current validated test counts:
 
 ```text
-cargo test                         135 passed (10 suites)
-cargo test --no-default-features   135 passed (10 suites)
+cargo test                         138 passed (10 suites)
+cargo test --no-default-features   138 passed (10 suites)
 ```
 
 ## Non-goals
@@ -245,6 +249,7 @@ Do not add or reintroduce:
 ```text
 scalar CUDA world or scalar LLM plan format
 CPU routing planner
+CPU group-selection loop for par dispatch (deleted; GPU kernel selects)
 assets/patterns.json as a runtime source (deleted; generated by build-overlay)
 policy side-channel files outside declared runtime assets
 PyTorch/JAX/Triton alternate runtime

@@ -111,20 +111,22 @@ Rust owns:
 ```text
 JSON asset loading and NodeRegistry
 Topology DSL compiler (crates/topology_core)
-CKA pattern compilation (epoch start; edges only)
+CKA pattern compilation (build time; edges embedded at epoch start)
 FusionDispatch: fusion region loading and JitChain construction
 JitCache: NVRTC/PTX compilation and kernel caching (#[cfg(feature="cuda")])
+ParGroupGpuData: par group table + eligibility mask upload at epoch start
 Static topology invariant checking
 Runtime decision invariant checking
 Base tensor CPU snapshot for hard reset
-Operator effect validation
-Host-side operator execution (process and jit_cuda backends)
+Operator eligibility mask computation (jit_cuda / fusion / hot-region)
+Host-side operator dispatch after GPU commit (jit_cuda and fusion only)
 Edge-delta upload
 Compact report decoding
 Append-only transaction logging
+Learned edge buffer and flush to state/learned_edges.jsonl
 ```
 
-Rust does not own a CPU planner or a live CPU mirror of the tensor.
+Rust does not own a CPU planner, a CPU group-selection loop, or a live CPU mirror of the tensor.
 
 ## CUDA kernel split
 
@@ -136,7 +138,8 @@ cuda/quantale_world.cu
   Kernels:  tensor_quantale_reset, embed_edges, closure, project,
             project_batch, commit_batch, frontier_step, tick,
             update_edge, decay, seed_exploration, expand_tokens,
-            score_tokens, select_topk_tokens, commit_exploration
+            score_tokens, select_topk_tokens, commit_exploration,
+            par_group_step
 
 JIT fusion kernels (src/jit_kernel_fusion/)
   Compiled: NVRTC at runtime via JitCache::get_or_compile
@@ -144,7 +147,7 @@ JIT fusion kernels (src/jit_kernel_fusion/)
   Regions:  loaded from assets/topology.fusion.json via FusionDispatch
 ```
 
-`quantale_world.cu` provides the deterministic tensor execution core. Fusion kernels use NVRTC to specialize operator chains at runtime once fusion regions are identified. The `project_batch` and `commit_batch` kernels exist in the CUDA world but are not on the current active dispatch path.
+`quantale_world.cu` provides the deterministic tensor execution core. `par_group_step` fuses the `project_batch` + `commit_batch` sequence into a single kernel that selects, validates, and commits a par group without a CPU round-trip. Fusion kernels use NVRTC to specialize operator chains at startup.
 
 ## Fusion architecture
 
@@ -215,6 +218,10 @@ TensorEdge[]
   → tensor_quantale_closure
   → exploration scheduler
       → tensor_quantale_seed/expand/score/topk/commit
+  → GPU-native parallel tier
+      → par_group_step(ParGroupGpuData)
+          tensor_quantale_par_group_step  (select + validate + commit)
+      → dispatch_gpu_parallel_group       (concurrent operator launch)
   → single-step fallback
       → tensor_quantale_frontier_step
   → ProcessReceipt
@@ -233,12 +240,22 @@ each tick:
        execute_active_node_blocking     ← fusion-first, then hot, then process
        update receipt priors + lattice
        continue
-  4. frontier_step
+  4. par_group_step(par_group_data, bias)   ← one kernel: select + validate + commit
+       → iterates GPU-resident par group table
+       → projects each member toward target node on device
+       → first all-ready, eligible group committed atomically on device
+       → CPU reads (group_idx, decisions)
+       dispatch_gpu_parallel_group           ← concurrent: jit_cuda / fusion / hot
+       update receipt priors + lattice
+       continue  (if group was selected)
+  5. frontier_step
        execute_active_node_blocking     ← same single dispatch path
        update receipt priors + lattice
 ```
 
 `execute_active_node_blocking` checks `FusionDispatch.get_by_entry` first, then `HotRegionRegistry`, then falls back to `UniversalExecutor::execute_abstract_node_blocking`. All paths emit a `ProcessReceipt`.
+
+The GPU-native parallel tier (step 4) is active when `par_group_data` is present (CUDA device available and at least one eligible par group declared in the topology). Eligible = all operators in the group are `jit_cuda`, fusion-entry, or hot-region.
 
 ## CKA layer
 
@@ -324,8 +341,9 @@ tensor_quantale_reset
 tensor_quantale_embed_edges
 tensor_quantale_closure
 tensor_quantale_project
-tensor_quantale_project_batch       (not on active dispatch path)
-tensor_quantale_commit_batch        (not on active dispatch path)
+tensor_quantale_project_batch       (used internally by par_group_step logic)
+tensor_quantale_commit_batch        (used internally by par_group_step logic)
+tensor_quantale_par_group_step      (GPU-native: select + validate + commit par group)
 tensor_quantale_seed_exploration
 tensor_quantale_expand_tokens
 tensor_quantale_score_tokens
@@ -344,6 +362,7 @@ tensor_quantale_decay
 ```text
 Decision, TensorEdges, AgentStep
 ExplorationSeed, ExplorationTopK, ExplorationCommit, ExplorationReceipt
+parallel::gpu_group_committed, parallel::operator_receipt  (par tier)
 fusion::regions_loaded, fusion::region, fusion::kernel_synthesized  (startup)
 ```
 
@@ -396,6 +415,7 @@ Removed and forbidden from runtime reintroduction:
 scalar CUDA world
 scalar LLM plan format
 CPU routing planner
+CPU group-selection loop for par dispatch (deleted; GPU kernel selects)
 policy side-channel files
 legacy assets/patterns.json      (deleted; replaced by generated patterns.source.json)
 search/ingress/dsl/paging layers
