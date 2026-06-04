@@ -206,14 +206,24 @@ pub struct ParGroupGpuData {
 }
 
 impl ParGroupGpuData {
-    /// Build and upload par group data.  `eligible[g]` is true when every
-    /// operator in group `g` is GPU-executable (jit_cuda / fusion / hot).
+    /// Build and upload par group data.
+    ///
+    /// `eligible[g]` is true when every operator in group `g` is GPU-executable
+    /// (jit_cuda / fusion / hot).
+    ///
+    /// `region_ids[g][i]` is the hot-region id for member `i` of group `g`, or
+    /// `-1` when the member is not a hot-region operator.  The table is packed as
+    /// `[g0_size, g0_n0, g0_r0, g0_n1, g0_r1, ..., g1_size, ...]` so the kernel
+    /// reads `(node_id, region_id)` pairs and writes `region_ids` to the output
+    /// without any CPU-side registry lookup.
     pub fn build(
         dev: &Arc<CudaDevice>,
         groups: &[Vec<i32>],
         eligible: &[bool],
+        region_ids: &[Vec<i32>],
     ) -> Result<Self, CudaError> {
         assert_eq!(groups.len(), eligible.len());
+        assert_eq!(groups.len(), region_ids.len());
         if groups.is_empty() {
             let table_buf = dev
                 .htod_copy(vec![0_i32])
@@ -227,11 +237,15 @@ impl ParGroupGpuData {
                 num_groups: 0,
             });
         }
-        // Packed table: [g0_size, g0_n0, g0_n1, ..., g1_size, ...]
+        // Packed table: [g0_size, g0_n0, g0_r0, g0_n1, g0_r1, ..., g1_size, ...]
+        // Each member occupies two slots: (node_id, region_id).
         let mut table: Vec<i32> = Vec::new();
-        for group in groups {
+        for (group, rids) in groups.iter().zip(region_ids.iter()) {
             table.push(group.len() as i32);
-            table.extend_from_slice(group);
+            for (&node_id, &rid) in group.iter().zip(rids.iter()) {
+                table.push(node_id);
+                table.push(rid);
+            }
         }
         let table_buf = dev
             .htod_copy(table)
@@ -255,6 +269,9 @@ pub(crate) struct ParGroupStepOutputRaw {
     pub selected_group_idx: i32,
     pub group_size: i32,
     pub decisions: [DecisionReport; MAX_PAR_GROUP_SIZE],
+    /// Hot-region id for each committed member; -1 when the member is not a hot region.
+    /// Written by the kernel from the packed (node_id, region_id) table entries.
+    pub region_ids: [i32; MAX_PAR_GROUP_SIZE],
 }
 
 impl Default for ParGroupStepOutputRaw {
@@ -263,6 +280,7 @@ impl Default for ParGroupStepOutputRaw {
             selected_group_idx: -1,
             group_size: 0,
             decisions: [DecisionReport::default(); MAX_PAR_GROUP_SIZE],
+            region_ids: [-1_i32; MAX_PAR_GROUP_SIZE],
         }
     }
 }
@@ -686,19 +704,24 @@ impl TensorQuantaleWorld {
     ///
     /// `groups` are the compiled par groups (node ID lists).
     /// `eligible[g]` is `true` when every operator in group `g` is GPU-executable.
+    /// `region_ids[g][i]` is the hot-region id for member `i` (-1 if not hot).
     pub fn make_par_group_data(
         &self,
         groups: &[Vec<i32>],
         eligible: &[bool],
+        region_ids: &[Vec<i32>],
     ) -> Result<ParGroupGpuData, CudaError> {
-        ParGroupGpuData::build(&self.dev, groups, eligible)
+        ParGroupGpuData::build(&self.dev, groups, eligible, region_ids)
     }
 
     /// GPU-native parallel group step: select the first eligible, all-ready CKA
     /// par group, commit it atomically, and return the committed decisions.
     ///
     /// Returns `Ok(None)` when no group is ready — tensor state is unchanged.
-    /// Returns `Ok(Some((group_idx, decisions)))` on commit.
+    /// Returns `Ok(Some((group_idx, decisions, region_ids)))` on commit, where
+    /// `region_ids[i]` is the hot-region id for member `i` (-1 if not hot).
+    /// The region_ids come directly from the kernel-read table entries, so the
+    /// CPU does not need to re-derive them from the hot_region_registry.
     ///
     /// One kernel launch replaces the CPU loop of `project_parallel_group` +
     /// readback + `commit_decision_batch` from the old batch tier.
@@ -706,7 +729,7 @@ impl TensorQuantaleWorld {
         &mut self,
         data: &ParGroupGpuData,
         bias: ProjectionBias,
-    ) -> Result<Option<(usize, Vec<DecisionReport>)>, CudaError> {
+    ) -> Result<Option<(usize, Vec<DecisionReport>, Vec<i32>)>, CudaError> {
         if data.num_groups == 0 {
             return Ok(None);
         }
@@ -753,6 +776,7 @@ impl TensorQuantaleWorld {
         Ok(Some((
             raw.selected_group_idx as usize,
             raw.decisions[..sz].to_vec(),
+            raw.region_ids[..sz].to_vec(),
         )))
     }
 

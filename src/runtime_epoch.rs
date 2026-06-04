@@ -166,8 +166,28 @@ pub(super) fn build_runtime_epoch(
             })
         })
         .collect();
+    // Per-member hot-region ids (-1 when the member is not a hot-region operator).
+    // Encoded into the packed table so the kernel emits them in ParGroupStepOutput
+    // without any CPU-side hot_region_registry lookup per dispatch tick.
+    let par_region_ids: Vec<Vec<i32>> = topology
+        .parallel_groups
+        .iter()
+        .map(|group| {
+            group
+                .iter()
+                .map(|&id| {
+                    topology
+                        .registry()
+                        .name_of(id as usize)
+                        .and_then(|name| config.hot_region_registry.region_id_for(name))
+                        .map(|r| r as i32)
+                        .unwrap_or(-1)
+                })
+                .collect()
+        })
+        .collect();
     let par_group_data = world
-        .make_par_group_data(&topology.parallel_groups, &par_eligible)
+        .make_par_group_data(&topology.parallel_groups, &par_eligible, &par_region_ids)
         .ok();
 
     Ok(RuntimeEpoch {

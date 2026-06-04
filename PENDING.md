@@ -38,9 +38,11 @@ G_c = 1   GPU commits consumed/active state
 E_g = ½   eligibility checked on-device, but mask is CPU-precomputed at epoch start
 D_h = 1   CPU still dispatches operators (thread::scope → execute_*_blocking)
 R_d = ½   hot-region par members route receipts through device ring; fusion/abstract use CPU path
+R_k = 1   per-member region_id encoded in the packed table; kernel emits it in ParGroupStepOutput
+          (no per-tick hot_region_registry lookup — routing info is GPU-native from epoch start)
 ```
 
-What changed: the CPU group-selection loop is gone. The GPU now selects and commits. Hot-region par members now issue `gpu_dispatch_region` + `drain_device_receipts` instead of `queue_lattice_update`, so their tensor updates are applied on-device without a CPU drain kernel. What remains CPU-side:
+What changed: the CPU group-selection loop is gone. The GPU now selects and commits. Hot-region par members now issue `gpu_dispatch_region` + `drain_device_receipts` instead of `queue_lattice_update`, so their tensor updates are applied on-device without a CPU drain kernel. The par table now encodes `(node_id, region_id)` pairs so the kernel emits per-member routing info; `main.rs` uses `par_member_region_ids` from the kernel output rather than re-deriving from `hot_region_registry` per tick. What remains CPU-side:
 
 **Gap A — operator dispatch is still host-bound.**
 `dispatch_gpu_parallel_group` uses `thread::scope → execute_fusion_entry_blocking / execute_abstract_node_blocking`. Operators run on the GPU (jit_cuda/fusion), but the launch is CPU-initiated per member.

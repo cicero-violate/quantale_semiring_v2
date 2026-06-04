@@ -420,7 +420,7 @@ fn main() {
                 Ok(None) => break 'par_tier false,
                 Ok(Some(result)) => result,
             };
-            let (group_idx, par_decisions) = step;
+            let (group_idx, par_decisions, par_member_region_ids) = step;
 
             let par_names: Vec<String> = epoch
                 .topology
@@ -459,12 +459,13 @@ fn main() {
             let mut par_failures = 0usize;
             let mut par_stdout: Vec<Value> = Vec::new();
             // Tracks whether any hot-region receipt was routed through the device ring
-            // (Gap D partial closure). Cleared each group; drives drain_device_receipts.
+            // (Gap D partial closure). Drives drain_device_receipts after the loop.
             let mut any_device_ring = false;
-            for ((decision, receipt), par_node_name) in par_decisions
+            for (((decision, receipt), par_node_name), &kernel_region_id) in par_decisions
                 .iter()
                 .zip(par_receipts.iter())
                 .zip(par_names.iter())
+                .zip(par_member_region_ids.iter())
             {
                 if let Err(error) = tlog.append_decision(decision) {
                     fatal!("tlog", "append_decision_failed", error);
@@ -492,11 +493,12 @@ fn main() {
 
                 // Gap D (partial): hot-region par members route their receipt through the
                 // device ring (gpu_dispatch_region → drain_device_receipts) so tensor
-                // updates stay GPU-resident. Fusion/abstract members use queue_lattice_update.
-                let hot_rid = config.hot_region_registry.region_id_for(par_node_name);
-                let via_device = if let Some(rid) = hot_rid {
+                // updates stay GPU-resident. Fusion/abstract members (kernel_region_id == -1)
+                // use queue_lattice_update. The region_id comes from the kernel output
+                // (packed into the par table at epoch start) — no per-tick registry lookup.
+                let via_device = if kernel_region_id >= 0 {
                     match epoch.world.gpu_dispatch_region(
-                        rid as i32,
+                        kernel_region_id,
                         decision.selected_src,
                         decision.first_hop,
                         par_outcome.code(),
@@ -507,7 +509,7 @@ fn main() {
                                 "device_ring_receipt",
                                 &[
                                     ("node", par_node_name.clone()),
-                                    ("region_id", rid.to_string()),
+                                    ("region_id", kernel_region_id.to_string()),
                                 ],
                             );
                             true

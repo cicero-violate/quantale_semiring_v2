@@ -1136,12 +1136,14 @@ extern "C" __global__ void tensor_quantale_gpu_dispatch(
 // Eligibility (jit_cuda/fusion/hot) is precomputed on the CPU at epoch start
 // and passed as a static int[] mask — 0=ineligible, 1=eligible.
 //
-// Table layout: [g0_size, g0_n0, g0_n1, ..., g1_size, g1_n0, ...]
+// Table layout: [g0_size, g0_n0, g0_r0, g0_n1, g0_r1, ..., g1_size, g1_n0, g1_r0, ...]
+// Each member is an (node_id, region_id) pair; region_id = -1 for non-hot members.
 // (num_groups is passed as a separate int)
 //
 // Output: ParGroupStepOutput written to *result.
 //   selected_group_idx = -1  → no group was ready; tensor state unchanged.
 //   selected_group_idx >= 0  → group committed; consumed/active/decision updated.
+//   region_ids[i]            → hot-region id for member i (-1 if not a hot region).
 //
 // Single-thread kernel (tid==0, bid==0).  N is at most 256 in practice so the
 // O(N²) inner loop is cheap relative to kernel-launch overhead.
@@ -1152,6 +1154,7 @@ struct ParGroupStepOutput {
     int selected_group_idx;
     int group_size;
     struct DecisionReport decisions[MAX_PAR_GROUP_SIZE];
+    int region_ids[MAX_PAR_GROUP_SIZE]; // hot-region id per member; -1 if not hot
 };
 
 extern "C" __global__ void tensor_quantale_par_group_step(
@@ -1162,7 +1165,7 @@ extern "C" __global__ void tensor_quantale_par_group_step(
     int*                 next_active,
     const ProjectionBias* bias,
     DecisionReport*      global_decision,
-    const int*           par_table,    // packed group table
+    const int*           par_table,    // packed (node_id, region_id) pair table
     const int*           eligible,     // [num_groups] 1=eligible
     int                  num_groups,
     ParGroupStepOutput*  result
@@ -1181,16 +1184,18 @@ extern "C" __global__ void tensor_quantale_par_group_step(
     for (int g = 0; g < num_groups; g++) {
         int sz = par_table[ptr++];
         int group_start = ptr;
-        ptr += sz;
+        ptr += sz * 2; // each member is (node_id, region_id)
 
         if (!eligible[g] || sz < 2 || sz > MAX_PAR_GROUP_SIZE) continue;
 
         // Project each member toward its target node.
         bool all_ready = true;
         struct DecisionReport decisions[MAX_PAR_GROUP_SIZE];
+        int region_ids[MAX_PAR_GROUP_SIZE];
 
         for (int i = 0; i < sz; i++) {
-            int target_hop = par_table[group_start + i];
+            int target_hop = par_table[group_start + i * 2];
+            region_ids[i]  = par_table[group_start + i * 2 + 1];
             float best_value = -1.0e30f;
             int best_src = -1, best_dst = -1, best_hop = -1, candidates = 0;
 
@@ -1254,11 +1259,13 @@ extern "C" __global__ void tensor_quantale_par_group_step(
         global_decision[0].halted        = 0;
         global_decision[0].blocked       = 0;
 
-        // Write result.
+        // Write result with per-member region routing info.
         result->selected_group_idx = g;
         result->group_size = sz;
-        for (int i = 0; i < sz; i++)
-            result->decisions[i] = decisions[i];
+        for (int i = 0; i < sz; i++) {
+            result->decisions[i]  = decisions[i];
+            result->region_ids[i] = region_ids[i];
+        }
 
         break; // one committed group per tick
     }
