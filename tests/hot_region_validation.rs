@@ -9,9 +9,11 @@
 //!  - Ring-buffer push/pop (CUDA-gated)
 
 use quantale_semiring_v2::{
-    AsyncUploadQueue, DeviceSlotRegistry, HostStagingBuffer, HotRegionRegistry, TypedIrOp,
+    AsyncUploadQueue, HostStagingBuffer, HotRegionRegistry, TypedIrOp,
     ir_op_to_jit_body, load_operator_registry,
 };
+#[cfg(not(feature = "cuda"))]
+use quantale_semiring_v2::DeviceSlotRegistry;
 
 // ── TypedIR rejection tests ───────────────────────────────────────────────────
 
@@ -310,26 +312,28 @@ fn upload_queue_flush_clears_staged_no_cuda() {
 #[cfg(feature = "cuda")]
 mod ring_buffer_cuda {
     use quantale_semiring_v2::{DeviceRingBuffer, TensorQuantaleWorld};
-    use cudarc::driver::CudaDevice;
 
     const MODULE: &str = "quantale_semiring_v2_tensor";
 
-    fn try_device() -> Option<std::sync::Arc<CudaDevice>> {
-        CudaDevice::new(0).ok()
+    /// Returns (world, dev) or skips the test.
+    macro_rules! world_or_skip {
+        () => {{
+            match TensorQuantaleWorld::empty() {
+                Ok(w) => {
+                    let dev = w.device().clone();
+                    (w, dev)
+                }
+                Err(e) => {
+                    eprintln!("skip: TensorQuantaleWorld::empty: {e}");
+                    return;
+                }
+            }
+        }};
     }
 
     #[test]
     fn ring_push_then_pop_returns_same_values() {
-        let dev = match try_device() {
-            Some(d) => d,
-            None => { eprintln!("skip: no cuda device"); return; }
-        };
-        // Initialise world so the module (with ring kernels) is loaded.
-        let mut world = match TensorQuantaleWorld::empty() {
-            Ok(w) => w,
-            Err(e) => { eprintln!("skip: TensorQuantaleWorld::empty failed: {e}"); return; }
-        };
-
+        let (world, dev) = world_or_skip!();
         let capacity = 16;
         let mut ring = DeviceRingBuffer::new(&dev, capacity).expect("ring alloc");
         let src_data = vec![1.0f32, 2.0, 3.0, 4.0];
@@ -340,24 +344,15 @@ mod ring_buffer_cuda {
         let result = dev.dtoh_sync_copy(&dst).expect("dtoh");
 
         assert_eq!(result, src_data, "push then pop must return identical values");
-        let _ = world; // keep world alive so PTX module stays loaded
+        drop(world);
     }
 
     #[test]
     fn ring_push_pop_fifo_order() {
-        let dev = match try_device() {
-            Some(d) => d,
-            None => { eprintln!("skip: no cuda device"); return; }
-        };
-        let mut world = match TensorQuantaleWorld::empty() {
-            Ok(w) => w,
-            Err(e) => { eprintln!("skip: {e}"); return; }
-        };
-
+        let (world, dev) = world_or_skip!();
         let capacity = 32;
         let mut ring = DeviceRingBuffer::new(&dev, capacity).expect("ring alloc");
 
-        // Push batch A then batch B; pop in FIFO order — A must come first.
         let a: Vec<f32> = vec![10.0, 20.0];
         let b: Vec<f32> = vec![30.0, 40.0];
         ring.push(&dev, MODULE, &dev.htod_copy(a.clone()).unwrap()).expect("push a");
@@ -367,20 +362,12 @@ mod ring_buffer_cuda {
         let got_b = dev.dtoh_sync_copy(&ring.pop(&dev, MODULE, 2).expect("pop b")).unwrap();
         assert_eq!(got_a, a, "FIFO: first push must be first pop");
         assert_eq!(got_b, b, "FIFO: second push must be second pop");
-        let _ = world;
+        drop(world);
     }
 
     #[test]
     fn ring_wraparound_works() {
-        let dev = match try_device() {
-            Some(d) => d,
-            None => { eprintln!("skip: no cuda device"); return; }
-        };
-        let mut world = match TensorQuantaleWorld::empty() {
-            Ok(w) => w,
-            Err(e) => { eprintln!("skip: {e}"); return; }
-        };
-
+        let (world, dev) = world_or_skip!();
         // capacity=4, push 3, pop 3, push 3 (wraps around), pop 3
         let capacity = 4;
         let mut ring = DeviceRingBuffer::new(&dev, capacity).expect("ring alloc");
@@ -388,10 +375,10 @@ mod ring_buffer_cuda {
         let first  = vec![1.0f32, 2.0, 3.0];
         let second = vec![7.0f32, 8.0, 9.0];
         ring.push(&dev, MODULE, &dev.htod_copy(first.clone()).unwrap()).unwrap();
-        let _ = ring.pop(&dev, MODULE, 3).unwrap();
+        ring.pop(&dev, MODULE, 3).unwrap();
         ring.push(&dev, MODULE, &dev.htod_copy(second.clone()).unwrap()).unwrap();
         let got = dev.dtoh_sync_copy(&ring.pop(&dev, MODULE, 3).unwrap()).unwrap();
         assert_eq!(got, second, "values written after wraparound must be readable");
-        let _ = world;
+        drop(world);
     }
 }

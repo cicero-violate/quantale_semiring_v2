@@ -975,6 +975,12 @@ impl TensorQuantaleWorld {
         Ok(())
     }
 
+    /// The `CudaDevice` that owns all PTX modules loaded by this world.
+    /// Pass this reference when launching kernels that belong to the same module.
+    pub fn device(&self) -> &Arc<CudaDevice> {
+        &self.dev
+    }
+
     pub fn tensor(&self) -> Result<Vec<f32>, CudaError> {
         self.dev
             .dtoh_sync_copy(&self.tensor)

@@ -1,4 +1,3 @@
-use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::BTreeSet;
 use std::fs;
@@ -10,22 +9,6 @@ use crate::programs::{
     validate_kernel_slot_purity, validate_known_backends, validate_quantale_layers,
     validate_source_node_effects, validate_unique_source_node_names,
 };
-use crate::{TopologyNode, TopologyTransition};
-
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct TopologyOverlay {
-    #[serde(default)]
-    pub nodes: Vec<TopologyNode>,
-    #[serde(default)]
-    pub transitions: Vec<TopologyTransition>,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct OperatorOverlay {
-    #[serde(default)]
-    pub operators: Vec<Value>,
-}
-
 pub fn build_overlay_assets(root: impl AsRef<Path>) -> Result<(), String> {
     let root = root.as_ref();
     let source = read_json(root.join("assets/topology.source.json"))?;
@@ -82,13 +65,11 @@ pub fn build_overlay_assets(root: impl AsRef<Path>) -> Result<(), String> {
     write_json(root.join("assets/topology.generated.json"), &topology)?;
     write_json(root.join("assets/operators.generated.json"), &operators)?;
 
-    // Phase 6: emit topology.fusion.json when fusible regions were found.
-    if !fusion_regions.is_empty() {
-        let fusion_json = serde_json::json!({
-            "regions": fusion_regions.iter().map(FusionRegion::to_json).collect::<Vec<_>>()
-        });
-        write_json(root.join("assets/topology.fusion.json"), &fusion_json)?;
-    }
+    // Phase 6: always emit topology.fusion.json (empty regions list when none found).
+    let fusion_json = serde_json::json!({
+        "regions": fusion_regions.iter().map(FusionRegion::to_json).collect::<Vec<_>>()
+    });
+    write_json(root.join("assets/topology.fusion.json"), &fusion_json)?;
 
     Ok(())
 }
@@ -97,9 +78,7 @@ pub fn build_overlay_assets(root: impl AsRef<Path>) -> Result<(), String> {
 
 /// Read `assets/topology.source.json`, compile its programs into flat
 /// transitions, and append any genuinely-new edges to `transitions`.
-/// Also emits `assets/patterns.source.json` (patterns.json-compatible output
-/// generated from source programs — Phase 3 proof that patterns.json can be
-/// replaced by topology.source.json).
+/// Also emits `assets/patterns.source.json` generated from source programs.
 /// Returns the collected parallel group node-name lists.
 fn extend_from_source_topology(
     root: &Path,
@@ -135,9 +114,7 @@ fn extend_from_source_topology(
 
     transitions.extend(new_transitions);
 
-    // Phase 3: emit patterns.source.json (patterns.json-compatible, generated
-    // from topology.source.json programs).  This proves patterns.json can be
-    // derived from the source topology rather than hand-authored.
+    // Phase 3: emit patterns.source.json from topology.source.json programs.
     let patterns_compat = emit_patterns_compat(source);
     write_json(root.join("assets/patterns.source.json"), &patterns_compat)?;
 
@@ -216,6 +193,23 @@ fn runtime_topology_from_source(source: &Value) -> Result<Value, String> {
 
     if let Some(version) = source.get("version") {
         object.insert("version".to_string(), version.clone());
+        // source_version: stable fingerprint of which source revision was used
+        // to generate this runtime artifact.  Format: "v{version}".
+        object.insert(
+            "source_version".to_string(),
+            Value::String(format!("v{}", version)),
+        );
+    } else {
+        // Fallback: node count fingerprint when source has no version field.
+        let n = source
+            .get("nodes")
+            .and_then(Value::as_array)
+            .map(Vec::len)
+            .unwrap_or(0);
+        object.insert(
+            "source_version".to_string(),
+            Value::String(format!("v0.{n}n")),
+        );
     }
     if let Some(slots) = source.get("slots") {
         object.insert("slots".to_string(), slots.clone());
@@ -449,4 +443,66 @@ fn string_field<'a>(value: &'a Value, field: &str, context: &str) -> Result<&'a 
         .and_then(Value::as_str)
         .filter(|value| !value.is_empty())
         .ok_or_else(|| format!("{context} missing non-empty string field '{field}'"))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use super::*;
+
+    #[test]
+    fn build_overlay_emits_all_generated_runtime_assets() {
+        let root = std::env::temp_dir().join(format!(
+            "quantale_overlay_test_{}_{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let assets = root.join("assets");
+        fs::create_dir_all(&assets).unwrap();
+        // Resolve asset paths relative to the workspace root via CARGO_MANIFEST_DIR.
+        let workspace_assets =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets");
+        fs::copy(
+            workspace_assets.join("topology.source.json"),
+            assets.join("topology.source.json"),
+        )
+        .unwrap();
+        fs::copy(
+            workspace_assets.join("operators.json"),
+            assets.join("operators.json"),
+        )
+        .unwrap();
+
+        build_overlay_assets(&root).unwrap();
+
+        for asset in [
+            "topology.generated.json",
+            "operators.generated.json",
+            "patterns.source.json",
+            "topology.fusion.json",
+        ] {
+            assert!(
+                assets.join(asset).exists(),
+                "missing generated asset {asset}"
+            );
+        }
+
+        let topology = read_json(assets.join("topology.generated.json")).unwrap();
+        assert!(topology.get("quantale").is_some());
+        let transitions = topology
+            .get("transitions")
+            .and_then(Value::as_array)
+            .unwrap();
+        assert!(
+            transitions
+                .iter()
+                .all(|transition| transition.get("default_weight").is_none())
+        );
+
+        fs::remove_dir_all(root).unwrap();
+    }
 }

@@ -789,6 +789,7 @@
       "type": "bytes"
     }
   },
+  "source_version": "v1",
   "transitions": [
     {
       "confidence": 0.99,
