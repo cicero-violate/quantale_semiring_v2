@@ -19,6 +19,10 @@ pub(super) struct RuntimeEpoch {
     /// Buffers successful execution edge deltas for persistence to
     /// `state/learned_edges.jsonl`.  Flushed on epoch reload and shutdown.
     pub(super) learning_buffer: quantale_semiring_v2::LearningBuffer,
+    /// GPU-resident par group table and eligibility mask for the GPU-native
+    /// parallel dispatch tier.  `None` when no par groups exist or when the
+    /// world fails to upload (e.g. no CUDA device).
+    pub(super) par_group_data: Option<quantale_semiring_v2::ParGroupGpuData>,
 }
 
 pub(super) fn build_runtime_epoch(
@@ -148,6 +152,24 @@ pub(super) fn build_runtime_epoch(
         }
     }
 
+    // Build GPU-resident par group data.  A group is eligible only when every
+    // member operator is GPU-executable (jit_cuda / fusion entry / hot region).
+    let par_eligible: Vec<bool> = topology
+        .parallel_groups
+        .iter()
+        .map(|group| {
+            group.iter().all(|&id| {
+                let Some(name) = topology.registry().name_of(id as usize) else {
+                    return false;
+                };
+                executor.is_hot_node(name) || config.fusion_dispatch.is_fusion_entry(name)
+            })
+        })
+        .collect();
+    let par_group_data = world
+        .make_par_group_data(&topology.parallel_groups, &par_eligible)
+        .ok();
+
     Ok(RuntimeEpoch {
         id,
         fingerprint: current_asset_fingerprint(),
@@ -161,6 +183,7 @@ pub(super) fn build_runtime_epoch(
             &config.learned_edges_path,
             LEARNING_FLUSH_THRESHOLD,
         ),
+        par_group_data,
     })
 }
 

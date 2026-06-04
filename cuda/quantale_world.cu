@@ -1127,6 +1127,143 @@ extern "C" __global__ void tensor_quantale_gpu_dispatch(
     }
 }
 
+// ── GPU-native parallel group selection + commit ──────────────────────────────
+//
+// tensor_quantale_par_group_step: single kernel that selects the first eligible,
+// all-ready CKA par group, commits it atomically, and writes the result without
+// any CPU round-trip for group selection or effect validation.
+//
+// Eligibility (jit_cuda/fusion/hot) is precomputed on the CPU at epoch start
+// and passed as a static int[] mask — 0=ineligible, 1=eligible.
+//
+// Table layout: [g0_size, g0_n0, g0_n1, ..., g1_size, g1_n0, ...]
+// (num_groups is passed as a separate int)
+//
+// Output: ParGroupStepOutput written to *result.
+//   selected_group_idx = -1  → no group was ready; tensor state unchanged.
+//   selected_group_idx >= 0  → group committed; consumed/active/decision updated.
+//
+// Single-thread kernel (tid==0, bid==0).  N is at most 256 in practice so the
+// O(N²) inner loop is cheap relative to kernel-launch overhead.
+
+#define MAX_PAR_GROUP_SIZE 8
+
+struct ParGroupStepOutput {
+    int selected_group_idx;
+    int group_size;
+    struct DecisionReport decisions[MAX_PAR_GROUP_SIZE];
+};
+
+extern "C" __global__ void tensor_quantale_par_group_step(
+    const float*         tensor,
+    const int*           witness,
+    int*                 consumed,
+    int*                 active,
+    int*                 next_active,
+    const ProjectionBias* bias,
+    DecisionReport*      global_decision,
+    const int*           par_table,    // packed group table
+    const int*           eligible,     // [num_groups] 1=eligible
+    int                  num_groups,
+    ParGroupStepOutput*  result
+) {
+    if (threadIdx.x != 0 || blockIdx.x != 0) return;
+
+    result->selected_group_idx = -1;
+    result->group_size = 0;
+
+    float alpha = bias[0].confidence;
+    float beta  = bias[0].cost;
+    float gamma = bias[0].safety;
+    int next_step = global_decision[0].step + 1;
+
+    int ptr = 0;
+    for (int g = 0; g < num_groups; g++) {
+        int sz = par_table[ptr++];
+        int group_start = ptr;
+        ptr += sz;
+
+        if (!eligible[g] || sz < 2 || sz > MAX_PAR_GROUP_SIZE) continue;
+
+        // Project each member toward its target node.
+        bool all_ready = true;
+        struct DecisionReport decisions[MAX_PAR_GROUP_SIZE];
+
+        for (int i = 0; i < sz; i++) {
+            int target_hop = par_table[group_start + i];
+            float best_value = -1.0e30f;
+            int best_src = -1, best_dst = -1, best_hop = -1, candidates = 0;
+
+            if (target_hop >= 0 && target_hop < N) {
+                for (int idx = 0; idx < MATRIX_LEN; idx++) {
+                    int src = idx / N, dst = idx % N;
+                    if (src == dst || active[src] == 0) continue;
+
+                    int cidx = tensor_idx(LAYER_CONFIDENCE, src, dst);
+                    float confidence = tensor[cidx];
+                    float cost       = tensor[tensor_idx(LAYER_COST,   src, dst)];
+                    float safety     = tensor[tensor_idx(LAYER_SAFETY, src, dst)];
+                    if (confidence <= BOTTOM || safety <= BOTTOM || cost >= COST_INFINITY) continue;
+
+                    int hop = witness[cidx];
+                    if (hop != target_hop || consumed[src * N + hop] != 0) continue;
+
+                    float score = alpha * confidence - beta * cost + gamma * safety;
+                    candidates++;
+                    if (score > best_value) {
+                        best_value = score;
+                        best_src = src; best_dst = dst; best_hop = hop;
+                    }
+                }
+            }
+
+            decisions[i].step           = next_step;
+            decisions[i].selected_src   = best_src;
+            decisions[i].selected_dst   = best_dst;
+            decisions[i].first_hop      = best_hop;
+            decisions[i].selected_value = best_value;
+            decisions[i].halted         = (best_hop == HALT_NODE) ? 1 : 0;
+            decisions[i].blocked        = (candidates == 0) ? 1 : 0;
+
+            if (decisions[i].blocked || decisions[i].halted) {
+                all_ready = false;
+                break;
+            }
+        }
+
+        if (!all_ready) continue;
+
+        // All members ready: commit atomically.
+        for (int i = 0; i < N; i++) next_active[i] = 0;
+        for (int i = 0; i < sz; i++) {
+            int src = decisions[i].selected_src;
+            int hop = decisions[i].first_hop;
+            if (src >= 0 && src < N && hop >= 0 && hop < N) {
+                consumed[src * N + hop] = 1;
+                next_active[hop] = 1;
+            }
+        }
+        for (int i = 0; i < N; i++) active[i] = next_active[i];
+
+        // Update global step counter and representative decision.
+        global_decision[0].step          = next_step;
+        global_decision[0].selected_src  = decisions[0].selected_src;
+        global_decision[0].selected_dst  = decisions[0].selected_dst;
+        global_decision[0].first_hop     = decisions[0].first_hop;
+        global_decision[0].selected_value = decisions[0].selected_value;
+        global_decision[0].halted        = 0;
+        global_decision[0].blocked       = 0;
+
+        // Write result.
+        result->selected_group_idx = g;
+        result->group_size = sz;
+        for (int i = 0; i < sz; i++)
+            result->decisions[i] = decisions[i];
+
+        break; // one committed group per tick
+    }
+}
+
 // ── Device helper kernels for complex IR ops ──────────────────────────────────
 //
 // These kernels are called directly (not via the JIT element-wise framework)

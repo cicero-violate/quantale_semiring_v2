@@ -52,6 +52,9 @@ const RING_PUSH_KERNEL: &str = "device_ring_push";
 const RING_POP_KERNEL: &str = "device_ring_pop";
 const PARALLEL_REDUCE_KERNEL: &str = "quantale_parallel_reduce";
 const TOPK_BITONIC_KERNEL: &str = "quantale_topk_bitonic";
+const PAR_GROUP_STEP_KERNEL: &str = "tensor_quantale_par_group_step";
+
+pub const MAX_PAR_GROUP_SIZE: usize = 8;
 
 pub const DEVICE_RECEIPT_RING_SIZE: usize = 256;
 
@@ -192,6 +195,80 @@ pub struct GpuDispatchMailboxHost {
 
 unsafe impl DeviceRepr for GpuDispatchMailboxHost {}
 
+/// GPU-resident data for the par-group-step kernel.
+///
+/// Built once at epoch start from the topology's compiled par groups and the
+/// operator eligibility mask.  Uploaded to the GPU device at construction.
+pub struct ParGroupGpuData {
+    pub(crate) table_buf: CudaSlice<i32>,
+    pub(crate) eligible_buf: CudaSlice<i32>,
+    pub num_groups: usize,
+}
+
+impl ParGroupGpuData {
+    /// Build and upload par group data.  `eligible[g]` is true when every
+    /// operator in group `g` is GPU-executable (jit_cuda / fusion / hot).
+    pub fn build(
+        dev: &Arc<CudaDevice>,
+        groups: &[Vec<i32>],
+        eligible: &[bool],
+    ) -> Result<Self, CudaError> {
+        assert_eq!(groups.len(), eligible.len());
+        if groups.is_empty() {
+            let table_buf = dev
+                .htod_copy(vec![0_i32])
+                .map_err(|e| CudaError::new("htod par_group table empty", e))?;
+            let eligible_buf = dev
+                .htod_copy(vec![0_i32])
+                .map_err(|e| CudaError::new("htod par_group eligible empty", e))?;
+            return Ok(Self {
+                table_buf,
+                eligible_buf,
+                num_groups: 0,
+            });
+        }
+        // Packed table: [g0_size, g0_n0, g0_n1, ..., g1_size, ...]
+        let mut table: Vec<i32> = Vec::new();
+        for group in groups {
+            table.push(group.len() as i32);
+            table.extend_from_slice(group);
+        }
+        let table_buf = dev
+            .htod_copy(table)
+            .map_err(|e| CudaError::new("htod par_group table", e))?;
+        let eligible_buf = dev
+            .htod_copy(eligible.iter().map(|&b| b as i32).collect::<Vec<_>>())
+            .map_err(|e| CudaError::new("htod par_group eligible", e))?;
+        Ok(Self {
+            table_buf,
+            eligible_buf,
+            num_groups: groups.len(),
+        })
+    }
+}
+
+/// C-compatible output struct for `tensor_quantale_par_group_step`.
+/// Must match the CUDA `ParGroupStepOutput` definition exactly.
+#[repr(C)]
+#[derive(Clone, Debug)]
+pub(crate) struct ParGroupStepOutputRaw {
+    pub selected_group_idx: i32,
+    pub group_size: i32,
+    pub decisions: [DecisionReport; MAX_PAR_GROUP_SIZE],
+}
+
+impl Default for ParGroupStepOutputRaw {
+    fn default() -> Self {
+        Self {
+            selected_group_idx: -1,
+            group_size: 0,
+            decisions: [DecisionReport::default(); MAX_PAR_GROUP_SIZE],
+        }
+    }
+}
+
+unsafe impl DeviceRepr for ParGroupStepOutputRaw {}
+
 /// Device-resident ring buffer for `DeviceReceipt`s.
 ///
 /// `ring` holds `DEVICE_RECEIPT_RING_SIZE` slots on the GPU.
@@ -273,6 +350,7 @@ impl TensorQuantaleWorld {
                 RING_POP_KERNEL,
                 PARALLEL_REDUCE_KERNEL,
                 TOPK_BITONIC_KERNEL,
+                PAR_GROUP_STEP_KERNEL,
             ],
         )
         .map_err(|error| CudaError::new("load_ptx tensor", error))?;
@@ -602,6 +680,80 @@ impl TensorQuantaleWorld {
             )
         }
         .map_err(|error| CudaError::new("tensor_quantale_commit_batch", error))
+    }
+
+    /// Build and upload par group GPU data using this world's CUDA device.
+    ///
+    /// `groups` are the compiled par groups (node ID lists).
+    /// `eligible[g]` is `true` when every operator in group `g` is GPU-executable.
+    pub fn make_par_group_data(
+        &self,
+        groups: &[Vec<i32>],
+        eligible: &[bool],
+    ) -> Result<ParGroupGpuData, CudaError> {
+        ParGroupGpuData::build(&self.dev, groups, eligible)
+    }
+
+    /// GPU-native parallel group step: select the first eligible, all-ready CKA
+    /// par group, commit it atomically, and return the committed decisions.
+    ///
+    /// Returns `Ok(None)` when no group is ready — tensor state is unchanged.
+    /// Returns `Ok(Some((group_idx, decisions)))` on commit.
+    ///
+    /// One kernel launch replaces the CPU loop of `project_parallel_group` +
+    /// readback + `commit_decision_batch` from the old batch tier.
+    pub fn par_group_step(
+        &mut self,
+        data: &ParGroupGpuData,
+        bias: ProjectionBias,
+    ) -> Result<Option<(usize, Vec<DecisionReport>)>, CudaError> {
+        if data.num_groups == 0 {
+            return Ok(None);
+        }
+        let bias_buf = self
+            .dev
+            .htod_copy(vec![bias])
+            .map_err(|e| CudaError::new("htod par_group bias", e))?;
+        let mut out_buf = self
+            .dev
+            .htod_copy(vec![ParGroupStepOutputRaw::default()])
+            .map_err(|e| CudaError::new("htod par_group output", e))?;
+        let kernel = self
+            .dev
+            .get_func(MODULE_NAME, PAR_GROUP_STEP_KERNEL)
+            .ok_or(CudaError::missing_function(PAR_GROUP_STEP_KERNEL))?;
+        unsafe {
+            kernel.launch(
+                kernel_config(),
+                (
+                    &self.tensor,
+                    &self.witness,
+                    &mut self.consumed,
+                    &mut self.active,
+                    &mut self.next_active,
+                    &bias_buf,
+                    &mut self.decision,
+                    &data.table_buf,
+                    &data.eligible_buf,
+                    data.num_groups as i32,
+                    &mut out_buf,
+                ),
+            )
+        }
+        .map_err(|e| CudaError::new(PAR_GROUP_STEP_KERNEL, e))?;
+        let output = self
+            .dev
+            .dtoh_sync_copy(&out_buf)
+            .map_err(|e| CudaError::new("dtoh par_group output", e))?;
+        let raw = &output[0];
+        if raw.selected_group_idx < 0 {
+            return Ok(None);
+        }
+        let sz = (raw.group_size as usize).min(MAX_PAR_GROUP_SIZE);
+        Ok(Some((
+            raw.selected_group_idx as usize,
+            raw.decisions[..sz].to_vec(),
+        )))
     }
 
     /// Project and advance the tensor frontier on CUDA.
