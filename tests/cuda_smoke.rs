@@ -2,8 +2,8 @@
 mod cuda_smoke {
     use cudarc::driver::{CudaDevice, LaunchAsync, LaunchConfig};
     use quantale_semiring_v2::{
-        AsyncUploadQueue, DeviceSlotRegistry, JitCache, JitChain, OperatorRegistry,
-        TensorQuantaleWorld, load_operator_registry,
+        DeviceSlotRegistry, JitCache, JitChain, OperatorRegistry, TensorQuantaleWorld, UploadQueue,
+        load_operator_registry,
     };
 
     #[test]
@@ -69,7 +69,7 @@ mod cuda_smoke {
     }
 
     #[test]
-    fn async_upload_queue_flushes_pinned_host_data() -> Result<(), Box<dyn std::error::Error>> {
+    fn upload_queue_flushes_pinned_host_data() -> Result<(), Box<dyn std::error::Error>> {
         let device = match CudaDevice::new(0) {
             Ok(d) => d,
             Err(e) => {
@@ -78,7 +78,7 @@ mod cuda_smoke {
             }
         };
 
-        let mut queue = AsyncUploadQueue::new();
+        let mut queue = UploadQueue::new();
         let mut slots = DeviceSlotRegistry::new();
         queue.stage("math.a", &[1.0, 2.0, 3.0, 4.0])?;
         queue.flush(&mut slots, &device)?;

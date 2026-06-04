@@ -10,9 +10,9 @@ import pathlib
 import sys
 from datetime import datetime, timezone
 
-ROOT = pathlib.Path(__file__).resolve().parents[3]
-GOALS = ROOT / "assets" / "inactive_mutation" / "goals.source.json"
-POLICY = ROOT / "assets" / "inactive_mutation" / "goal_policy.json"
+ROOT = pathlib.Path(__file__).resolve().parents[2]
+GOALS = ROOT / "tools" / "mutation" / "assets" / "goals.source.json"
+POLICY = ROOT / "tools" / "mutation" / "assets" / "goal_policy.json"
 
 
 def load_json(path):

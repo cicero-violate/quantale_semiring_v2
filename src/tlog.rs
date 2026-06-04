@@ -7,7 +7,6 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::batch::BatchPlan;
 use crate::exploration::ExplorationCommitRecord;
 use crate::graph::DecisionReport;
 use crate::tensor::TensorEdge;
@@ -113,13 +112,6 @@ impl TlogWriter {
 
     pub fn append_exploration_receipt<T: Serialize>(&mut self, payload: &T) -> io::Result<u64> {
         self.append_record(TlogRecordKind::ExplorationReceipt, payload)
-    }
-
-    pub fn append_batch_plan(&mut self, label: &str, batch_plan: &BatchPlan) -> io::Result<u64> {
-        self.append_record(
-            TlogRecordKind::Decision,
-            &json!({ "label": label, "batch_plan": batch_plan }),
-        )
     }
 
     pub fn append_record<T: Serialize>(

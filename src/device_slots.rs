@@ -490,7 +490,7 @@ struct InFlightUpload {
 /// itself is not a CUDA async transfer (no stream; no `cudaMemcpyAsync`).
 /// A future refactor can introduce a CUDA stream and pinned host buffers here
 /// once the correctness baseline is established.
-pub struct AsyncUploadQueue {
+pub struct UploadQueue {
     staged: Vec<(String, HostStagingBuffer)>,
     #[cfg(feature = "cuda")]
     in_flight: Vec<InFlightUpload>,
@@ -498,7 +498,7 @@ pub struct AsyncUploadQueue {
     in_flight_device: Option<std::sync::Arc<cudarc::driver::CudaDevice>>,
 }
 
-impl Default for AsyncUploadQueue {
+impl Default for UploadQueue {
     fn default() -> Self {
         Self {
             staged: Vec::new(),
@@ -510,7 +510,7 @@ impl Default for AsyncUploadQueue {
     }
 }
 
-impl AsyncUploadQueue {
+impl UploadQueue {
     pub fn new() -> Self {
         Self::default()
     }
@@ -537,7 +537,7 @@ impl AsyncUploadQueue {
         for (slot, buf) in self.staged.drain(..) {
             let device_buf = dev
                 .htod_copy(buf.data)
-                .map_err(|e| format!("AsyncUploadQueue htod '{slot}': {e}"))?;
+                .map_err(|e| format!("UploadQueue htod '{slot}': {e}"))?;
             registry.insert(slot.clone(), device_buf);
             self.in_flight.push(InFlightUpload { _slot: slot });
         }
@@ -546,11 +546,11 @@ impl AsyncUploadQueue {
     }
 
     #[cfg(feature = "cuda")]
-    /// Wait for all queued async uploads to finish and clear in-flight markers.
+    /// Wait for all queued uploads to finish and clear in-flight markers.
     pub fn synchronize(&mut self) -> Result<(), String> {
         if let Some(dev) = &self.in_flight_device {
             dev.synchronize()
-                .map_err(|e| format!("AsyncUploadQueue synchronize: {e}"))?;
+                .map_err(|e| format!("UploadQueue synchronize: {e}"))?;
         }
         self.in_flight.clear();
         self.in_flight_device = None;
@@ -574,7 +574,7 @@ impl AsyncUploadQueue {
 }
 
 #[cfg(feature = "cuda")]
-impl Drop for AsyncUploadQueue {
+impl Drop for UploadQueue {
     fn drop(&mut self) {
         let _ = self.synchronize();
     }

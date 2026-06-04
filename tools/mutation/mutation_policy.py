@@ -9,8 +9,8 @@ import os
 import pathlib
 import uuid
 
-PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[3]
-POLICY_PATH = PROJECT_ROOT / "assets" / "inactive_mutation" / "side_effect_policy.json"
+PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[2]
+POLICY_PATH = PROJECT_ROOT / "tools" / "mutation" / "assets" / "side_effect_policy.json"
 DEFAULT_QUEUE_PATH = PROJECT_ROOT / "state" / "mutation_queue.jsonl"
 
 

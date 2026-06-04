@@ -1,11 +1,10 @@
 //! Behavioral and regression tests for the upgrade.v2 work.
 //!
 //! Covers:
-//!  - TypedIR: non-lowerable ops return Err
 //!  - Hot region slot validation against declared operators
 //!  - Hot topology executable invariants
 //!  - Split topology loads through SystemConfig
-//!  - HostStagingBuffer and AsyncUploadQueue staging behaviour
+//!  - HostStagingBuffer and UploadQueue staging behaviour
 //!  - Fusion dispatch priority over single-node hot dispatch (P1.1)
 //!  - Synthetic hot node whitelist (Region::CommitReceipt)
 //!  - Ring-buffer push/pop (CUDA-gated)
@@ -13,140 +12,9 @@
 #[cfg(not(feature = "cuda"))]
 use quantale_semiring_v2::DeviceSlotRegistry;
 use quantale_semiring_v2::{
-    AsyncUploadQueue, FusionDispatch, HostStagingBuffer, HotRegionRegistry, SYNTHETIC_HOT_NODES,
-    SystemConfig, TypedIrOp, ir_op_to_jit_body, load_operator_registry,
+    FusionDispatch, HostStagingBuffer, HotRegionRegistry, SYNTHETIC_HOT_NODES, SystemConfig,
+    UploadQueue, load_operator_registry,
 };
-
-// ── TypedIR rejection tests ───────────────────────────────────────────────────
-
-#[test]
-fn ir_reduce_rejects_scalar_lowering() {
-    let op = TypedIrOp::Reduce {
-        input: "x".into(),
-        output: "y".into(),
-        init: 0.0,
-        body: "acc + in0[i]".into(),
-    };
-    assert!(
-        ir_op_to_jit_body(&op).is_err(),
-        "Reduce must return Err; scalar element body cannot express parallel reduction"
-    );
-}
-
-#[test]
-fn ir_topk_rejects_scalar_lowering() {
-    let op = TypedIrOp::TopK {
-        input: "x".into(),
-        output: "y".into(),
-        k: 5,
-    };
-    assert!(
-        ir_op_to_jit_body(&op).is_err(),
-        "TopK must return Err; scalar element body cannot select top-k"
-    );
-}
-
-#[test]
-fn ir_matmul_rejects_scalar_lowering() {
-    let op = TypedIrOp::MatMul {
-        a: "a".into(),
-        b: "b".into(),
-        output: "c".into(),
-    };
-    assert!(
-        ir_op_to_jit_body(&op).is_err(),
-        "MatMul must return Err; scalar element body cannot express GEMM"
-    );
-}
-
-#[test]
-fn ir_join_rejects_scalar_lowering() {
-    let op = TypedIrOp::Join {
-        left: "l".into(),
-        right: "r".into(),
-        output: "o".into(),
-        key: "k".into(),
-    };
-    assert!(
-        ir_op_to_jit_body(&op).is_err(),
-        "Join must return Err; scalar element body cannot hash-join"
-    );
-}
-
-#[test]
-fn ir_sort_rejects_scalar_lowering() {
-    let op = TypedIrOp::Sort {
-        input: "x".into(),
-        output: "y".into(),
-        key: "k".into(),
-        ascending: true,
-    };
-    assert!(
-        ir_op_to_jit_body(&op).is_err(),
-        "Sort must return Err; scalar element body cannot sort"
-    );
-}
-
-#[test]
-fn ir_graph_traverse_rejects_scalar_lowering() {
-    let op = TypedIrOp::GraphTraverse {
-        nodes: "n".into(),
-        edges: "e".into(),
-        output: "o".into(),
-        max_depth: 3,
-    };
-    assert!(
-        ir_op_to_jit_body(&op).is_err(),
-        "GraphTraverse must return Err; scalar element body cannot do BFS"
-    );
-}
-
-// Verify the ops that should succeed still do.
-
-#[test]
-fn ir_map_lowers_to_element_body() {
-    let op = TypedIrOp::Map {
-        input: "x".into(),
-        output: "y".into(),
-        body: "in0[i] * 2.0f".into(),
-    };
-    let body = ir_op_to_jit_body(&op).expect("Map should lower");
-    assert!(body.contains("out[i]"));
-    assert!(body.contains("in0[i]"));
-}
-
-#[test]
-fn ir_filter_lowers_to_ternary() {
-    let op = TypedIrOp::Filter {
-        input: "x".into(),
-        output: "y".into(),
-        predicate: "in0[i] > 0.0f".into(),
-    };
-    let body = ir_op_to_jit_body(&op).expect("Filter should lower");
-    assert!(body.contains("?"));
-}
-
-#[test]
-fn ir_verify_lowers_to_flag_expression() {
-    let op = TypedIrOp::Verify {
-        input: "x".into(),
-        predicate: "in0[i] >= 0.0f".into(),
-    };
-    let body = ir_op_to_jit_body(&op).expect("Verify should lower");
-    assert!(body.contains("1.0f"));
-    assert!(body.contains("0.0f"));
-}
-
-#[test]
-fn ir_embed_lowers_to_row_read() {
-    let op = TypedIrOp::Embed {
-        input: "x".into(),
-        output: "y".into(),
-        dim: 64,
-    };
-    let body = ir_op_to_jit_body(&op).expect("Embed should lower");
-    assert!(body.contains("64"), "body should reference dim");
-}
 
 // ── Hot region slot validation ────────────────────────────────────────────────
 
@@ -322,11 +190,11 @@ fn host_staging_buffer_empty() {
     assert!(buf.is_empty());
 }
 
-// ── AsyncUploadQueue staging behaviour (non-CUDA) ────────────────────────────
+// ── UploadQueue staging behaviour (non-CUDA) ────────────────────────────
 
 #[test]
 fn upload_queue_stage_accumulates_slots() {
-    let mut q = AsyncUploadQueue::new();
+    let mut q = UploadQueue::new();
     assert_eq!(q.pending(), 0);
 
     q.stage("math.a", &[1.0, 2.0]).unwrap();
@@ -336,7 +204,7 @@ fn upload_queue_stage_accumulates_slots() {
 
 #[test]
 fn upload_queue_stage_same_slot_twice_accumulates() {
-    let mut q = AsyncUploadQueue::new();
+    let mut q = UploadQueue::new();
     q.stage("x", &[1.0]).unwrap();
     q.stage("x", &[2.0]).unwrap();
     assert_eq!(
@@ -349,7 +217,7 @@ fn upload_queue_stage_same_slot_twice_accumulates() {
 #[cfg(not(feature = "cuda"))]
 #[test]
 fn upload_queue_flush_clears_staged_no_cuda() {
-    let mut q = AsyncUploadQueue::new();
+    let mut q = UploadQueue::new();
     q.stage("x", &[1.0, 2.0]).unwrap();
     let mut reg = DeviceSlotRegistry::new();
     // Non-CUDA flush just clears the queue without uploading.

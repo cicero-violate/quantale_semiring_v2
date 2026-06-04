@@ -1,4 +1,3 @@
-pub mod batch;
 pub mod config;
 pub mod console;
 pub mod contracts;
@@ -9,7 +8,6 @@ pub mod exploration;
 pub mod fusion_dispatch;
 pub mod graph;
 pub mod hot_region;
-pub mod ir;
 pub mod jit_kernel_fusion;
 pub mod learning;
 pub mod pattern;
@@ -20,15 +18,14 @@ pub mod tlog;
 pub mod topology;
 pub mod types;
 
-pub use batch::*;
 pub use config::*;
 pub use console::*;
 pub use contracts::*;
 #[cfg(feature = "cuda")]
 pub use device_slots::PinnedHostBuffer;
 pub use device_slots::{
-    AsyncUploadQueue, DeviceBufferPool, DeviceRingBuffer, DeviceSlot, DeviceSlotRegistry,
-    HostStagingBuffer,
+    DeviceBufferPool, DeviceRingBuffer, DeviceSlot, DeviceSlotRegistry, HostStagingBuffer,
+    UploadQueue,
 };
 pub use egress::*;
 pub use error::*;
@@ -36,7 +33,6 @@ pub use exploration::*;
 pub use fusion_dispatch::{FusionDispatch, FusionEntry, SynthesizedKernel};
 pub use graph::*;
 pub use hot_region::{HotRegionEntry, HotRegionRegistry};
-pub use ir::{IrPipeline, TypedIrOp, ir_op_to_jit_body};
 pub use jit_kernel_fusion::*;
 pub use learning::*;
 pub use pattern::*;

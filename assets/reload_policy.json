@@ -4,7 +4,6 @@
     "assets/topology.source.json",
     "assets/operators.generated.json",
     "assets/operators.json",
-    "assets/node_contracts.json",
     "assets/runtime_policy.json",
     "assets/runtime_context.json",
     "assets/runtime_invariants.json",

@@ -117,7 +117,8 @@ pub fn compile_patterns_to_tensor_edges(
     patterns: &CkaPatternSet,
 ) -> Result<Vec<TensorEdge>, CudaError> {
     let topology = GraphTopology::default_asset()?.compile()?;
-    let operator_registry = load_operator_registry(default_operators_path()).unwrap_or_default();
+    let operator_registry = load_operator_registry(default_operators_path())
+        .map_err(|error| CudaError::invalid_input(format!("load operator registry: {error}")))?;
     let mut edges = Vec::new();
     for pattern in &patterns.patterns {
         edges.extend(compile_pattern(pattern, &topology, &operator_registry)?.edges);

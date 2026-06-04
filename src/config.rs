@@ -164,20 +164,27 @@ impl ReloadPolicy {
 impl Default for SystemConfig {
     fn default() -> Self {
         let operators_path = default_operators_path();
-        let operator_registry = load_operator_registry(&operators_path)
-            .or_else(|_| parse_operator_registry_str(DEFAULT_OPERATORS_JSON))
-            .unwrap_or_default();
+        let operator_registry = load_operator_registry(&operators_path).unwrap_or_else(|error| {
+            panic!(
+                "failed to load required operator registry '{}': {error}",
+                operators_path.display()
+            )
+        });
         let (matrix_dim, matrix_len) = GraphTopology::bundled_registry()
             .map(|registry| (registry.len(), registry.matrix_len()))
-            .unwrap_or((0, 0));
-        let runtime_policy = load_runtime_policy("assets/runtime_policy.json");
+            .unwrap_or_else(|error| panic!("failed to load bundled topology registry: {error}"));
+        let runtime_policy = load_runtime_policy("assets/runtime_policy.json")
+            .unwrap_or_else(|error| panic!("failed to load required runtime policy: {error}"));
 
+        if !Path::new("assets/topology.fusion.json").exists() {
+            panic!("missing required fusion topology 'assets/topology.fusion.json'");
+        }
         let fusion_dispatch =
             FusionDispatch::load("assets/topology.fusion.json", &operator_registry)
-                .unwrap_or_default();
+                .unwrap_or_else(|error| panic!("failed to load required fusion topology: {error}"));
 
-        let hot_region_registry =
-            HotRegionRegistry::load("assets/regions.hot.json").unwrap_or_default();
+        let hot_region_registry = HotRegionRegistry::load("assets/regions.hot.json")
+            .unwrap_or_else(|error| panic!("failed to load required hot regions: {error}"));
 
         // Fatal on slot mismatch: every hot region's reads/writes must be
         // declared in operators.generated.json effects.
@@ -244,7 +251,7 @@ impl SystemConfig {
 
     pub fn reload_operator_registry(&mut self) -> Result<(), String> {
         self.operator_registry = load_operator_registry(&self.operators_path)?;
-        self.reload_fusion_dispatch();
+        self.reload_fusion_dispatch()?;
         Ok(())
     }
 
@@ -254,11 +261,16 @@ impl SystemConfig {
     }
 
     /// Reload `topology.fusion.json` into `fusion_dispatch` using the current
-    /// operator registry.  Silently resets to empty if the file is absent.
-    pub fn reload_fusion_dispatch(&mut self) {
+    /// operator registry.
+    pub fn reload_fusion_dispatch(&mut self) -> Result<(), String> {
+        if !Path::new("assets/topology.fusion.json").exists() {
+            return Err(
+                "missing required fusion topology 'assets/topology.fusion.json'".to_string(),
+            );
+        }
         self.fusion_dispatch =
-            FusionDispatch::load("assets/topology.fusion.json", &self.operator_registry)
-                .unwrap_or_default();
+            FusionDispatch::load("assets/topology.fusion.json", &self.operator_registry)?;
+        Ok(())
     }
 
     /// Reload `regions.hot.json` into `hot_region_registry`.
@@ -266,8 +278,7 @@ impl SystemConfig {
     /// Validates that all region slot names are declared in the current operator
     /// registry.  Returns `Err` on any undeclared slot (fatal at startup).
     pub fn reload_hot_region_registry(&mut self) -> Result<(), String> {
-        self.hot_region_registry =
-            HotRegionRegistry::load("assets/regions.hot.json").unwrap_or_default();
+        self.hot_region_registry = HotRegionRegistry::load("assets/regions.hot.json")?;
         let declared = build_declared_slots(&self.operator_registry);
         let violations = self.hot_region_registry.validate_slots(&declared);
         if !violations.is_empty() {
@@ -354,11 +365,12 @@ fn build_declared_slots(registry: &OperatorRegistry) -> std::collections::HashSe
     slots
 }
 
-fn load_runtime_policy(path: impl AsRef<Path>) -> RuntimePolicyFile {
-    fs::read_to_string(path.as_ref())
-        .ok()
-        .and_then(|input| serde_json::from_str(&input).ok())
-        .unwrap_or_default()
+fn load_runtime_policy(path: impl AsRef<Path>) -> Result<RuntimePolicyFile, String> {
+    let path = path.as_ref();
+    let input = fs::read_to_string(path)
+        .map_err(|error| format!("read runtime policy '{}': {error}", path.display()))?;
+    serde_json::from_str(&input)
+        .map_err(|error| format!("parse runtime policy '{}': {error}", path.display()))
 }
 
 fn invalid_context_value(value: &Value) -> bool {

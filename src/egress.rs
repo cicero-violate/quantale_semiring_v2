@@ -8,7 +8,7 @@ use std::sync::Mutex;
 
 #[cfg(feature = "cuda")]
 pub use crate::device_slots::PinnedHostBuffer;
-pub use crate::device_slots::{AsyncUploadQueue, HostStagingBuffer};
+pub use crate::device_slots::{HostStagingBuffer, UploadQueue};
 
 use serde_json::Value;
 
