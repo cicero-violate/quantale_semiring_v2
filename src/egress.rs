@@ -6,6 +6,8 @@ use std::process::{Command, Stdio};
 #[cfg(feature = "cuda")]
 use std::sync::Mutex;
 
+pub use crate::device_slots::{AsyncUploadQueue, PinnedHostBuffer};
+
 use serde_json::Value;
 
 use crate::config::SystemConfig;

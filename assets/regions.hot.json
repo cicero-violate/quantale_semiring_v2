@@ -4,8 +4,8 @@
       "region_id": 0,
       "name": "Execution::VectorAdd",
       "kind": "gpu_region",
-      "reads": ["execution.a", "execution.b"],
-      "writes": ["execution.sum"],
+      "reads": ["math.a", "math.b"],
+      "writes": ["math.add_out"],
       "kernel": "jit_fused",
       "pure": true
     },
@@ -13,8 +13,8 @@
       "region_id": 1,
       "name": "Execution::VectorScale",
       "kind": "gpu_region",
-      "reads": ["execution.input", "execution.scale"],
-      "writes": ["execution.scaled"],
+      "reads": ["math.add_out", "math.scale"],
+      "writes": ["math.out"],
       "kernel": "jit_fused",
       "pure": true
     },
@@ -22,8 +22,8 @@
       "region_id": 2,
       "name": "Execution::FusedVectorAddScale",
       "kind": "gpu_region",
-      "reads": ["execution.a", "execution.b", "execution.scale"],
-      "writes": ["execution.result"],
+      "reads": ["math.a", "math.b", "math.scale"],
+      "writes": ["math.out"],
       "kernel": "jit_fused",
       "pure": true
     },
@@ -52,6 +52,15 @@
       "reads": ["analysis.return", "analysis.volatility"],
       "writes": ["analysis.signal_score"],
       "kernel": "jit_fused",
+      "pure": true
+    },
+    {
+      "region_id": 6,
+      "name": "Region::CommitReceipt",
+      "kind": "gpu_region",
+      "reads": [],
+      "writes": [],
+      "kernel": "terminal",
       "pure": true
     }
   ]

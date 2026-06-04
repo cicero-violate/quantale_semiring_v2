@@ -47,6 +47,10 @@ const EXPLORATION_COMMIT_KERNEL: &str = "tensor_quantale_commit_exploration";
 const JIT_CHAIN_SCORE_KERNEL: &str = "jit_chain_score_embed";
 const DRAIN_DEVICE_RECEIPTS_KERNEL: &str = "tensor_quantale_drain_device_receipts";
 const GPU_DISPATCH_KERNEL: &str = "tensor_quantale_gpu_dispatch";
+const RING_PUSH_KERNEL: &str = "device_ring_push";
+const RING_POP_KERNEL: &str = "device_ring_pop";
+const PARALLEL_REDUCE_KERNEL: &str = "quantale_parallel_reduce";
+const TOPK_BITONIC_KERNEL: &str = "quantale_topk_bitonic";
 
 pub const DEVICE_RECEIPT_RING_SIZE: usize = 256;
 
@@ -238,6 +242,10 @@ impl TensorQuantaleWorld {
                 JIT_CHAIN_SCORE_KERNEL,
                 DRAIN_DEVICE_RECEIPTS_KERNEL,
                 GPU_DISPATCH_KERNEL,
+                RING_PUSH_KERNEL,
+                RING_POP_KERNEL,
+                PARALLEL_REDUCE_KERNEL,
+                TOPK_BITONIC_KERNEL,
             ],
         )
         .map_err(|error| CudaError::new("load_ptx tensor", error))?;

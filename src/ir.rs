@@ -202,11 +202,12 @@ pub fn ir_op_to_jit_body(op: &TypedIrOp) -> Result<String, String> {
         TypedIrOp::Filter { predicate, .. } => {
             Ok(format!("out[i] = ({predicate}) ? in0[i] : 0.0f;"))
         }
-        TypedIrOp::Reduce { body, init, .. } => {
-            Ok(format!(
-                "float acc = {init}f; acc = {body}; out[i] = acc;"
-            ))
-        }
+        TypedIrOp::Reduce { .. } => Err(
+            "Reduce cannot be lowered to a scalar element body: parallel reduction \
+             requires a multi-pass warp-shuffle kernel (device helper \
+             `parallel_reduce` in quantale_world.cu)"
+                .into(),
+        ),
         TypedIrOp::Window { body, size, .. } => {
             Ok(format!(
                 "float acc = 0.0f; \
@@ -214,25 +215,37 @@ pub fn ir_op_to_jit_body(op: &TypedIrOp) -> Result<String, String> {
                  out[i] = {body};"
             ))
         }
-        TypedIrOp::TopK { k, .. } => {
-            Ok(format!(
-                "/* topk k={k}: placeholder — expand to radix-sort + threshold */\
-                 out[i] = in0[i];"
-            ))
-        }
-        TypedIrOp::MatMul { .. } => Ok(
-            "out[i] = in0[i] * in1[i]; /* element-wise product — expand to GEMM */".into(),
+        TypedIrOp::TopK { .. } => Err(
+            "TopK cannot be lowered to a scalar element body: requires bitonic sort \
+             over the full input (device helper `topk_bitonic` in quantale_world.cu)"
+                .into(),
+        ),
+        TypedIrOp::MatMul { .. } => Err(
+            "MatMul cannot be lowered to a scalar element body: requires tiled \
+             shared-memory GEMM or a cuBLAS binding"
+                .into(),
         ),
         TypedIrOp::Embed { dim, .. } => {
-            Ok(format!("out[i] = in0[i / {dim}]; /* embedding lookup row */"))
+            Ok(format!("out[i] = in0[i / {dim}];"))
         }
         TypedIrOp::Verify { predicate, .. } => {
             Ok(format!("out[i] = ({predicate}) ? 1.0f : 0.0f;"))
         }
-        other => Err(format!(
-            "ir_op_to_jit_body: {:?} cannot be lowered to a scalar element body",
-            other
-        )),
+        TypedIrOp::Join { .. } => Err(
+            "Join cannot be lowered to a scalar element body: requires a device \
+             hash table for key-based joining"
+                .into(),
+        ),
+        TypedIrOp::Sort { .. } => Err(
+            "Sort cannot be lowered to a scalar element body: requires bitonic sort \
+             or thrust::sort over the full input"
+                .into(),
+        ),
+        TypedIrOp::GraphTraverse { .. } => Err(
+            "GraphTraverse cannot be lowered to a scalar element body: requires a \
+             BFS frontier kernel over a CSR adjacency structure"
+                .into(),
+        ),
     }
 }
 

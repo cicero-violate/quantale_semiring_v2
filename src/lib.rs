@@ -24,7 +24,10 @@ pub use batch::*;
 pub use config::*;
 pub use console::*;
 pub use contracts::*;
-pub use device_slots::{DeviceBufferPool, DeviceRingBuffer, DeviceSlot, DeviceSlotRegistry};
+pub use device_slots::{
+    AsyncUploadQueue, DeviceBufferPool, DeviceRingBuffer, DeviceSlot, DeviceSlotRegistry,
+    PinnedHostBuffer,
+};
 pub use egress::*;
 pub use error::*;
 pub use exploration::*;

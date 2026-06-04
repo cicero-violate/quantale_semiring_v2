@@ -969,15 +969,119 @@ extern "C" __global__ void tensor_quantale_drain_device_receipts(
     *ring_head = head;
 }
 
+// ── Device-ring push / pop ────────────────────────────────────────────────────
+
+// Write n floats into the ring from src (single-threaded for head/tail safety).
+extern "C" __global__ void device_ring_push(
+    float* ring, int* tail, int capacity,
+    const float* src, int n
+) {
+    if (threadIdx.x != 0 || blockIdx.x != 0) return;
+    int t = *tail;
+    for (int i = 0; i < n; ++i) {
+        ring[t % capacity] = src[i];
+        ++t;
+    }
+    *tail = t;
+}
+
+// Read n floats from the ring into dst (single-threaded for head/tail safety).
+extern "C" __global__ void device_ring_pop(
+    const float* ring, int* head, int capacity,
+    float* dst, int n
+) {
+    if (threadIdx.x != 0 || blockIdx.x != 0) return;
+    int h = *head;
+    for (int i = 0; i < n; ++i) {
+        dst[i] = ring[h % capacity];
+        ++h;
+    }
+    *head = h;
+}
+
+// ── GPU region __device__ functions ──────────────────────────────────────────
+//
+// One __device__ function per hot region.  The dispatch kernel selects the
+// right function via a switch table and calls it.  When slot_ptrs == NULL the
+// function runs in stub mode: it records output_flags but performs no element-
+// wise work.  Full compute wiring (passing actual slot pointer arrays) is done
+// when DeviceSlotRegistry provides pointers at dispatch time.
+//
+// Slot layout per region matches regions.hot.json / operators.generated.json.
+
+__device__ void region_vector_add(float** slot_ptrs, int n, DeviceReceipt* r) {
+    r->output_flags |= (1 << 0);
+    if (!slot_ptrs || n <= 0) return;
+    float* a   = slot_ptrs[0];  // math.a
+    float* b   = slot_ptrs[1];  // math.b
+    float* out = slot_ptrs[2];  // math.add_out
+    for (int i = threadIdx.x; i < n; i += blockDim.x)
+        out[i] = a[i] + b[i];
+}
+
+__device__ void region_vector_scale(float** slot_ptrs, int n, DeviceReceipt* r) {
+    r->output_flags |= (1 << 1);
+    if (!slot_ptrs || n <= 0) return;
+    float* x   = slot_ptrs[0];  // math.add_out
+    float* s   = slot_ptrs[1];  // math.scale
+    float* out = slot_ptrs[2];  // math.out
+    for (int i = threadIdx.x; i < n; i += blockDim.x)
+        out[i] = x[i] * s[i];
+}
+
+__device__ void region_fused_add_scale(float** slot_ptrs, int n, DeviceReceipt* r) {
+    r->output_flags |= (1 << 2);
+    if (!slot_ptrs || n <= 0) return;
+    float* a   = slot_ptrs[0];  // math.a
+    float* b   = slot_ptrs[1];  // math.b
+    float* s   = slot_ptrs[2];  // math.scale
+    float* out = slot_ptrs[3];  // math.out
+    for (int i = threadIdx.x; i < n; i += blockDim.x)
+        out[i] = (a[i] + b[i]) * s[i];
+}
+
+__device__ void region_analysis_return1(float** slot_ptrs, int n, DeviceReceipt* r) {
+    r->output_flags |= (1 << 3);
+    if (!slot_ptrs || n <= 0) return;
+    float* price = slot_ptrs[0];  // market.price
+    float* open  = slot_ptrs[1];  // market.open
+    float* out   = slot_ptrs[2];  // analysis.return
+    for (int i = threadIdx.x; i < n; i += blockDim.x)
+        out[i] = (price[i] - open[i]) / (open[i] + 1e-8f);
+}
+
+__device__ void region_analysis_volatility(float** slot_ptrs, int n, DeviceReceipt* r) {
+    r->output_flags |= (1 << 4);
+    if (!slot_ptrs || n <= 0) return;
+    float* price = slot_ptrs[0];  // market.price
+    float* ret   = slot_ptrs[1];  // analysis.return
+    float* out   = slot_ptrs[2];  // analysis.volatility
+    for (int i = threadIdx.x; i < n; i += blockDim.x)
+        out[i] = fabsf(price[i] - ret[i]) / (ret[i] + 1e-8f);
+}
+
+__device__ void region_analysis_signal_score(float** slot_ptrs, int n, DeviceReceipt* r) {
+    r->output_flags |= (1 << 5);
+    if (!slot_ptrs || n <= 0) return;
+    float* ret = slot_ptrs[0];  // analysis.return
+    float* vol = slot_ptrs[1];  // analysis.volatility
+    float* out = slot_ptrs[2];  // analysis.signal_score
+    for (int i = threadIdx.x; i < n; i += blockDim.x)
+        out[i] = ret[i] / (1.0f + fabsf(vol[i]));
+}
+
+__device__ void region_commit_receipt(float** slot_ptrs, int n, DeviceReceipt* r) {
+    (void)slot_ptrs; (void)n;
+    r->output_flags |= (1 << 6);
+}
+
 // ── GPU-side region dispatch ──────────────────────────────────────────────────
 //
-// Reads a pending region request from the mailbox, records a DeviceReceipt,
-// and marks the mailbox dispatched — all without CPU involvement.
+// Selects the appropriate __device__ region function via a switch table and
+// writes a DeviceReceipt to the ring — all without returning to the CPU.
 //
-// For the MVP the actual per-region compute is run by the JIT kernels launched
-// from Rust (see TensorQuantaleWorld::gpu_dispatch_region).  This kernel
-// establishes the device-side receipt ring-buffer protocol so that
-// tensor_quantale_drain_device_receipts can drain without a CPU hop.
+// When slot_ptrs == NULL the region functions run in stub mode (receipt-only);
+// pass actual device slot pointer arrays to enable true in-kernel computation.
 
 extern "C" __global__ void tensor_quantale_gpu_dispatch(
     const GpuDispatchMailbox* mailbox,
@@ -986,24 +1090,94 @@ extern "C" __global__ void tensor_quantale_gpu_dispatch(
     int                       ring_size,
     int                       region_count
 ) {
-    if (threadIdx.x != 0 || blockIdx.x != 0) return;
-
     int rid = mailbox->pending_region_id;
     if (rid < 0 || rid >= region_count) return;
-
-    // Write a success receipt to the next ring slot.
-    int tail = *ring_tail;
-    int slot = tail % ring_size;
 
     DeviceReceipt r;
     r.region_id    = rid;
     r.src          = mailbox->src_node;
     r.dst          = mailbox->dst_node;
-    r.outcome      = mailbox->outcome; // propagated from host JIT exit code
+    r.outcome      = mailbox->outcome;
     r.latency      = 0.0f;
     r.valid        = 1;
-    r.output_flags = (1 << rid);
+    r.output_flags = 0;
 
-    receipt_ring[slot] = r;
-    *ring_tail = tail + 1;
+    // Device function dispatch table (stub mode: slot_ptrs = NULL).
+    switch (rid) {
+        case 0: region_vector_add           (NULL, 0, &r); break;
+        case 1: region_vector_scale         (NULL, 0, &r); break;
+        case 2: region_fused_add_scale      (NULL, 0, &r); break;
+        case 3: region_analysis_return1     (NULL, 0, &r); break;
+        case 4: region_analysis_volatility  (NULL, 0, &r); break;
+        case 5: region_analysis_signal_score(NULL, 0, &r); break;
+        case 6: region_commit_receipt       (NULL, 0, &r); break;
+        default: break;
+    }
+
+    __syncthreads();
+
+    // Only thread 0 appends to the receipt ring.
+    if (threadIdx.x == 0 && blockIdx.x == 0) {
+        int tail = *ring_tail;
+        int slot = tail % ring_size;
+        receipt_ring[slot] = r;
+        *ring_tail = tail + 1;
+    }
+}
+
+// ── Device helper kernels for complex IR ops ──────────────────────────────────
+//
+// These kernels are called directly (not via the JIT element-wise framework)
+// when TypedIrOp::Reduce or TypedIrOp::TopK must be lowered to GPU code.
+
+// Parallel warp-shuffle + shared-memory reduction (sum).
+// Launch with <<<1, THREADS>>> where THREADS is a power of two <= 1024.
+extern "C" __global__ void quantale_parallel_reduce(
+    const float* in, float* out, int n, float init
+) {
+    __shared__ float sdata[1024];
+    int tid = threadIdx.x;
+    float acc = init;
+    for (int i = tid; i < n; i += blockDim.x)
+        acc += in[i];
+    sdata[tid] = acc;
+    __syncthreads();
+    for (int stride = blockDim.x >> 1; stride > 0; stride >>= 1) {
+        if (tid < stride) sdata[tid] += sdata[tid + stride];
+        __syncthreads();
+    }
+    if (tid == 0) out[0] = sdata[0];
+}
+
+// Bitonic sort top-k selection: sorts the first BLOCK_SIZE elements in-place
+// using shared memory and writes the top-k results to `out`.
+// Assumes n <= 1024.  For production use Thrust or CUB.
+extern "C" __global__ void quantale_topk_bitonic(
+    float* data, float* out, int n, int k
+) {
+    __shared__ float sdata[1024];
+    int tid = threadIdx.x;
+    sdata[tid] = (tid < n) ? data[tid] : -1.0e30f;
+    __syncthreads();
+
+    // Bitonic sort (ascending).
+    for (int size = 2; size <= blockDim.x; size <<= 1) {
+        for (int stride = size >> 1; stride > 0; stride >>= 1) {
+            int partner = tid ^ stride;
+            if (partner > tid) {
+                bool asc = ((tid & size) == 0);
+                if (asc ? sdata[tid] > sdata[partner]
+                        : sdata[tid] < sdata[partner]) {
+                    float tmp = sdata[tid];
+                    sdata[tid] = sdata[partner];
+                    sdata[partner] = tmp;
+                }
+            }
+            __syncthreads();
+        }
+    }
+
+    // Write top-k (largest = end of ascending sort) to output.
+    if (tid < k && (blockDim.x - 1 - tid) < n)
+        out[tid] = sdata[blockDim.x - 1 - tid];
 }

@@ -1277,7 +1277,7 @@ fn build_runtime_epoch(
     tlog: &mut TlogWriter,
 ) -> Result<RuntimeEpoch, String> {
     config.reload_default_operator_registry()?;
-    config.reload_hot_region_registry();
+    config.reload_hot_region_registry()?;
 
     let topology = TopologyRuntime::load_checked_default().map_err(|error| error.to_string())?;
     let invariants = TopologyInvariants::default_asset();

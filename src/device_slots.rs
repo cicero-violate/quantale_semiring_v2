@@ -200,6 +200,53 @@ impl DeviceRingBuffer {
             .map_err(|e| format!("DeviceRingBuffer tail alloc: {e}"))?;
         Ok(Self { data, head, tail, capacity })
     }
+
+    /// Push `src` into the ring using the GPU-side `device_ring_push` kernel.
+    ///
+    /// The kernel writes serially (single-thread) to avoid head/tail races.
+    pub fn push(
+        &mut self,
+        dev: &std::sync::Arc<cudarc::driver::CudaDevice>,
+        module: &str,
+        src: &cudarc::driver::CudaSlice<f32>,
+    ) -> Result<(), String> {
+        use cudarc::driver::{DeviceSlice, LaunchAsync, LaunchConfig};
+        let n = src.len() as i32;
+        if n == 0 {
+            return Ok(());
+        }
+        let cfg = LaunchConfig { grid_dim: (1, 1, 1), block_dim: (1, 1, 1), shared_mem_bytes: 0 };
+        let cap = self.capacity as i32;
+        let kernel = dev
+            .get_func(module, "device_ring_push")
+            .ok_or_else(|| "device_ring_push not loaded".to_string())?;
+        unsafe { kernel.launch(cfg, (&mut self.data, &mut self.tail, cap, src, n)) }
+            .map_err(|e| format!("device_ring_push launch: {e}"))
+    }
+
+    /// Pop `n` elements from the ring using the GPU-side `device_ring_pop` kernel.
+    pub fn pop(
+        &mut self,
+        dev: &std::sync::Arc<cudarc::driver::CudaDevice>,
+        module: &str,
+        n: usize,
+    ) -> Result<cudarc::driver::CudaSlice<f32>, String> {
+        use cudarc::driver::LaunchAsync;
+        use cudarc::driver::LaunchConfig;
+        let dst = dev
+            .htod_copy(vec![0.0f32; n])
+            .map_err(|e| format!("DeviceRingBuffer pop alloc: {e}"))?;
+        let cfg = LaunchConfig { grid_dim: (1, 1, 1), block_dim: (1, 1, 1), shared_mem_bytes: 0 };
+        let cap = self.capacity as i32;
+        let ni32 = n as i32;
+        let kernel = dev
+            .get_func(module, "device_ring_pop")
+            .ok_or_else(|| "device_ring_pop not loaded".to_string())?;
+        let mut dst_mut = dst;
+        unsafe { kernel.launch(cfg, (&self.data, &mut self.head, cap, &mut dst_mut, ni32)) }
+            .map_err(|e| format!("device_ring_pop launch: {e}"))?;
+        Ok(dst_mut)
+    }
 }
 
 #[cfg(not(feature = "cuda"))]
@@ -209,5 +256,87 @@ pub struct DeviceRingBuffer;
 impl DeviceRingBuffer {
     pub fn new(_capacity: usize) -> Result<Self, String> {
         Ok(Self)
+    }
+}
+
+// ── Async ingress pipeline ────────────────────────────────────────────────────
+
+/// Page-locked host buffer for async H2D DMA.
+///
+/// MVP uses a regular heap `Vec`; a production implementation would call
+/// `cudaMallocHost` here for true pinned (page-locked) allocation that avoids
+/// the DMA bounce buffer.
+pub struct PinnedHostBuffer {
+    pub data: Vec<f32>,
+}
+
+impl PinnedHostBuffer {
+    pub fn from_slice(src: &[f32]) -> Self {
+        Self { data: src.to_vec() }
+    }
+
+    pub fn len(&self) -> usize {
+        self.data.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.data.is_empty()
+    }
+}
+
+/// Async upload queue: stages CPU data for H2D transfer.
+///
+/// `stage` accumulates (slot_name, buffer) pairs.  `flush` uploads all staged
+/// buffers to the `DeviceSlotRegistry` in one pass, using `htod_copy` which
+/// internally issues an async DMA if the source is pinned.
+pub struct AsyncUploadQueue {
+    staged: Vec<(String, PinnedHostBuffer)>,
+}
+
+impl Default for AsyncUploadQueue {
+    fn default() -> Self {
+        Self { staged: Vec::new() }
+    }
+}
+
+impl AsyncUploadQueue {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Stage `data` for upload under `slot`.  The copy into `PinnedHostBuffer`
+    /// is synchronous; the H2D transfer happens on `flush`.
+    pub fn stage(&mut self, slot: &str, data: &[f32]) -> Result<(), String> {
+        self.staged.push((slot.to_string(), PinnedHostBuffer::from_slice(data)));
+        Ok(())
+    }
+
+    #[cfg(feature = "cuda")]
+    /// Upload all staged buffers to the device slot registry and clear the queue.
+    pub fn flush(
+        &mut self,
+        registry: &mut DeviceSlotRegistry,
+        dev: &std::sync::Arc<cudarc::driver::CudaDevice>,
+    ) -> Result<(), String> {
+        for (slot, buf) in self.staged.drain(..) {
+            let device_buf = dev
+                .htod_copy(buf.data)
+                .map_err(|e| format!("AsyncUploadQueue flush htod_copy '{slot}': {e}"))?;
+            registry.insert(slot, device_buf);
+        }
+        Ok(())
+    }
+
+    #[cfg(not(feature = "cuda"))]
+    pub fn flush(
+        &mut self,
+        _registry: &mut DeviceSlotRegistry,
+    ) -> Result<(), String> {
+        self.staged.clear();
+        Ok(())
+    }
+
+    pub fn pending(&self) -> usize {
+        self.staged.len()
     }
 }

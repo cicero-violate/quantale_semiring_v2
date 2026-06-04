@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 
 use crate::fusion_dispatch::FusionDispatch;
 use crate::hot_region::HotRegionRegistry;
-use crate::topology::GraphTopology;
+use crate::topology::{GraphTopology, SplitTopologyRuntime};
 
 pub const DEFAULT_OPERATORS_JSON: &str = include_str!("../assets/operators.generated.json");
 pub const DEFAULT_RUNTIME_CONTEXT_JSON: &str = include_str!("../assets/runtime_context.json");
@@ -61,6 +61,9 @@ pub struct SystemConfig {
     /// Hot GPU region metadata loaded from `assets/regions.hot.json`.
     /// Empty when the file doesn't exist yet.
     pub hot_region_registry: HotRegionRegistry,
+    /// Split topology loaded from `topology.control.json` + `topology.hot.json`.
+    /// None when the split files do not yet exist.
+    pub split_topology: Option<SplitTopologyRuntime>,
     pub ingress_capacity_hint: usize,
     /// Maximum ticks before the loop exits. 0 means run forever.
     pub max_ticks: usize,
@@ -176,6 +179,24 @@ impl Default for SystemConfig {
         let hot_region_registry =
             HotRegionRegistry::load("assets/regions.hot.json").unwrap_or_default();
 
+        // Fatal on slot mismatch: every hot region's reads/writes must be
+        // declared in operators.generated.json effects.
+        let declared = build_declared_slots(&operator_registry);
+        let slot_violations = hot_region_registry.validate_slots(&declared);
+        if !slot_violations.is_empty() {
+            let detail: Vec<String> = slot_violations
+                .iter()
+                .map(|(region, slot)| format!("{region}: undeclared slot '{slot}'"))
+                .collect();
+            panic!(
+                "hot region slot validation failed at startup: {}",
+                detail.join("; ")
+            );
+        }
+
+        let split_topology =
+            SplitTopologyRuntime::load_checked(&hot_region_registry).ok();
+
         Self {
             matrix_dim,
             matrix_len,
@@ -186,6 +207,7 @@ impl Default for SystemConfig {
             operator_registry,
             fusion_dispatch,
             hot_region_registry,
+            split_topology,
             ingress_capacity_hint: runtime_policy.ingress_capacity_hint.unwrap_or(1024),
             max_ticks: max_ticks_from_env(runtime_policy.max_ticks.unwrap_or(64)),
             tick_sleep_ms: tick_sleep_ms_from_env(runtime_policy.tick_sleep_ms.unwrap_or(0)),
@@ -238,10 +260,27 @@ impl SystemConfig {
     }
 
     /// Reload `regions.hot.json` into `hot_region_registry`.
-    /// Silently resets to empty if the file is absent.
-    pub fn reload_hot_region_registry(&mut self) {
+    ///
+    /// Validates that all region slot names are declared in the current operator
+    /// registry.  Returns `Err` on any undeclared slot (fatal at startup).
+    pub fn reload_hot_region_registry(&mut self) -> Result<(), String> {
         self.hot_region_registry =
             HotRegionRegistry::load("assets/regions.hot.json").unwrap_or_default();
+        let declared = build_declared_slots(&self.operator_registry);
+        let violations = self.hot_region_registry.validate_slots(&declared);
+        if !violations.is_empty() {
+            let detail: Vec<String> = violations
+                .iter()
+                .map(|(region, slot)| format!("{region}: undeclared slot '{slot}'"))
+                .collect();
+            return Err(format!(
+                "hot region slot validation failed: {}",
+                detail.join("; ")
+            ));
+        }
+        self.split_topology =
+            SplitTopologyRuntime::load_checked(&self.hot_region_registry).ok();
+        Ok(())
     }
 
     pub fn with_hot_region_registry(mut self, registry: HotRegionRegistry) -> Self {
@@ -286,6 +325,29 @@ impl SystemConfig {
         }
         Ok(())
     }
+}
+
+/// Collect every slot name appearing in `effects.reads` or `effects.writes`
+/// across all operators in the registry.  Used to validate hot region slots.
+fn build_declared_slots(registry: &OperatorRegistry) -> std::collections::HashSet<String> {
+    let mut slots = std::collections::HashSet::new();
+    for op in registry.values() {
+        if let Some(reads) = op["effects"]["reads"].as_array() {
+            for r in reads {
+                if let Some(s) = r.as_str() {
+                    slots.insert(s.to_string());
+                }
+            }
+        }
+        if let Some(writes) = op["effects"]["writes"].as_array() {
+            for w in writes {
+                if let Some(s) = w.as_str() {
+                    slots.insert(s.to_string());
+                }
+            }
+        }
+    }
+    slots
 }
 
 fn load_runtime_policy(path: impl AsRef<Path>) -> RuntimePolicyFile {

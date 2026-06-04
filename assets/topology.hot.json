@@ -1,38 +1,22 @@
 {
   "matrix_name": "quantale_hot",
   "nodes": [
-    {
-      "id": 44,
-      "name": "Execution::VectorAdd",
-      "type": "Execution"
-    },
-    {
-      "id": 45,
-      "name": "Execution::VectorScale",
-      "type": "Execution"
-    },
-    {
-      "id": 46,
-      "name": "Execution::FusedVectorAddScale",
-      "type": "Execution"
-    },
-    {
-      "id": 57,
-      "name": "Analysis::Return1",
-      "type": "Analysis"
-    },
-    {
-      "id": 58,
-      "name": "Analysis::Volatility",
-      "type": "Analysis"
-    },
-    {
-      "id": 59,
-      "name": "Analysis::SignalScore",
-      "type": "Analysis"
-    }
+    { "id": 44, "name": "Execution::VectorAdd",          "type": "Execution"  },
+    { "id": 45, "name": "Execution::VectorScale",         "type": "Execution"  },
+    { "id": 46, "name": "Execution::FusedVectorAddScale", "type": "Execution"  },
+    { "id": 57, "name": "Analysis::Return1",              "type": "Analysis"   },
+    { "id": 58, "name": "Analysis::Volatility",           "type": "Analysis"   },
+    { "id": 59, "name": "Analysis::SignalScore",          "type": "Analysis"   },
+    { "id": 60, "name": "Region::CommitReceipt",          "type": "gpu_region" }
   ],
-  "transitions": [],
+  "transitions": [
+    { "from": "Analysis::Return1",              "to": "Analysis::Volatility",    "confidence": 1.0, "cost": 0.1, "safety": 1.0 },
+    { "from": "Analysis::Volatility",           "to": "Analysis::SignalScore",   "confidence": 1.0, "cost": 0.1, "safety": 1.0 },
+    { "from": "Execution::VectorAdd",           "to": "Execution::VectorScale",  "confidence": 1.0, "cost": 0.1, "safety": 1.0 },
+    { "from": "Analysis::SignalScore",          "to": "Region::CommitReceipt",   "confidence": 1.0, "cost": 0.0, "safety": 1.0 },
+    { "from": "Execution::VectorScale",         "to": "Region::CommitReceipt",   "confidence": 1.0, "cost": 0.0, "safety": 1.0 },
+    { "from": "Execution::FusedVectorAddScale", "to": "Region::CommitReceipt",   "confidence": 1.0, "cost": 0.0, "safety": 1.0 }
+  ],
   "pages": [
     {
       "name": "hot",
@@ -42,7 +26,8 @@
         "Execution::FusedVectorAddScale",
         "Analysis::Return1",
         "Analysis::Volatility",
-        "Analysis::SignalScore"
+        "Analysis::SignalScore",
+        "Region::CommitReceipt"
       ]
     }
   ]
