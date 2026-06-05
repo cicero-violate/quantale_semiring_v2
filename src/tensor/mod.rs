@@ -20,6 +20,7 @@ use crate::topology::{GraphTopology, NodeRegistry};
 mod abi;
 mod constants;
 mod coverage;
+mod kernel_names;
 mod kernel_source;
 mod par_group;
 
@@ -34,55 +35,10 @@ pub use coverage::{
     FusionHfCoverage, FusionHfCoverageEntry, fusion_hf_region_id, gpu_region_slots,
     static_hf_symbol,
 };
+use kernel_names::*;
 use kernel_source::{assemble_kernel_source, assemble_kernel_source_with_generated};
 pub use par_group::{ParDispatchDescriptor, ParGroupGpuData};
 use par_group::{ParGroupHfParamsHost, ParGroupStepOutputRaw};
-
-const MODULE_NAME: &str = "quantale_semiring_v2_tensor";
-const RESET_KERNEL: &str = "tensor_quantale_reset";
-const EMBED_KERNEL: &str = "tensor_quantale_embed_edges";
-const CLOSURE_KERNEL: &str = "tensor_quantale_closure";
-const PROJECT_KERNEL: &str = "tensor_quantale_project";
-const PROJECT_BATCH_KERNEL: &str = "tensor_quantale_project_batch";
-const COMMIT_BATCH_KERNEL: &str = "tensor_quantale_commit_batch";
-const DECAY_KERNEL: &str = "tensor_quantale_decay";
-const EXPLORATION_SEED_KERNEL: &str = "tensor_quantale_seed_exploration";
-const EXPLORATION_EXPAND_KERNEL: &str = "tensor_quantale_expand_tokens";
-const EXPLORATION_SCORE_KERNEL: &str = "tensor_quantale_score_tokens";
-const EXPLORATION_TOPK_KERNEL: &str = "tensor_quantale_select_topk_tokens";
-const EXPLORATION_COMMIT_KERNEL: &str = "tensor_quantale_commit_exploration";
-const JIT_CHAIN_SCORE_KERNEL: &str = "jit_chain_score_embed";
-const DRAIN_DEVICE_RECEIPTS_KERNEL: &str = "tensor_quantale_drain_device_receipts";
-const PUSH_DEVICE_RECEIPT_KERNEL: &str = "tensor_quantale_push_device_receipt";
-const GPU_DISPATCH_KERNEL: &str = "tensor_quantale_gpu_dispatch";
-const RING_PUSH_KERNEL: &str = "device_ring_push";
-const RING_POP_KERNEL: &str = "device_ring_pop";
-const PARALLEL_REDUCE_KERNEL: &str = "quantale_parallel_reduce";
-const TOPK_BITONIC_KERNEL: &str = "quantale_topk_bitonic";
-const PAR_GROUP_STEP_KERNEL: &str = "tensor_quantale_par_group_step";
-const ORCH_STATE_INIT_KERNEL: &str = "orchestration_state_init";
-const ORCH_STATE_SNAPSHOT_KERNEL: &str = "orchestration_state_snapshot";
-const DEVICE_CMD_RING_PUSH_KERNEL: &str = "device_command_ring_push";
-const DEVICE_RECEIPT_EXT_PUSH_KERNEL: &str = "device_receipt_ext_ring_push";
-const DEVICE_RECEIPT_EXT_DRAIN_KERNEL: &str = "device_receipt_ext_drain";
-const ORCHESTRATE_STEP_KERNEL: &str = "tensor_quantale_orchestrate_step";
-const CONTROL_FLOW_ADVANCE_KERNEL: &str = "control_flow_advance";
-const CHECK_EFFECTS_INDEPENDENT_KERNEL: &str = "check_effects_independent";
-const FAILURE_POLICY_INIT_KERNEL: &str = "failure_policy_init";
-const FAILURE_POLICY_CLASSIFY_KERNEL: &str = "failure_policy_classify_and_emit";
-const FAILURE_POLICY_SET_ROLLBACK_KERNEL: &str = "failure_policy_set_rollback_marker";
-const FAILURE_POLICY_APPLY_ROLLBACK_KERNEL: &str = "failure_policy_apply_rollback";
-const LEARNED_DELTA_INIT_KERNEL: &str = "learned_delta_init";
-const LEARNED_DELTA_FOLD_KERNEL: &str = "learned_delta_fold_receipt";
-const LEARNED_DELTA_APPLY_KERNEL: &str = "learned_delta_apply";
-const RECEIPT_PRIOR_SNAPSHOT_KERNEL: &str = "receipt_prior_snapshot";
-const ORCH_TRACE_PUSH_KERNEL: &str = "orch_event_trace_push";
-const ORCH_TRACE_DRAIN_KERNEL: &str = "orch_event_trace_drain";
-const ORCH_CHECK_DUPLICATE_RECEIPTS_KERNEL: &str = "orch_check_no_duplicate_receipts";
-const ORCH_CHECK_FRONTIER_VALID_KERNEL: &str = "orch_check_frontier_valid";
-const ORCH_CHECK_NO_CMD_WITHOUT_RECEIPT_KERNEL: &str = "orch_check_no_command_without_receipt";
-const ORCH_REPLAY_SNAPSHOT_KERNEL: &str = "orch_replay_snapshot";
-const ORCH_REPLAY_RESTORE_KERNEL: &str = "orch_replay_restore";
 
 /// Device-resident ring buffers for the Phase-1 orchestration state block,
 /// plus the Phase-2 dispatch-kind table and step-status scratch buffer.
