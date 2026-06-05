@@ -56,7 +56,8 @@ Next implementation plan:
    - **~~Add multi-chain fusion batch kernel synthesis/cache.~~ ✓ Implemented** `synthesize_batch_kernel` emits one CUDA kernel for multiple JIT chains and `JitCache::get_or_compile_batch` caches that batch module by chain set.
    - **~~Launch compiled fusion batch kernels from the batch boundary.~~ ✓ Implemented** `execute_fusion_entries_batch_blocking` now compiles the batch kernel, prepares dynamic slot buffers, launches bounded one/two-chain CUDA batches, stores output slots, and returns per-member receipts.
    - **~~Route successful fusion-batch receipts through the device ring.~~ ✓ Implemented** Successful `jit_fused_batch` par receipts are pushed into the GPU `DeviceReceipt` ring and drained on-device instead of using the CPU lattice queue.
-   - Next: generalize the batch launcher beyond the current bounded one/two-chain, one-to-three-input ABI.
+   - **~~Generalize the bounded batch launcher to three chains.~~ ✓ Implemented** The runtime launch matcher now supports one, two, or three chains with one to three inputs each, up to the current cudarc tuple arity ceiling (three-chain batches are capped at eight total inputs).
+   - Next: move beyond static tuple arities with an indirect argument table or lower fusion batches into the H_f device-function table.
 4. Rework par commit from thread-0 control flow into a parallel readiness/commit kernel using per-member lanes and atomics or a two-kernel select+commit protocol. Keep the current sequential commit until the replacement is proven.
 5. Collapse receipt routing so every GPU-dispatched par member writes exactly one device-ring receipt; CPU queue routing remains only for process/abstract fallbacks.
 

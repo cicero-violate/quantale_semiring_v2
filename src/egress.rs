@@ -355,7 +355,7 @@ fn execute_jit_fusion_batch_blocking(
             .join("__")
     );
 
-    if entries.len() > 2 {
+    if entries.len() > 3 {
         return entries
             .iter()
             .map(|&(idx, entry)| {
@@ -364,7 +364,7 @@ fn execute_jit_fusion_batch_blocking(
                     cuda_err_receipt(
                         &format!("Fusion::{}", entry.region),
                         format!(
-                            "jit_cuda fusion batch launch supports at most 2 chains, got {}",
+                            "jit_cuda fusion batch launch supports at most 3 chains, got {}",
                             entries.len()
                         ),
                     ),
@@ -408,6 +408,26 @@ fn execute_jit_fusion_batch_blocking(
                 ),
             ),
         )];
+    }
+    let total_inputs: usize = entries
+        .iter()
+        .map(|(_, entry)| entry.chain.inputs.len())
+        .sum();
+    if total_inputs > 8 {
+        return entries
+            .iter()
+            .map(|&(idx, entry)| {
+                (
+                    idx,
+                    cuda_err_receipt(
+                        &format!("Fusion::{}", entry.region),
+                        format!(
+                            "jit_cuda fusion batch launch supports at most 8 total inputs for 3-chain batches, got {total_inputs}"
+                        ),
+                    ),
+                )
+            })
+            .collect();
     }
 
     let mut all_input_slots = Vec::new();
@@ -626,6 +646,113 @@ fn launch_jit_batch(
                             "unsupported chain input counts {} and {}",
                             c0.len(),
                             c1.len()
+                        ));
+                    }
+                }
+            }
+            [c0, c1, c2] => {
+                let (first, rest) = outputs.split_at_mut(1);
+                let (second, third) = rest.split_at_mut(1);
+                let out0 = &mut first[0];
+                let out1 = &mut second[0];
+                let out2 = &mut third[0];
+                match (c0.as_slice(), c1.as_slice(), c2.as_slice()) {
+                    ([a0], [a1], [a2]) => {
+                        func.launch(cfg, (a0, out0, a1, out1, a2, out2, n as i32))
+                    }
+                    ([a0], [a1], [a2, b2]) => {
+                        func.launch(cfg, (a0, out0, a1, out1, a2, b2, out2, n as i32))
+                    }
+                    ([a0], [a1], [a2, b2, c2]) => {
+                        func.launch(cfg, (a0, out0, a1, out1, a2, b2, c2, out2, n as i32))
+                    }
+                    ([a0], [a1, b1], [a2]) => {
+                        func.launch(cfg, (a0, out0, a1, b1, out1, a2, out2, n as i32))
+                    }
+                    ([a0], [a1, b1], [a2, b2]) => {
+                        func.launch(cfg, (a0, out0, a1, b1, out1, a2, b2, out2, n as i32))
+                    }
+                    ([a0], [a1, b1], [a2, b2, c2]) => {
+                        func.launch(cfg, (a0, out0, a1, b1, out1, a2, b2, c2, out2, n as i32))
+                    }
+                    ([a0], [a1, b1, c1], [a2]) => {
+                        func.launch(cfg, (a0, out0, a1, b1, c1, out1, a2, out2, n as i32))
+                    }
+                    ([a0], [a1, b1, c1], [a2, b2]) => {
+                        func.launch(cfg, (a0, out0, a1, b1, c1, out1, a2, b2, out2, n as i32))
+                    }
+                    ([a0], [a1, b1, c1], [a2, b2, c2]) => func.launch(
+                        cfg,
+                        (a0, out0, a1, b1, c1, out1, a2, b2, c2, out2, n as i32),
+                    ),
+                    ([a0, b0], [a1], [a2]) => {
+                        func.launch(cfg, (a0, b0, out0, a1, out1, a2, out2, n as i32))
+                    }
+                    ([a0, b0], [a1], [a2, b2]) => {
+                        func.launch(cfg, (a0, b0, out0, a1, out1, a2, b2, out2, n as i32))
+                    }
+                    ([a0, b0], [a1], [a2, b2, c2]) => {
+                        func.launch(cfg, (a0, b0, out0, a1, out1, a2, b2, c2, out2, n as i32))
+                    }
+                    ([a0, b0], [a1, b1], [a2]) => {
+                        func.launch(cfg, (a0, b0, out0, a1, b1, out1, a2, out2, n as i32))
+                    }
+                    ([a0, b0], [a1, b1], [a2, b2]) => {
+                        func.launch(cfg, (a0, b0, out0, a1, b1, out1, a2, b2, out2, n as i32))
+                    }
+                    ([a0, b0], [a1, b1], [a2, b2, c2]) => func.launch(
+                        cfg,
+                        (a0, b0, out0, a1, b1, out1, a2, b2, c2, out2, n as i32),
+                    ),
+                    ([a0, b0], [a1, b1, c1], [a2]) => {
+                        func.launch(cfg, (a0, b0, out0, a1, b1, c1, out1, a2, out2, n as i32))
+                    }
+                    ([a0, b0], [a1, b1, c1], [a2, b2]) => func.launch(
+                        cfg,
+                        (a0, b0, out0, a1, b1, c1, out1, a2, b2, out2, n as i32),
+                    ),
+                    ([a0, b0], [a1, b1, c1], [a2, b2, c2]) => func.launch(
+                        cfg,
+                        (a0, b0, out0, a1, b1, c1, out1, a2, b2, c2, out2, n as i32),
+                    ),
+                    ([a0, b0, c0], [a1], [a2]) => {
+                        func.launch(cfg, (a0, b0, c0, out0, a1, out1, a2, out2, n as i32))
+                    }
+                    ([a0, b0, c0], [a1], [a2, b2]) => {
+                        func.launch(cfg, (a0, b0, c0, out0, a1, out1, a2, b2, out2, n as i32))
+                    }
+                    ([a0, b0, c0], [a1], [a2, b2, c2]) => func.launch(
+                        cfg,
+                        (a0, b0, c0, out0, a1, out1, a2, b2, c2, out2, n as i32),
+                    ),
+                    ([a0, b0, c0], [a1, b1], [a2]) => {
+                        func.launch(cfg, (a0, b0, c0, out0, a1, b1, out1, a2, out2, n as i32))
+                    }
+                    ([a0, b0, c0], [a1, b1], [a2, b2]) => func.launch(
+                        cfg,
+                        (a0, b0, c0, out0, a1, b1, out1, a2, b2, out2, n as i32),
+                    ),
+                    ([a0, b0, c0], [a1, b1], [a2, b2, c2]) => func.launch(
+                        cfg,
+                        (a0, b0, c0, out0, a1, b1, out1, a2, b2, c2, out2, n as i32),
+                    ),
+                    ([a0, b0, c0], [a1, b1, c1], [a2]) => func.launch(
+                        cfg,
+                        (a0, b0, c0, out0, a1, b1, c1, out1, a2, out2, n as i32),
+                    ),
+                    ([a0, b0, c0], [a1, b1, c1], [a2, b2]) => func.launch(
+                        cfg,
+                        (a0, b0, c0, out0, a1, b1, c1, out1, a2, b2, out2, n as i32),
+                    ),
+                    ([_, _, _], [_, _, _], [_, _, _]) => {
+                        return Err("unsupported chain input counts 3, 3, and 3".to_string());
+                    }
+                    _ => {
+                        return Err(format!(
+                            "unsupported chain input counts {}, {}, and {}",
+                            c0.len(),
+                            c1.len(),
+                            c2.len()
                         ));
                     }
                 }
