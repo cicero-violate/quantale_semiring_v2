@@ -50,6 +50,7 @@ Receipts validate actual thought.
 - No scalar sidecar metadata model.
 - No CPU routing planner.
 - No hidden imperative graph traversal.
+- Control-flow decisions (SEQ, PAR, CHOICE, bounded STAR) are made on-device by `tensor_quantale_orchestrate_step`; the CPU is a supervisor and IO service, not a control-flow decision maker.
 - Par group selection happens on the GPU when all members are GPU-eligible; CPU does not iterate groups to decide.
 
 ## Current milestone
@@ -102,9 +103,20 @@ Topology DSL — Phases 1–7 (plan.topology.md):
   Phase 7: FusionDispatch (src/fusion_dispatch.rs), JitChain construction,
            synthesize_all (dry-run CUDA C), JitCache (NVRTC, cfg(feature="cuda")),
            patterns.source.json as runtime source, patterns.json deleted
+
+GPU-native SEQ/PAR/CHOICE/STAR orchestration — all 9 phases (plan.gpu.native.seq.par.choice.star.md, 2026-06-05):
+  tensor_quantale_orchestrate_step: all control-flow decided on-device
+    ControlEdge table + EffectTable uploaded as TensorWorldBundle (14 fields)
+    select_control_decision: priority-ordered SEQ > STAR_BODY > CHOICE > PAR > HALT
+    commit_selected_node_or_command: unified device commit helper
+  OrchestrationState extended to 26 fields; CONTROL_* + ORCH_BLOCK_REASON_* constants
+  Per-edge star_counters buffer: GPU-resident, snapshotted for replay
+  STAR_EXIT: consumes back-edge + holds frontier at exit node
+  PAR: effect independence verified via EffectTable bitmask on-device
+  control_flow_advance side-path deprecated; scheduler-integrated tests added
 ```
 
-Validated test count: **138 passed** (10 suites, `--no-default-features`).
+Validated test count: **142 passed** (10 suites, `--no-default-features`).
 
 Fusion region active for:
 

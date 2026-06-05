@@ -283,7 +283,13 @@ TensorEdge[]
   → tensor_quantale_closure
   → exploration scheduler
       → tensor_quantale_seed/expand/score/topk/commit
-  → GPU-native parallel tier
+  → GPU-native orchestration tier (current primary path)
+      → tensor_quantale_orchestrate_step
+          ControlEdge table (SEQ/PAR/CHOICE/STAR_BOUNDED) + EffectTable → device-side routing
+          select_control_decision (priority: SEQ > STAR_BODY > CHOICE > PAR > HALT)
+          per-edge star_counters → GPU-resident, snapshotted for replay
+          DeviceCommand ring → CPU command service → DeviceReceiptExt ring
+  → legacy par dispatch (superseded)
       → par_group_step(ParGroupGpuData)
           tensor_quantale_par_group_step  (select + validate + commit)
       → dispatch_gpu_parallel_group       (concurrent operator launch)
@@ -305,25 +311,28 @@ each tick:
        execute_active_node_blocking     ← fusion-first, then hot, then process
        update receipt priors + lattice
        continue
-  4. par_group_step(par_group_data, bias)   ← one kernel: select + validate + commit
-       → iterates GPU-resident par group table [(node_id, region_id) pairs]
-       → projects each member toward target node on device
-       → first all-ready, eligible group committed atomically on device
-       → CPU reads (group_idx, decisions, per-member region_ids)
-       dispatch_gpu_parallel_group           ← concurrent: jit_cuda / fusion / hot
-       for hot-region members: gpu_dispatch_region → device receipt ring
-       for other members:      queue_lattice_update → CPU drain
-       drain_device_receipts + drain_lattice_queue
+  4. tensor_quantale_orchestrate_step   ← primary GPU-native path (all 9 phases complete)
+       drain DeviceReceiptExt ring      (receipts from CPU command service)
+       check halt sentinel              → ORCH_HALTED if reached
+       select_control_decision:         (priority: SEQ > STAR_BODY > CHOICE > PAR > HALT)
+         SEQ       → advance frontier along sequence edge
+         STAR_BODY → increment per-edge star_counter, advance body
+         STAR_EXIT → consume back-edge, hold frontier at exit node
+         CHOICE    → select highest-scoring branch via tensor projection
+         PAR       → commit all effect-independent members in-kernel
+         HALT      → set ORCH_HALTED
+       commit_selected_node_or_command  (node: updates next_active; command: enqueues DeviceCommand)
+       CPU command service: reads DeviceCommand ring, executes process/IO, returns DeviceReceiptExt
        update receipt priors + tlog
-       continue  (if group was selected)
-  5. frontier_step
+       continue  (if step completed with ORCH_CONTINUE)
+  5. frontier_step (fallback when no control edge is active)
        execute_active_node_blocking     ← same single dispatch path
        update receipt priors + lattice
 ```
 
 `execute_active_node_blocking` checks `FusionDispatch.get_by_entry` first, then `HotRegionRegistry`, then falls back to `UniversalExecutor::execute_abstract_node_blocking`. All paths emit a `ProcessReceipt`.
 
-The GPU-native parallel tier (step 4) is active when `par_group_data` is present (CUDA device available and at least one eligible par group declared in the topology). The packed table stores `(node_id, region_id, is_gpu_dispatchable, dispatch_kind)` tuples per member. The kernel computes eligibility on-device: a group is selected only when all members have `is_gpu_dispatchable == 1`. The kernel emits per-member dispatch descriptors in `ParGroupStepOutput`, including `region_id`, source/destination, and dispatch kind, so the CPU uses kernel-native routing info. H_f hot-region par members write receipts directly to the device ring; successful batched fusion receipts are host-detected, pushed into the same ring, and drained on-device. Abstract-node and failed fallback members use the CPU lattice queue.
+`tensor_quantale_orchestrate_step` is the primary per-step entry point (step 4). It consults the `ControlEdge` + `EffectTable` device tables uploaded from `OrchestrationBuffers`; `TensorWorldBundle` (14 fields) is passed as a single kernel parameter. Per-edge `star_counters` are GPU-resident and snapshotted by `orch_replay_snapshot`/`orch_replay_restore`. Process/IO work uses an explicit command/receipt protocol — the GPU emits `DeviceCommand` entries; the CPU services them and returns `DeviceReceiptExt` entries. No CPU fallback for control-flow routing.
 
 ## CKA layer
 
@@ -402,16 +411,18 @@ Effects are declared in `topology.source.json` node entries and crosschecked at 
 
 ## CUDA kernels (quantale world)
 
-Tensor kernels (NVRTC, `cuda/quantale_world.cu`):
+All kernels are NVRTC-compiled at runtime from `cuda/quantale_world.cu`.
+
+Tensor core:
 
 ```text
 tensor_quantale_reset
 tensor_quantale_embed_edges
 tensor_quantale_closure
 tensor_quantale_project
-tensor_quantale_project_batch       (used internally by par_group_step logic)
-tensor_quantale_commit_batch        (used internally by par_group_step logic)
-tensor_quantale_par_group_step      (GPU-native: select + validate + commit par group)
+tensor_quantale_project_batch       (used internally by par_group_step)
+tensor_quantale_commit_batch        (used internally by par_group_step)
+tensor_quantale_par_group_step      (legacy: GPU-native select + validate + commit par group)
 tensor_quantale_seed_exploration
 tensor_quantale_expand_tokens
 tensor_quantale_score_tokens
@@ -421,6 +432,23 @@ tensor_quantale_frontier_step
 tensor_quantale_tick
 tensor_quantale_update_edge
 tensor_quantale_decay
+```
+
+Orchestration scheduler:
+
+```text
+orchestration_state_init            zero all 26 OrchestrationState fields with sentinels
+orchestration_state_snapshot        copy OrchestrationState to replay buffer
+tensor_quantale_orchestrate_step    primary per-step entry: SEQ/PAR/CHOICE/STAR on-device
+star_counters_init                  zero per-edge star counter buffer
+control_flow_advance                (deprecated: side-path bypasses scheduler selection)
+check_effects_independent
+failure_policy_init / _classify_and_emit / _set_rollback_marker / _apply_rollback
+learned_delta_init / _fold_receipt / _apply
+receipt_prior_snapshot
+orch_event_trace_push / _drain
+orch_check_no_duplicate_receipts / _frontier_valid / _no_command_without_receipt
+orch_replay_snapshot / orch_replay_restore
 ```
 
 ## Trace logging

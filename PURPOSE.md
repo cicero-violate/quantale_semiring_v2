@@ -3,6 +3,7 @@ VM = scheduler/interpreter
 CKA = structure
 quantale = scoring
 effects = legality
+control flow = GPU-native (SEQ PAR CHOICE STAR)
 JIT = acceleration
 boundary = governed I/O
 receipts = trace/feedback
