@@ -52,7 +52,8 @@ Next implementation plan:
 3. Replace descriptor CPU execution incrementally.
    - **~~Consume descriptors in the par dispatcher.~~ ✓ Implemented** `dispatch_gpu_parallel_group` now uses the GPU-emitted `dispatch_kind` as the source of truth for H_f skip behavior, and the receipt-routing loop uses the same descriptor rather than re-deriving device dispatch from a parallel flag vector.
    - **~~Preserve fusion-entry routing in descriptors.~~ ✓ Implemented** Epoch-start par tables now include an initial dispatch kind; the GPU emits `PAR_DISPATCH_FUSION_ENTRY` descriptors for fusion entries, and the host dispatcher routes those descriptors through the fusion path instead of generic abstract fallback.
-   - Next: route descriptor-backed fusion entries through a single GPU/JIT batch launch, then leave only true abstract/process nodes on the host path.
+   - **~~Route fusion descriptors through a batch dispatch boundary.~~ ✓ Implemented** The par dispatcher now collects all `PAR_DISPATCH_FUSION_ENTRY` members and sends them through `execute_fusion_entries_batch_blocking` in one fusion worker, leaving only abstract/process members on the generic host fallback path.
+   - Next: replace the batch boundary internals with a true multi-chain GPU/JIT batch launch.
 4. Rework par commit from thread-0 control flow into a parallel readiness/commit kernel using per-member lanes and atomics or a two-kernel select+commit protocol. Keep the current sequential commit until the replacement is proven.
 5. Collapse receipt routing so every GPU-dispatched par member writes exactly one device-ring receipt; CPU queue routing remains only for process/abstract fallbacks.
 

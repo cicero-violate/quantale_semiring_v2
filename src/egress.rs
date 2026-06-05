@@ -232,6 +232,30 @@ impl UniversalExecutor {
         )
     }
 
+    /// Execute descriptor-backed fusion entries through one batch dispatch
+    /// boundary.
+    ///
+    /// The current JIT cache compiles and launches one synthesized chain per
+    /// fusion entry. Keeping this as a batch-shaped API lets the par dispatcher
+    /// stop treating fusion descriptors like generic host fallbacks, while the
+    /// later multi-chain CUDA ABI can replace this implementation without
+    /// changing the par dispatch surface.
+    pub fn execute_fusion_entries_batch_blocking(
+        &self,
+        entries: &[(usize, &FusionEntry)],
+        dynamic_payload: &Value,
+    ) -> Vec<(usize, ProcessReceipt)> {
+        entries
+            .iter()
+            .map(|&(idx, entry)| {
+                (
+                    idx,
+                    self.execute_fusion_entry_blocking(entry, dynamic_payload),
+                )
+            })
+            .collect()
+    }
+
     #[cfg(feature = "cuda")]
     fn execute_jit_chain_blocking(
         &self,

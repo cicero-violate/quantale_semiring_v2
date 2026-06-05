@@ -20,7 +20,8 @@ pub(super) fn dispatch_gpu_parallel_group(
 ) -> Vec<ProcessReceipt> {
     std::thread::scope(|scope| {
         let mut receipts: Vec<Option<ProcessReceipt>> = vec![None; node_names.len()];
-        let mut handles = Vec::new();
+        let mut host_handles = Vec::new();
+        let mut fusion_jobs = Vec::new();
 
         for (idx, name) in node_names.iter().enumerate() {
             if dispatch_descriptors
@@ -37,21 +38,38 @@ pub(super) fn dispatch_gpu_parallel_group(
                 .get(idx)
                 .map(|descriptor| descriptor.dispatch_kind)
                 .unwrap_or_default();
-            handles.push((
-                idx,
-                scope.spawn(move || match dispatch_kind {
-                    PAR_DISPATCH_FUSION_ENTRY => match entry {
-                        Some(entry) => {
-                            executor.execute_fusion_entry_blocking(entry, current_payload)
-                        }
-                        None => missing_fusion_receipt(name),
-                    },
-                    _ => executor.execute_abstract_node_blocking(name.as_str(), current_payload),
-                }),
-            ));
+            match dispatch_kind {
+                PAR_DISPATCH_FUSION_ENTRY => match entry {
+                    Some(entry) => fusion_jobs.push((idx, entry)),
+                    None => receipts[idx] = Some(missing_fusion_receipt(name)),
+                },
+                _ => host_handles.push((
+                    idx,
+                    scope.spawn(move || {
+                        executor.execute_abstract_node_blocking(name.as_str(), current_payload)
+                    }),
+                )),
+            }
         }
 
-        for (idx, handle) in handles {
+        let fusion_handle = if fusion_jobs.is_empty() {
+            None
+        } else {
+            Some(scope.spawn(move || {
+                executor.execute_fusion_entries_batch_blocking(&fusion_jobs, current_payload)
+            }))
+        };
+
+        if let Some(handle) = fusion_handle {
+            for (idx, receipt) in handle
+                .join()
+                .expect("parallel fusion batch worker panicked")
+            {
+                receipts[idx] = Some(receipt);
+            }
+        }
+
+        for (idx, handle) in host_handles {
             receipts[idx] = Some(handle.join().expect("parallel dispatch worker panicked"));
         }
 
