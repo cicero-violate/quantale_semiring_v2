@@ -859,7 +859,7 @@ impl TensorQuantaleWorld {
     }
 
     /// GPU-native parallel group step: select the first eligible, all-ready CKA
-    /// par group, commit it atomically, and return the committed decisions.
+    /// par group, commit it on-device, and return the committed decisions.
     ///
     /// Returns `Ok(None)` when no group is ready — tensor state is unchanged.
     /// Returns `Ok(Some((group_idx, decisions, region_ids, dispatched_on_device, descriptors)))`.

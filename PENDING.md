@@ -9,7 +9,7 @@ Progressive gaps in the current system. Items here are forward improvements only
 New kernel `tensor_quantale_par_group_step` in `cuda/quantale_world.cu`:
 - Iterates the GPU-resident par group table (`ParGroupGpuData`)
 - For each eligible group: projects all members toward their target nodes on-device
-- First group where all members are unblocked and unhalted: committed atomically
+- First group where all members are unblocked and unhalted: committed on-device
 - Result (`group_idx`, `decisions`) written to device output buffer
 - CPU reads result, dispatches operators via `dispatch_gpu_parallel_group`
 - CPU does not iterate groups, validate effects, or call `project_parallel_group` + `commit_decision_batch` separately
@@ -34,7 +34,8 @@ Current honest classification:
 
 ```text
 G_s = 1   GPU selects the par group
-G_c = 1   GPU commits consumed/active state
+G_c = 1   GPU commits consumed/active state; selection remains deterministic on
+          thread 0, while commit writeback uses block lanes and atomic edge marks
 E_g = 1   eligibility computed on-device from per-member is_gpu_dispatchable flags in the table
 D_h = ½   hot-region par members dispatch in-kernel through the H_f path;
           fusion/abstract members still use thread::scope → execute_*_blocking
@@ -58,8 +59,16 @@ Next implementation plan:
    - **~~Route successful fusion-batch receipts through the device ring.~~ ✓ Implemented** Successful `jit_fused_batch` par receipts are pushed into the GPU `DeviceReceipt` ring and drained on-device instead of using the CPU lattice queue.
    - **~~Generalize the bounded batch launcher to three chains.~~ ✓ Implemented** The runtime launch matcher now supports one, two, or three chains with one to three inputs each, up to the current cudarc tuple arity ceiling (three-chain batches are capped at eight total inputs).
    - Next: move beyond static tuple arities with an indirect argument table or lower fusion batches into the H_f device-function table.
-4. Rework par commit from thread-0 control flow into a parallel readiness/commit kernel using per-member lanes and atomics or a two-kernel select+commit protocol. Keep the current sequential commit until the replacement is proven.
-5. Collapse receipt routing so every GPU-dispatched par member writes exactly one device-ring receipt; CPU queue routing remains only for process/abstract fallbacks.
+4. **~~Move par commit writeback off the thread-0 memory loop.~~ ✓ Implemented**
+   Selection remains deterministic on thread 0, but committed effects are now
+   published through shared memory and written back by block lanes: lanes clear
+   `next_active`, atomically mark `consumed[src, hop]`, set `next_active[hop]`,
+   and copy the new frontier back to `active`.
+5. Next Gap C work: rework readiness/selection itself into per-member lanes, or
+   split par execution into a two-kernel select+commit protocol if deterministic
+   first-ready selection and fully parallel readiness checks cannot coexist in one
+   maintainable kernel.
+6. Collapse receipt routing so every GPU-dispatched par member writes exactly one device-ring receipt; CPU queue routing remains only for process/abstract fallbacks.
 
 What changed: the CPU group-selection loop is gone. The GPU now selects and commits. The par table encodes `(node_id, region_id, is_gpu_dispatchable, dispatch_kind)` tuples; the kernel computes eligibility on-device from `is_gpu_dispatchable` flags without a separate CPU-precomputed mask and emits per-member dispatch descriptors. Hot-region par members with registered slot tables now run their precompiled `__device__` region function inside `tensor_quantale_par_group_step`; the kernel writes a `DeviceReceipt` to the device ring and emits `dispatched_on_device = 1`, so `dispatch_gpu_parallel_group` skips `execute_*_blocking` for that member and returns a synthetic success receipt. What remains CPU-side:
 
@@ -69,8 +78,8 @@ Hot-region par members with slot tables close the CPU dispatch hop: `par_group_s
 **~~Gap B — effect validation is precomputed, not on-device.~~ ✓ Closed**
 Per-member `is_gpu_dispatchable` flags are encoded in the table as the third element of each `(node_id, region_id, is_gpu_dispatchable, dispatch_kind)` tuple. The kernel computes `all_eligible` on-device by scanning flags — no separate CPU-precomputed `eligible[]` array. Build-overlay still validates `par` independence structurally, so runtime effect conflicts cannot arise.
 
-**Gap C — commit is single-threaded control-flow, not CUDA atomic.**
-The kernel runs `threadIdx.x == 0` only. The commit is all-or-nothing by control flow. Correct term: "device-side sequential commit", not "atomic GPU commit" (unless atomic is used in the logical/transactional sense).
+**Gap C — readiness/selection is still thread-0 control flow.**
+The kernel still uses `threadIdx.x == 0` to scan groups and choose the first all-ready group. Once selected, commit writeback is block-parallel: lanes clear/copy frontier state and use atomics to mark consumed edges. Correct term: "deterministic thread-0 selection with parallel device commit", not fully parallel par selection.
 
 **Gap D — par-tier receipts partially use the device ring.**
 H_f hot-region par members write receipts directly from `tensor_quantale_par_group_step` to the device ring. Successful batched fusion par members now push generic `DeviceReceipt`s into the same ring after the batch kernel completes. Hot-region fallback members still call `gpu_dispatch_region` + `drain_device_receipts` after CPU execution. Abstract-node and failed fallback members still use `queue_lattice_update` + `drain_lattice_queue`.

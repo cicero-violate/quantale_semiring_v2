@@ -1155,11 +1155,11 @@ extern "C" __global__ void tensor_quantale_gpu_dispatch(
 // ── GPU-native parallel group selection + commit ──────────────────────────────
 //
 // tensor_quantale_par_group_step: single kernel that selects the first eligible,
-// all-ready CKA par group, commits it atomically, and writes the result without
+// all-ready CKA par group, commits it on-device, and writes the result without
 // any CPU round-trip for group selection or effect validation.
 //
-// Eligibility (jit_cuda/fusion/hot) is precomputed on the CPU at epoch start
-// and passed as a static int[] mask — 0=ineligible, 1=eligible.
+// Eligibility (jit_cuda/fusion/hot) is encoded per member at epoch start and
+// checked by the kernel — 0=ineligible, 1=eligible.
 //
 // Table layout: [g0_size, g0_n0, g0_r0, g0_e0, g0_k0, g0_n1, ...]
 // Each member is a (node_id, region_id, is_gpu_dispatchable, dispatch_kind) tuple.
@@ -1176,8 +1176,9 @@ extern "C" __global__ void tensor_quantale_gpu_dispatch(
 //   selected_group_idx >= 0  → group committed; consumed/active/decision updated.
 //   region_ids[i]            → hot-region id for member i (-1 if not a hot region).
 //
-// Single-thread kernel (tid==0, bid==0).  N is at most 256 in practice so the
-// O(N²) inner loop is cheap relative to kernel-launch overhead.
+// Selection remains deterministic on thread 0.  Commit writeback is block-
+// parallel: lanes clear next_active, atomically mark consumed edges, set the
+// next active frontier, and copy it back to active.
 
 #define MAX_PAR_GROUP_SIZE 8
 #define PAR_DISPATCH_NONE 0
@@ -1220,13 +1221,17 @@ struct ParGroupHfParams {
 
 // ── tensor_quantale_par_group_step ───────────────────────────────────────────
 //
-// Two-phase single-block kernel:
+// Three-phase single-block kernel:
 //
 //   Phase 1 (thread 0 only): iterate the par_table, find the first eligible
-//   all-ready group, commit it (consumed/active/decision updated), populate
-//   shared memory with the selected group's region_ids, src, dst.
+//   all-ready group, write the result, and populate shared memory with the
+//   selected group's region_ids, src, dst, and first-hop commit targets.
 //
-//   Phase 2 (all 512 threads, block 0 only): for each committed member with
+//   Phase 2 (all 512 threads, block 0 only): commit selected member effects by
+//   clearing next_active, atomically marking consumed edges, setting next_active,
+//   and copying the new frontier back to active.
+//
+//   Phase 3 (all 512 threads, block 0 only): for each committed member with
 //   a registered hot-region id, call the precompiled __device__ region function
 //   with per-member slot_ptrs (H_f path).  Thread 0 writes the DeviceReceipt to
 //   the ring.  Members without per-member slot tables are dispatched in
@@ -1234,7 +1239,7 @@ struct ParGroupHfParams {
 //   those members as well since the receipt captures the success outcome.
 //
 // This closes D_h for hot-region par members without CUDA dynamic parallelism.
-// Fusion/abstract par members (region_id == -1) are not dispatched in Phase 2;
+// Fusion/abstract par members (region_id == -1) are not dispatched in Phase 3;
 // the CPU still calls execute_*_blocking for them (D_h partial).
 
 extern "C" __global__ void tensor_quantale_par_group_step(
@@ -1250,12 +1255,13 @@ extern "C" __global__ void tensor_quantale_par_group_step(
     ParGroupStepOutput*     result,
     const ParGroupHfParams* hf    // H_f inline dispatch config (slot tables + receipt ring)
 ) {
-    // Shared memory: Phase 1 (thread 0) writes, Phase 2 (all threads) reads.
+    // Shared memory: Phase 1 (thread 0) writes; commit and H_f lanes read.
     __shared__ int sh_selected_g;
     __shared__ int sh_sz;
     __shared__ int sh_region_ids[MAX_PAR_GROUP_SIZE];
     __shared__ int sh_srcs[MAX_PAR_GROUP_SIZE];
     __shared__ int sh_dsts[MAX_PAR_GROUP_SIZE];
+    __shared__ int sh_hops[MAX_PAR_GROUP_SIZE];
 
     // ── init ──────────────────────────────────────────────────────────────────
     if (threadIdx.x == 0) {
@@ -1267,6 +1273,7 @@ extern "C" __global__ void tensor_quantale_par_group_step(
             sh_region_ids[i] = -1;
             sh_srcs[i] = -1;
             sh_dsts[i] = -1;
+            sh_hops[i] = -1;
             result->dispatched_on_device[i] = 0;
             result->dispatch_descriptors[i].member_index = -1;
             result->dispatch_descriptors[i].node_id = -1;
@@ -1278,7 +1285,7 @@ extern "C" __global__ void tensor_quantale_par_group_step(
     }
     __syncthreads();
 
-    // ── Phase 1: group selection and commit (thread 0 only) ───────────────────
+    // ── Phase 1: group selection (thread 0 only) ──────────────────────────────
     if (threadIdx.x == 0) {
         float alpha = bias[0].confidence;
         float beta  = bias[0].cost;
@@ -1350,18 +1357,6 @@ extern "C" __global__ void tensor_quantale_par_group_step(
 
             if (!all_ready) continue;
 
-            // Commit atomically.
-            for (int i = 0; i < N; i++) next_active[i] = 0;
-            for (int i = 0; i < sz; i++) {
-                int src = decisions[i].selected_src;
-                int hop = decisions[i].first_hop;
-                if (src >= 0 && src < N && hop >= 0 && hop < N) {
-                    consumed[src * N + hop] = 1;
-                    next_active[hop] = 1;
-                }
-            }
-            for (int i = 0; i < N; i++) active[i] = next_active[i];
-
             global_decision[0].step           = next_step;
             global_decision[0].selected_src   = decisions[0].selected_src;
             global_decision[0].selected_dst   = decisions[0].selected_dst;
@@ -1390,6 +1385,7 @@ extern "C" __global__ void tensor_quantale_par_group_step(
                 sh_region_ids[i] = region_ids[i];
                 sh_srcs[i] = decisions[i].selected_src;
                 sh_dsts[i] = decisions[i].selected_dst;
+                sh_hops[i] = decisions[i].first_hop;
             }
 
             break;
@@ -1397,7 +1393,35 @@ extern "C" __global__ void tensor_quantale_par_group_step(
     }
     __syncthreads();
 
-    // ── Phase 2: hot-region inline dispatch (H_f path, all threads) ──────────
+    // ── Phase 2: block-parallel commit writeback ─────────────────────────────
+    //
+    // Thread 0 selected a conflict-free par group and published member effects
+    // to shared memory.  All lanes participate in the state writeback so commit
+    // no longer serializes the consumed/active memory loops through thread 0.
+
+    if (sh_selected_g >= 0) {
+        for (int i = threadIdx.x; i < N; i += blockDim.x) {
+            next_active[i] = 0;
+        }
+        __syncthreads();
+
+        for (int i = threadIdx.x; i < sh_sz; i += blockDim.x) {
+            int src = sh_srcs[i];
+            int hop = sh_hops[i];
+            if (src >= 0 && src < N && hop >= 0 && hop < N) {
+                atomicExch(&consumed[src * N + hop], 1);
+                atomicExch(&next_active[hop], 1);
+            }
+        }
+        __syncthreads();
+
+        for (int i = threadIdx.x; i < N; i += blockDim.x) {
+            active[i] = next_active[i];
+        }
+    }
+    __syncthreads();
+
+    // ── Phase 3: hot-region inline dispatch (H_f path, all threads) ──────────
     //
     // Only runs when a group was selected and the receipt ring is available.
     // All threads see the same sh_* values → no warp divergence in the loop
