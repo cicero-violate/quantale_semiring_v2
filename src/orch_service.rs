@@ -15,13 +15,13 @@
 
 use serde_json::Value;
 
+use crate::UniversalExecutor;
 use crate::error::CudaError;
 use crate::tensor::{
-    DeviceCommand, DeviceReceiptExt, DISPATCH_KIND_EXTERNAL_IO, DISPATCH_KIND_EXTERNAL_PROCESS,
+    DISPATCH_KIND_EXTERNAL_IO, DISPATCH_KIND_EXTERNAL_PROCESS, DeviceCommand, DeviceReceiptExt,
     TensorQuantaleWorld,
 };
 use crate::types::ProcessReceipt;
-use crate::UniversalExecutor;
 
 /// Outcome of servicing one `DeviceCommand`.
 #[derive(Clone, Debug)]
@@ -116,7 +116,7 @@ fn execute_command(
 
 fn outcome_from_receipt(receipt: &ProcessReceipt, cmd: &DeviceCommand) -> i32 {
     match receipt.exit_code {
-        0 => 0,   // success
+        0 => 0, // success
         124 => {
             // exit 124 is the timeout sentinel from the process executor
             let _ = cmd; // timeout_ticks could be checked here in a future phase

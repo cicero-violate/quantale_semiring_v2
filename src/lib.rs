@@ -1,7 +1,7 @@
 pub mod config;
 pub mod console;
-pub mod control_flow_lowering;
 pub mod contracts;
+pub mod control_flow_lowering;
 pub mod device_slots;
 pub mod dispatch_kind;
 pub mod egress;

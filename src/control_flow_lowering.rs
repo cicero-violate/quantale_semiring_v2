@@ -8,8 +8,8 @@
 use serde_json::Value;
 
 use crate::tensor::{
-    ControlEdge, EffectTable, CONTROL_OP_CHOICE, CONTROL_OP_HALT_OP, CONTROL_OP_PAR,
-    CONTROL_OP_SEQ, CONTROL_OP_STAR_BOUNDED,
+    CONTROL_OP_CHOICE, CONTROL_OP_HALT_OP, CONTROL_OP_PAR, CONTROL_OP_SEQ, CONTROL_OP_STAR_BOUNDED,
+    ControlEdge, EffectTable,
 };
 use crate::topology::NodeRegistry;
 
@@ -80,7 +80,9 @@ pub fn lower_patterns_from_json(
     }
 
     // Remove duplicate (op, lhs, rhs) triples that arise from shared sub-expressions.
-    table.edges.dedup_by(|a, b| a.op == b.op && a.lhs == b.lhs && a.rhs == b.rhs);
+    table
+        .edges
+        .dedup_by(|a, b| a.op == b.op && a.lhs == b.lhs && a.rhs == b.rhs);
     Ok(table)
 }
 
@@ -92,7 +94,10 @@ fn lower_expr(
     // Leaf: string node name.
     if let Some(name) = expr.as_str() {
         return match name {
-            "one" => Ok(LoweredExpr { entries: vec![], exits: vec![] }),
+            "one" => Ok(LoweredExpr {
+                entries: vec![],
+                exits: vec![],
+            }),
             "zero" => {
                 out.push(ControlEdge {
                     op: CONTROL_OP_HALT_OP,
@@ -102,13 +107,20 @@ fn lower_expr(
                     order: 0,
                     bound: 0,
                 });
-                Ok(LoweredExpr { entries: vec![], exits: vec![] })
+                Ok(LoweredExpr {
+                    entries: vec![],
+                    exits: vec![],
+                })
             }
             _ => {
                 let id = registry
                     .id_of(name)
-                    .ok_or_else(|| LoweringError::UnknownNode(name.to_string()))? as i32;
-                Ok(LoweredExpr { entries: vec![id], exits: vec![id] })
+                    .ok_or_else(|| LoweringError::UnknownNode(name.to_string()))?
+                    as i32;
+                Ok(LoweredExpr {
+                    entries: vec![id],
+                    exits: vec![id],
+                })
             }
         };
     }
@@ -138,7 +150,10 @@ fn lower_seq(
     out: &mut Vec<ControlEdge>,
 ) -> Result<LoweredExpr, LoweringError> {
     if elements.is_empty() {
-        return Ok(LoweredExpr { entries: vec![], exits: vec![] });
+        return Ok(LoweredExpr {
+            entries: vec![],
+            exits: vec![],
+        });
     }
 
     let lowered: Vec<LoweredExpr> = elements
@@ -162,7 +177,10 @@ fn lower_seq(
         }
     }
 
-    let entries = lowered.first().map(|l| l.entries.clone()).unwrap_or_default();
+    let entries = lowered
+        .first()
+        .map(|l| l.entries.clone())
+        .unwrap_or_default();
     let exits = lowered.last().map(|l| l.exits.clone()).unwrap_or_default();
     Ok(LoweredExpr { entries, exits })
 }
@@ -182,15 +200,35 @@ fn lower_par(
         for j in (i + 1)..lowered.len() {
             for &lhs in &lowered[i].entries {
                 for &rhs in &lowered[j].entries {
-                    out.push(ControlEdge { op: CONTROL_OP_PAR, lhs, rhs, guard: 0, order: 0, bound: 0 });
-                    out.push(ControlEdge { op: CONTROL_OP_PAR, lhs: rhs, rhs: lhs, guard: 0, order: 0, bound: 0 });
+                    out.push(ControlEdge {
+                        op: CONTROL_OP_PAR,
+                        lhs,
+                        rhs,
+                        guard: 0,
+                        order: 0,
+                        bound: 0,
+                    });
+                    out.push(ControlEdge {
+                        op: CONTROL_OP_PAR,
+                        lhs: rhs,
+                        rhs: lhs,
+                        guard: 0,
+                        order: 0,
+                        bound: 0,
+                    });
                 }
             }
         }
     }
 
-    let mut entries: Vec<i32> = lowered.iter().flat_map(|l| l.entries.iter().copied()).collect();
-    let mut exits: Vec<i32> = lowered.iter().flat_map(|l| l.exits.iter().copied()).collect();
+    let mut entries: Vec<i32> = lowered
+        .iter()
+        .flat_map(|l| l.entries.iter().copied())
+        .collect();
+    let mut exits: Vec<i32> = lowered
+        .iter()
+        .flat_map(|l| l.exits.iter().copied())
+        .collect();
     entries.dedup();
     exits.dedup();
     Ok(LoweredExpr { entries, exits })
@@ -211,14 +249,27 @@ fn lower_choice(
         for j in (i + 1)..lowered.len() {
             for &lhs in &lowered[i].entries {
                 for &rhs in &lowered[j].entries {
-                    out.push(ControlEdge { op: CONTROL_OP_CHOICE, lhs, rhs, guard: 0, order: 0, bound: 0 });
+                    out.push(ControlEdge {
+                        op: CONTROL_OP_CHOICE,
+                        lhs,
+                        rhs,
+                        guard: 0,
+                        order: 0,
+                        bound: 0,
+                    });
                 }
             }
         }
     }
 
-    let mut entries: Vec<i32> = lowered.iter().flat_map(|l| l.entries.iter().copied()).collect();
-    let mut exits: Vec<i32> = lowered.iter().flat_map(|l| l.exits.iter().copied()).collect();
+    let mut entries: Vec<i32> = lowered
+        .iter()
+        .flat_map(|l| l.entries.iter().copied())
+        .collect();
+    let mut exits: Vec<i32> = lowered
+        .iter()
+        .flat_map(|l| l.exits.iter().copied())
+        .collect();
     entries.dedup();
     exits.dedup();
     Ok(LoweredExpr { entries, exits })
@@ -253,7 +304,10 @@ fn lower_star(
         }
     }
 
-    Ok(LoweredExpr { entries: lowered.entries, exits: lowered.exits })
+    Ok(LoweredExpr {
+        entries: lowered.entries,
+        exits: lowered.exits,
+    })
 }
 
 #[cfg(test)]
@@ -296,7 +350,11 @@ mod tests {
         let b = registry.id_of("B").unwrap() as i32;
         let c = registry.id_of("C").unwrap() as i32;
 
-        let seq_edges: Vec<_> = table.edges.iter().filter(|e| e.op == CONTROL_OP_SEQ).collect();
+        let seq_edges: Vec<_> = table
+            .edges
+            .iter()
+            .filter(|e| e.op == CONTROL_OP_SEQ)
+            .collect();
         assert_eq!(seq_edges.len(), 2, "expected 2 SEQ edges for A→B→C");
 
         let ab = seq_edges.iter().find(|e| e.lhs == a && e.rhs == b).unwrap();
@@ -318,8 +376,18 @@ mod tests {
 
         let x = registry.id_of("X").unwrap() as i32;
         let y = registry.id_of("Y").unwrap() as i32;
-        assert!(table.edges.iter().any(|e| e.op == CONTROL_OP_PAR && e.lhs == x && e.rhs == y));
-        assert!(table.edges.iter().any(|e| e.op == CONTROL_OP_PAR && e.lhs == y && e.rhs == x));
+        assert!(
+            table
+                .edges
+                .iter()
+                .any(|e| e.op == CONTROL_OP_PAR && e.lhs == x && e.rhs == y)
+        );
+        assert!(
+            table
+                .edges
+                .iter()
+                .any(|e| e.op == CONTROL_OP_PAR && e.lhs == y && e.rhs == x)
+        );
     }
 
     #[test]
@@ -335,7 +403,12 @@ mod tests {
 
         let r = registry.id_of("R").unwrap() as i32;
         let t = registry.id_of("T").unwrap() as i32;
-        assert!(table.edges.iter().any(|e| e.op == CONTROL_OP_CHOICE && e.lhs == r && e.rhs == t));
+        assert!(
+            table
+                .edges
+                .iter()
+                .any(|e| e.op == CONTROL_OP_CHOICE && e.lhs == r && e.rhs == t)
+        );
     }
 
     #[test]
@@ -377,27 +450,72 @@ mod tests {
         let d = registry.id_of("D").unwrap() as i32;
 
         // A precedes both B and C (seq position 0)
-        assert!(table.edges.iter().any(|e| e.op == CONTROL_OP_SEQ && e.lhs == a && e.rhs == b));
-        assert!(table.edges.iter().any(|e| e.op == CONTROL_OP_SEQ && e.lhs == a && e.rhs == c));
+        assert!(
+            table
+                .edges
+                .iter()
+                .any(|e| e.op == CONTROL_OP_SEQ && e.lhs == a && e.rhs == b)
+        );
+        assert!(
+            table
+                .edges
+                .iter()
+                .any(|e| e.op == CONTROL_OP_SEQ && e.lhs == a && e.rhs == c)
+        );
         // B and C are par (symmetric)
-        assert!(table.edges.iter().any(|e| e.op == CONTROL_OP_PAR && e.lhs == b && e.rhs == c));
+        assert!(
+            table
+                .edges
+                .iter()
+                .any(|e| e.op == CONTROL_OP_PAR && e.lhs == b && e.rhs == c)
+        );
         // Both B and C precede D (seq position 1)
-        assert!(table.edges.iter().any(|e| e.op == CONTROL_OP_SEQ && e.lhs == b && e.rhs == d));
-        assert!(table.edges.iter().any(|e| e.op == CONTROL_OP_SEQ && e.lhs == c && e.rhs == d));
+        assert!(
+            table
+                .edges
+                .iter()
+                .any(|e| e.op == CONTROL_OP_SEQ && e.lhs == b && e.rhs == d)
+        );
+        assert!(
+            table
+                .edges
+                .iter()
+                .any(|e| e.op == CONTROL_OP_SEQ && e.lhs == c && e.rhs == d)
+        );
     }
 
     #[test]
     fn effects_independent_no_conflict() {
-        let ea = EffectTable { reads: 0b01, writes: 0b10, locks: 0, safety_class: 0 };
-        let eb = EffectTable { reads: 0b100, writes: 0b1000, locks: 0, safety_class: 0 };
+        let ea = EffectTable {
+            reads: 0b01,
+            writes: 0b10,
+            locks: 0,
+            safety_class: 0,
+        };
+        let eb = EffectTable {
+            reads: 0b100,
+            writes: 0b1000,
+            locks: 0,
+            safety_class: 0,
+        };
         // ea.writes=0b10 ∩ (eb.reads|eb.writes)=0b1100 → 0 → independent
         assert!(effects_independent_cpu(&ea, &eb));
     }
 
     #[test]
     fn effects_conflict_write_read() {
-        let ea = EffectTable { reads: 0b01, writes: 0b10, locks: 0, safety_class: 0 };
-        let eb = EffectTable { reads: 0b10, writes: 0b01, locks: 0, safety_class: 0 };
+        let ea = EffectTable {
+            reads: 0b01,
+            writes: 0b10,
+            locks: 0,
+            safety_class: 0,
+        };
+        let eb = EffectTable {
+            reads: 0b10,
+            writes: 0b01,
+            locks: 0,
+            safety_class: 0,
+        };
         // ea.writes=0b10 ∩ (eb.reads|eb.writes)=0b11 → 0b10 ≠ 0 → not independent
         assert!(!effects_independent_cpu(&ea, &eb));
     }
@@ -414,7 +532,12 @@ mod tests {
         let table = lower_patterns_from_json(&patterns, &registry).unwrap();
         // "one" is the identity; no edges should be emitted.
         assert!(
-            table.edges.iter().filter(|e| e.op != CONTROL_OP_HALT_OP).count() == 0,
+            table
+                .edges
+                .iter()
+                .filter(|e| e.op != CONTROL_OP_HALT_OP)
+                .count()
+                == 0,
             "identity pattern should produce no control edges"
         );
     }

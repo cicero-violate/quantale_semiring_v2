@@ -23,6 +23,7 @@ The ranking is not a general-purpose AI ranking. It is optimized for the current
 | `04_math_formulas.md`          | Core formulas for leverage scoring, influence graphs, and edge learning. |
 | `05_implementation_targets.md` | Concrete build targets mapped to algorithms.                             |
 | `06_low_leverage_defer.md`     | Algorithms to defer and why.                                             |
+| `ongoing_projects.md`          | Active project plans, including internet-as-data-model retrieval.        |
 | `algorithm_reference.csv`      | Machine-readable ranked reference table.                                 |
 
 ## Canonical Priority
