@@ -162,7 +162,7 @@ GPU-native orchestration with external command service (current)
   Metrics: S_g=1  P_g=1  E_g=1  C_g=1  R_g=1  F_g=1  H_g=0
            D_g=0 for process/IO (explicit command/receipt protocol)
 
-Fully GPU-native orchestration (Phase 9 remaining — retire side-path APIs)
+Fully GPU-native orchestration (complete — all nine phases done 2026-06-05)
   Same as above plus: standalone control_flow_advance side-path retired;
   all runtime test coverage migrated to orchestrate_step observations;
   legacy CPU orchestration feature-gated rather than default.

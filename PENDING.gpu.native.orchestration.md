@@ -1,4 +1,4 @@
-# GPU-Native Orchestration — Phase 9 Remaining
+# GPU-Native Orchestration — Complete
 
 Phases 0–8 are complete.  The GPU-native SEQ/PAR/CHOICE/STAR scheduler
 integration (plan.gpu.native.seq.par.choice.star.md) is also complete as of

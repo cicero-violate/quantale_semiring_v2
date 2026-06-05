@@ -4,7 +4,7 @@ Only remaining gaps are listed here. Completed items were removed after verifica
 
 ---
 
-## GPU-native orchestration (in progress — PENDING.gpu.native.orchestration.md)
+## GPU-native orchestration (complete — see PENDING.gpu.native.orchestration.md)
 
 **Phase 0 complete** (2026-06-05):
 - Design note added to ARCHITECTURE.md (`## GPU Orchestration Tiers`).
