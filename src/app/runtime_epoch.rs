@@ -1,13 +1,18 @@
-use super::*;
+use quantale_semiring_v2::{
+    LearningBuffer, LearningPolicy, SystemConfig, TensorQuantaleWorld, TlogWriter,
+    TopologyInvariants, TopologyRuntime, UniversalExecutor, ViolationKind, check_with_operators,
+    compile_pattern, console, format_violations, load_compiled_pattern_edges,
+    load_default_patterns, load_learned_tensor_edges,
+};
 
-pub(super) struct RuntimeEpoch {
-    pub(super) topology: TopologyRuntime,
-    pub(super) executor: UniversalExecutor,
-    pub(super) world: TensorQuantaleWorld,
-    pub(super) learning_buffer: quantale_semiring_v2::LearningBuffer,
+pub(crate) struct RuntimeEpoch {
+    pub(crate) topology: TopologyRuntime,
+    pub(crate) executor: UniversalExecutor,
+    pub(crate) world: TensorQuantaleWorld,
+    pub(crate) learning_buffer: LearningBuffer,
 }
 
-pub(super) fn build_runtime_epoch(
+pub(crate) fn build_runtime_epoch(
     id: usize,
     config: &mut SystemConfig,
     learning_policy: &LearningPolicy,
@@ -124,9 +129,6 @@ pub(super) fn build_runtime_epoch(
         topology,
         executor,
         world,
-        learning_buffer: quantale_semiring_v2::LearningBuffer::new(
-            &config.learned_edges_path,
-            LEARNING_FLUSH_THRESHOLD,
-        ),
+        learning_buffer: LearningBuffer::new(&config.learned_edges_path, LEARNING_FLUSH_THRESHOLD),
     })
 }

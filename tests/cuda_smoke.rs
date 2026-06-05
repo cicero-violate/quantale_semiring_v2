@@ -1068,19 +1068,25 @@ mod cuda_smoke {
     /// Phase-9: a SEQ control edge advances the active frontier through the
     /// GPU scheduler without any CPU control-flow decision.
     #[test]
-    fn orchestrate_step_seq_advances_active_frontier()
-    -> Result<(), Box<dyn std::error::Error>> {
-        use quantale_semiring_v2::{
-            CONTROL_OP_SEQ, ControlEdge, OrchStepStatus,
-        };
+    fn orchestrate_step_seq_advances_active_frontier() -> Result<(), Box<dyn std::error::Error>> {
+        use quantale_semiring_v2::{CONTROL_OP_SEQ, ControlEdge, OrchStepStatus};
         let mut world = match TensorQuantaleWorld::empty() {
             Ok(w) => w,
-            Err(e) => { eprintln!("skip: {e}"); return Ok(()); }
+            Err(e) => {
+                eprintln!("skip: {e}");
+                return Ok(());
+            }
         };
         // Load a single SEQ edge: node 0 → node 1.
         world.load_control_table(
-            vec![ControlEdge { op: CONTROL_OP_SEQ, lhs: 0, rhs: 1,
-                               guard: 0, order: 0, bound: 0 }],
+            vec![ControlEdge {
+                op: CONTROL_OP_SEQ,
+                lhs: 0,
+                rhs: 1,
+                guard: 0,
+                order: 0,
+                bound: 0,
+            }],
             vec![],
         )?;
         world.embed_tensor_edges(&[TensorEdge::new(0, 1, 0.8, 1.0, 0.8)])?;
@@ -1106,20 +1112,33 @@ mod cuda_smoke {
     #[test]
     fn orchestrate_step_choice_selects_highest_score_branch()
     -> Result<(), Box<dyn std::error::Error>> {
-        use quantale_semiring_v2::{
-            CONTROL_OP_CHOICE, ControlEdge, OrchStepStatus,
-        };
+        use quantale_semiring_v2::{CONTROL_OP_CHOICE, ControlEdge, OrchStepStatus};
         let mut world = match TensorQuantaleWorld::empty() {
             Ok(w) => w,
-            Err(e) => { eprintln!("skip: {e}"); return Ok(()); }
+            Err(e) => {
+                eprintln!("skip: {e}");
+                return Ok(());
+            }
         };
         // Two CHOICE edges from node 0.
         world.load_control_table(
             vec![
-                ControlEdge { op: CONTROL_OP_CHOICE, lhs: 0, rhs: 1,
-                               guard: 0, order: 0, bound: 0 },
-                ControlEdge { op: CONTROL_OP_CHOICE, lhs: 0, rhs: 2,
-                               guard: 0, order: 1, bound: 0 },
+                ControlEdge {
+                    op: CONTROL_OP_CHOICE,
+                    lhs: 0,
+                    rhs: 1,
+                    guard: 0,
+                    order: 0,
+                    bound: 0,
+                },
+                ControlEdge {
+                    op: CONTROL_OP_CHOICE,
+                    lhs: 0,
+                    rhs: 2,
+                    guard: 0,
+                    order: 1,
+                    bound: 0,
+                },
             ],
             vec![],
         )?;
@@ -1149,19 +1168,25 @@ mod cuda_smoke {
     /// Phase-9: a STAR_BOUNDED control edge increments the per-edge counter and
     /// commits the body step through the GPU scheduler.
     #[test]
-    fn orchestrate_step_star_body_increments_counter()
-    -> Result<(), Box<dyn std::error::Error>> {
-        use quantale_semiring_v2::{
-            CONTROL_OP_STAR_BOUNDED, ControlEdge, OrchStepStatus,
-        };
+    fn orchestrate_step_star_body_increments_counter() -> Result<(), Box<dyn std::error::Error>> {
+        use quantale_semiring_v2::{CONTROL_OP_STAR_BOUNDED, ControlEdge, OrchStepStatus};
         let mut world = match TensorQuantaleWorld::empty() {
             Ok(w) => w,
-            Err(e) => { eprintln!("skip: {e}"); return Ok(()); }
+            Err(e) => {
+                eprintln!("skip: {e}");
+                return Ok(());
+            }
         };
         // STAR_BOUNDED back-edge: lhs=0 → rhs=1 (body node), bound=3.
         world.load_control_table(
-            vec![ControlEdge { op: CONTROL_OP_STAR_BOUNDED, lhs: 0, rhs: 1,
-                               guard: 0, order: 0, bound: 3 }],
+            vec![ControlEdge {
+                op: CONTROL_OP_STAR_BOUNDED,
+                lhs: 0,
+                rhs: 1,
+                guard: 0,
+                order: 0,
+                bound: 3,
+            }],
             vec![],
         )?;
         world.embed_tensor_edges(&[TensorEdge::new(0, 1, 0.8, 1.0, 0.8)])?;
@@ -1192,28 +1217,56 @@ mod cuda_smoke {
     /// Phase-9: PAR control edges with independent effects are committed
     /// together by the GPU scheduler in a single step.
     #[test]
-    fn orchestrate_step_par_commits_independent_members()
-    -> Result<(), Box<dyn std::error::Error>> {
-        use quantale_semiring_v2::{
-            CONTROL_OP_PAR, ControlEdge, EffectTable, OrchStepStatus,
-        };
+    fn orchestrate_step_par_commits_independent_members() -> Result<(), Box<dyn std::error::Error>>
+    {
+        use quantale_semiring_v2::{CONTROL_OP_PAR, ControlEdge, EffectTable, OrchStepStatus};
         let mut world = match TensorQuantaleWorld::empty() {
             Ok(w) => w,
-            Err(e) => { eprintln!("skip: {e}"); return Ok(()); }
+            Err(e) => {
+                eprintln!("skip: {e}");
+                return Ok(());
+            }
         };
         // Two PAR edges from node 0 to nodes 1 and 2.
         world.load_control_table(
             vec![
-                ControlEdge { op: CONTROL_OP_PAR, lhs: 0, rhs: 1,
-                               guard: 0, order: 0, bound: 0 },
-                ControlEdge { op: CONTROL_OP_PAR, lhs: 0, rhs: 2,
-                               guard: 0, order: 1, bound: 0 },
+                ControlEdge {
+                    op: CONTROL_OP_PAR,
+                    lhs: 0,
+                    rhs: 1,
+                    guard: 0,
+                    order: 0,
+                    bound: 0,
+                },
+                ControlEdge {
+                    op: CONTROL_OP_PAR,
+                    lhs: 0,
+                    rhs: 2,
+                    guard: 0,
+                    order: 1,
+                    bound: 0,
+                },
             ],
             // Non-overlapping effect sets → nodes 1 and 2 are independent.
             vec![
-                EffectTable { reads: 0, writes: 0, locks: 0, safety_class: 0 }, // node 0
-                EffectTable { reads: 0b0001, writes: 0b0010, locks: 0, safety_class: 0 }, // node 1
-                EffectTable { reads: 0b0100, writes: 0b1000, locks: 0, safety_class: 0 }, // node 2
+                EffectTable {
+                    reads: 0,
+                    writes: 0,
+                    locks: 0,
+                    safety_class: 0,
+                }, // node 0
+                EffectTable {
+                    reads: 0b0001,
+                    writes: 0b0010,
+                    locks: 0,
+                    safety_class: 0,
+                }, // node 1
+                EffectTable {
+                    reads: 0b0100,
+                    writes: 0b1000,
+                    locks: 0,
+                    safety_class: 0,
+                }, // node 2
             ],
         )?;
         world.embed_tensor_edges(&[

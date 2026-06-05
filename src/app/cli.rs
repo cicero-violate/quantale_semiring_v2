@@ -1,11 +1,15 @@
-use super::*;
+use quantale_semiring_v2::{
+    GraphTopology, TopologyInvariants, ViolationKind, check, compile_and_emit_pattern_edges,
+    console, format_violations,
+};
+use topology_core::build_overlay_assets;
 
-pub(super) enum CliCommand {
+pub(crate) enum CliCommand {
     ContinueRuntime,
     Exit(i32),
 }
 
-pub(super) fn handle(args: &[String]) -> CliCommand {
+pub(crate) fn handle(args: &[String]) -> CliCommand {
     if args.get(1).map(String::as_str) == Some("topology")
         && args.get(2).map(String::as_str) == Some("build-overlay")
     {
