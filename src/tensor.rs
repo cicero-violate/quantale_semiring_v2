@@ -213,7 +213,7 @@ unsafe impl DeviceRepr for GpuDispatchMailboxHost {}
 /// GPU-resident data for the par-group-step kernel.
 ///
 /// Built once at epoch start from the topology's compiled par groups and the
-/// operator eligibility mask.  Uploaded to the GPU device at construction.
+/// per-member dispatch metadata. Uploaded to the GPU device at construction.
 pub struct ParGroupGpuData {
     pub(crate) table_buf: CudaSlice<i32>,
     pub num_groups: usize,

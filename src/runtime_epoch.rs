@@ -19,9 +19,10 @@ pub(super) struct RuntimeEpoch {
     /// Buffers successful execution edge deltas for persistence to
     /// `state/learned_edges.jsonl`.  Flushed on epoch reload and shutdown.
     pub(super) learning_buffer: quantale_semiring_v2::LearningBuffer,
-    /// GPU-resident par group table and eligibility mask for the GPU-native
-    /// parallel dispatch tier.  `None` when no par groups exist or when the
-    /// world fails to upload (e.g. no CUDA device).
+    /// GPU-resident par group tuple table for the GPU-native parallel
+    /// dispatch tier. Eligibility is computed on-device from per-member
+    /// `is_gpu_dispatchable` flags. `None` when no par groups exist or when
+    /// the world fails to upload (e.g. no CUDA device).
     pub(super) par_group_data: Option<quantale_semiring_v2::ParGroupGpuData>,
 }
 

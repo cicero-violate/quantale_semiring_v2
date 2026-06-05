@@ -114,13 +114,13 @@ Topology DSL compiler (crates/topology_core)
 CKA pattern compilation (build time; edges embedded at epoch start)
 FusionDispatch: fusion region loading and JitChain construction
 JitCache: NVRTC/PTX compilation and kernel caching (#[cfg(feature="cuda")])
-ParGroupGpuData: par group table [(node_id, region_id, is_gpu_dispatchable) triples] upload at epoch start
+ParGroupGpuData: par group table [(node_id, region_id, is_gpu_dispatchable, dispatch_kind) tuples] uploaded at epoch start
 Static topology invariant checking
 Runtime decision invariant checking
 Base tensor CPU snapshot for hard reset
 Per-member is_gpu_dispatchable and region_id table construction (kernel validates eligibility on-device)
 Host-side operator dispatch after GPU commit (jit_cuda and fusion only)
-Device-ring receipt routing for hot-region par members (gpu_dispatch_region + drain_device_receipts)
+Device-ring receipt routing for H_f par members; CPU hot-region fallback still uses gpu_dispatch_region + drain_device_receipts
 Edge-delta upload
 Compact report decoding
 Append-only transaction logging
@@ -259,7 +259,7 @@ each tick:
 
 `execute_active_node_blocking` checks `FusionDispatch.get_by_entry` first, then `HotRegionRegistry`, then falls back to `UniversalExecutor::execute_abstract_node_blocking`. All paths emit a `ProcessReceipt`.
 
-The GPU-native parallel tier (step 4) is active when `par_group_data` is present (CUDA device available and at least one eligible par group declared in the topology). The packed table stores `(node_id, region_id, is_gpu_dispatchable)` triples per member. The kernel computes eligibility on-device: a group is selected only when all members have `is_gpu_dispatchable == 1`. The kernel emits `region_ids[i]` in `ParGroupStepOutput` so the CPU uses kernel-native routing info. Hot-region par members route receipts through the device ring (`gpu_dispatch_region` + `drain_device_receipts`); fusion/abstract members use the CPU lattice queue.
+The GPU-native parallel tier (step 4) is active when `par_group_data` is present (CUDA device available and at least one eligible par group declared in the topology). The packed table stores `(node_id, region_id, is_gpu_dispatchable, dispatch_kind)` tuples per member. The kernel computes eligibility on-device: a group is selected only when all members have `is_gpu_dispatchable == 1`. The kernel emits per-member dispatch descriptors in `ParGroupStepOutput`, including `region_id`, source/destination, and dispatch kind, so the CPU uses kernel-native routing info. H_f hot-region par members write receipts directly to the device ring; successful batched fusion receipts are host-detected, pushed into the same ring, and drained on-device. Abstract-node and failed fallback members use the CPU lattice queue.
 
 ## CKA layer
 
@@ -281,7 +281,7 @@ Star   — bounded finite unroll only
 Par    — independent branches + effect check
 ```
 
-Source topology programs compile the same algebra via `crates/topology_core/src/programs.rs`. Node names are validated against the registry at compile time. Pattern edges are embedded into the tensor world at epoch start; the `par` branch data is computed by the compiler but not consumed at runtime in the current dispatch path.
+Source topology programs compile the same algebra via `crates/topology_core/src/programs.rs`. Node names are validated against the registry at compile time. Pattern edges are embedded into the tensor world at epoch start; generated `parallel_groups` are resolved into `TopologyRuntime.parallel_groups` and uploaded into `ParGroupGpuData` for the GPU-selected par tier.
 
 ## Exploration layer
 

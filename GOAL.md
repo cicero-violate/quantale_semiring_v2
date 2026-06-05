@@ -85,7 +85,7 @@ Runtime split into sub-modules: cli, runtime_dispatch, runtime_epoch, runtime_pa
 GPU-native parallel tier (Phase 8):
   tensor_quantale_par_group_step kernel: GPU selects, validates, and commits
     the first ready CKA par group in one round trip
-  ParGroupGpuData: static par group table + eligibility mask, built at epoch start
+  ParGroupGpuData: static par group tuple table, built at epoch start; eligibility is computed on-device from per-member is_gpu_dispatchable flags
   Eligibility = all group operators are jit_cuda / fusion-entry / hot-region
   CPU dispatches committed operators concurrently via dispatch_gpu_parallel_group
   CPU does not iterate groups or validate effects at runtime

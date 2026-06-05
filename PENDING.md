@@ -22,9 +22,9 @@ The main loop is now three-tiered:
 Supporting changes:
 - `GraphTopology.parallel_groups: Vec<Vec<String>>` (serde default = `[]`)
 - `TopologyRuntime.parallel_groups: Vec<Vec<i32>>` resolved at load time
-- `ParGroupGpuData`: packed group table + eligibility mask, uploaded at epoch start
+- `ParGroupGpuData`: packed `(node_id, region_id, is_gpu_dispatchable, dispatch_kind)` table, uploaded at epoch start
 - Eligibility = every operator in the group is `jit_cuda` / fusion-entry / hot-region
-- `runtime_parallel.rs` reduced to `dispatch_gpu_parallel_group` only
+- `runtime_parallel.rs` reduced to par dispatch and receipt-routing helpers
 
 ---
 
@@ -56,7 +56,7 @@ Next implementation plan:
    - **~~Route fusion descriptors through a batch dispatch boundary.~~ ✓ Implemented** The par dispatcher now collects all `PAR_DISPATCH_FUSION_ENTRY` members and sends them through `execute_fusion_entries_batch_blocking` in one fusion worker, leaving only abstract/process members on the generic host fallback path.
    - **~~Add multi-chain fusion batch kernel synthesis/cache.~~ ✓ Implemented** `synthesize_batch_kernel` emits one CUDA kernel for multiple JIT chains and `JitCache::get_or_compile_batch` caches that batch module by chain set.
    - **~~Launch compiled fusion batch kernels from the batch boundary.~~ ✓ Implemented** `execute_fusion_entries_batch_blocking` now compiles the batch kernel, prepares dynamic slot buffers, launches bounded one/two-chain CUDA batches, stores output slots, and returns per-member receipts.
-   - **~~Route successful fusion-batch receipts through the device ring.~~ ✓ Implemented** Successful `jit_fused_batch` par receipts are pushed into the GPU `DeviceReceipt` ring and drained on-device instead of using the CPU lattice queue.
+   - **~~Route successful fusion-batch receipts through the device ring.~~ ✓ Implemented** Successful `jit_fused_batch` par receipts are host-detected, pushed into the GPU `DeviceReceipt` ring, and drained on-device instead of using the CPU lattice queue.
    - **~~Generalize the bounded batch launcher to three chains.~~ ✓ Implemented** The runtime launch matcher now supports one, two, or three chains with one to three inputs each, up to the current cudarc tuple arity ceiling (three-chain batches are capped at eight total inputs).
    - Next: move beyond static tuple arities with an indirect argument table or lower fusion batches into the H_f device-function table.
 4. **~~Move par commit writeback off the thread-0 memory loop.~~ ✓ Implemented**
@@ -70,10 +70,10 @@ Next implementation plan:
    maintainable kernel.
 6. Collapse receipt routing so every GPU-dispatched par member writes exactly one device-ring receipt; CPU queue routing remains only for process/abstract fallbacks.
 
-What changed: the CPU group-selection loop is gone. The GPU now selects and commits. The par table encodes `(node_id, region_id, is_gpu_dispatchable, dispatch_kind)` tuples; the kernel computes eligibility on-device from `is_gpu_dispatchable` flags without a separate CPU-precomputed mask and emits per-member dispatch descriptors. Hot-region par members with registered slot tables now run their precompiled `__device__` region function inside `tensor_quantale_par_group_step`; the kernel writes a `DeviceReceipt` to the device ring and emits `dispatched_on_device = 1`, so `dispatch_gpu_parallel_group` skips `execute_*_blocking` for that member and returns a synthetic success receipt. What remains CPU-side:
+What changed: the CPU group-selection loop is gone. The GPU now selects and commits. The par table encodes `(node_id, region_id, is_gpu_dispatchable, dispatch_kind)` tuples; the kernel computes eligibility on-device from `is_gpu_dispatchable` flags without a separate CPU-precomputed mask and emits per-member dispatch descriptors. Hot-region par members with a valid H_f region id now run their precompiled `__device__` region function inside `tensor_quantale_par_group_step`; when slot tables are present, the handler uses real slot data, and when absent it can still produce a receipt-only device dispatch. The kernel writes a `DeviceReceipt` to the device ring and emits `dispatched_on_device = 1`, so `dispatch_gpu_parallel_group` skips `execute_*_blocking` for that member and returns a synthetic success receipt. What remains CPU-side:
 
 **Gap A — operator dispatch is still host-bound for non-H_f members.**
-Hot-region par members with slot tables close the CPU dispatch hop: `par_group_step` calls the precompiled H_f device function and writes the receipt in-kernel. Fusion-entry, abstract-node, and hot-region fallback members still use `thread::scope → execute_fusion_entry_blocking / execute_abstract_node_blocking`.
+Hot-region par members with a valid H_f region id close the CPU dispatch hop: `par_group_step` calls the precompiled H_f device function and writes the receipt in-kernel. Slot-backed members use real device slot data; slotless members are receipt-only. Fusion-entry and abstract-node members still use `thread::scope → execute_fusion_entry_blocking / execute_abstract_node_blocking`.
 
 **~~Gap B — effect validation is precomputed, not on-device.~~ ✓ Closed**
 Per-member `is_gpu_dispatchable` flags are encoded in the table as the third element of each `(node_id, region_id, is_gpu_dispatchable, dispatch_kind)` tuple. The kernel computes `all_eligible` on-device by scanning flags — no separate CPU-precomputed `eligible[]` array. Build-overlay still validates `par` independence structurally, so runtime effect conflicts cannot arise.
@@ -82,7 +82,7 @@ Per-member `is_gpu_dispatchable` flags are encoded in the table as the third ele
 The kernel still uses `threadIdx.x == 0` to scan groups and choose the first all-ready group. Once selected, commit writeback is block-parallel: lanes clear/copy frontier state and use atomics to mark consumed edges. Correct term: "deterministic thread-0 selection with parallel device commit", not fully parallel par selection.
 
 **Gap D — par-tier receipts partially use the device ring.**
-H_f hot-region par members write receipts directly from `tensor_quantale_par_group_step` to the device ring. Successful batched fusion par members now push generic `DeviceReceipt`s into the same ring after the batch kernel completes. Hot-region fallback members still call `gpu_dispatch_region` + `drain_device_receipts` after CPU execution. Abstract-node and failed fallback members still use `queue_lattice_update` + `drain_lattice_queue`.
+H_f hot-region par members write receipts directly from `tensor_quantale_par_group_step` to the device ring. Successful batched fusion par members now push generic `DeviceReceipt`s into the same ring after the host-launched batch kernel completes. Hot-region fallback members still call `gpu_dispatch_region` + `drain_device_receipts` after CPU execution. Abstract-node and failed fallback members still use `queue_lattice_update` + `drain_lattice_queue`.
 
 Full closure requires eliminating the CPU dispatch hop for fusion-entry and abstract members too: GPU kernel emits dispatch descriptors or calls precompiled device functions for every eligible member → device writes receipt to ring. That removes the remaining `thread::scope` work from `dispatch_gpu_parallel_group`.
 
@@ -98,7 +98,7 @@ Not: "fully GPU-native orchestration" — CPU still handles non-H_f operator dis
 
 ## ~~3. CKA pattern compilation belongs at build time~~ ✓ Implemented
 
-Build-overlay now emits `assets/patterns.compiled.json`. The runtime loads from it on epoch start; falls back to runtime CKA compilation only when the file is absent. `cli.rs` calls `compile_and_emit_pattern_edges(".")` after `build_overlay_assets`.
+Build-overlay emits `assets/patterns.compiled.json` as a generated artifact. The runtime loads from it on epoch start; falls back to runtime CKA compilation when the file is absent. `cli.rs` calls `compile_and_emit_pattern_edges(".")` after `build_overlay_assets`.
 
 ---
 
