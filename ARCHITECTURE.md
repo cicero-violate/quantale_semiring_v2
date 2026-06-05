@@ -129,6 +129,40 @@ Learned edge buffer and flush to state/learned_edges.jsonl
 
 Rust does not own a CPU planner, a CPU group-selection loop, or a live CPU mirror of the tensor.
 
+## GPU Orchestration Tiers
+
+Three distinct levels of GPU involvement, not to be conflated:
+
+```text
+GPU-selected parallel dispatch tier (current)
+  The GPU selects a par group, commits consumed/active state, and dispatches
+  H_f / abstract-device members in-kernel.  Process/IO members are excluded from
+  GPU par selection; the CPU still owns fallback routing, failure recovery, and
+  the runtime step loop.
+
+  Metrics: G_s=1  G_c=1  E_g=1  D_h=2/3  R_d=1  R_k=1  H_o=1
+
+GPU-native par dispatch
+  All eligible par-group members — including fusion-entry members — are
+  dispatched in-kernel. The CPU dispatches no operators in the par hot path.
+  The runtime step loop is still CPU-owned.
+
+  Adds: D_h=1  (no host operator calls in the par path)
+
+Fully GPU-native orchestration (target — see PENDING.gpu.native.orchestration.md)
+  The GPU owns step scheduling, par/seq/choice/star control-flow, receipt
+  routing, tensor fold-in, and retry/block/rollback decisions. The CPU is
+  demoted to a supervisor and external-command service: it executes only
+  GPU-emitted DeviceCommand entries and returns DeviceReceiptExt entries.
+  Unsupported work becomes an explicit device-visible command rather than a
+  silent CPU fallback.
+
+  Metrics: S_g=1  P_g=1  E_g=1  D_g=1  C_g=1  R_g=1  F_g=1  H_g=0
+```
+
+The correct current label is **GPU-selected parallel dispatch tier**, not
+"GPU-native orchestration".
+
 ## CUDA kernel split
 
 Three distinct compilation and loading paths — all dispatch through cudarc:

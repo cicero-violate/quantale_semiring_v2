@@ -1,119 +1,119 @@
 # Pending
 
-Progressive gaps in the current system. Items here are forward improvements only — nothing that would require touching the active dispatch path without a clear replacement ready.
+Only remaining gaps are listed here. Completed items were removed after verification.
 
 ---
 
-## ~~1. GPU-native parallel tier~~ ✓ Implemented
+## GPU-native orchestration (in progress — PENDING.gpu.native.orchestration.md)
 
-New kernel `tensor_quantale_par_group_step` in `cuda/quantale_world.cu`:
-- Iterates the GPU-resident par group table (`ParGroupGpuData`)
-- For each eligible group: projects all members toward their target nodes on-device
-- First group where all members are unblocked and unhalted: committed on-device
-- Result (`group_idx`, `decisions`) written to device output buffer
-- CPU reads result, dispatches operators via `dispatch_gpu_parallel_group`
-- CPU does not iterate groups, validate effects, or call `project_parallel_group` + `commit_decision_batch` separately
+**Phase 0 complete** (2026-06-05):
+- Design note added to ARCHITECTURE.md (`## GPU Orchestration Tiers`).
+- Four Phase-0 boundary tests added to `src/runtime_parallel.rs`.
+- Six runtime counters wired into `src/main.rs`; emitted as `orch_counters/shutdown` at exit.
 
-The main loop is now three-tiered:
-1. Exploration-first (existing)
-2. **GPU-native parallel** — `par_group_step` one kernel, CPU dispatches only if group was selected
-3. Single frontier step fallback (existing)
+**Phase 1 complete** (2026-06-05):
+- `OrchestrationState`, `DeviceCommand`, `DeviceReceiptExt` structs added to `.cu` and mirrored as `repr(C)` in Rust.
+- `OrchestrationBuffers` added to `TensorQuantaleWorld`; allocated and init'd at world construction.
+- Kernels: `orchestration_state_init`, `orchestration_state_snapshot`, `device_command_ring_push`, `device_receipt_ext_ring_push`, `device_receipt_ext_drain`.
+- Rust wrappers: `orch_state_init`, `orch_state_snapshot`, `push_device_command`, `drain_device_commands`, `push_device_receipt_ext`, `drain_device_receipt_ext`.
+- CUDA smoke tests: `orchestration_state_init_sets_zero_state`, `command_ring_push_pop_fifo`, `receipt_ext_ring_push_pop_fifo`.
 
-Supporting changes:
-- `GraphTopology.parallel_groups: Vec<Vec<String>>` (serde default = `[]`)
-- `TopologyRuntime.parallel_groups: Vec<Vec<i32>>` resolved at load time
-- `ParGroupGpuData`: packed `(node_id, region_id, is_gpu_dispatchable, dispatch_kind)` table, uploaded at epoch start
-- Eligibility = every operator in the group is `jit_cuda` / fusion-entry / hot-region
-- `runtime_parallel.rs` reduced to par dispatch and receipt-routing helpers
+**Phase 2 complete** (2026-06-05):
+- `TensorWorldBundleHost` struct packs the seven tensor/frontier device pointers for the scheduler kernel.
+- `OrchStepStatus` enum + `ORCH_*` / `DISPATCH_KIND_*` constants exported from `tensor.rs`.
+- `tensor_quantale_orchestrate_step` kernel: drains ext receipt ring, selects ready singleton, commits state, emits `DeviceCommand` for external nodes, writes `ORCH_*` status.
+- Rust wrappers: `orchestrate_step()`, `set_dispatch_kinds()`.
+- Phase-2 dispatch kind table (`dispatch_kinds`) and step status buffer (`step_status`) added to `OrchestrationBuffers`.
+- CUDA smoke tests: `scheduler_selects_first_ready_singleton`, `scheduler_emits_external_command_for_process_node`, `cpu_gpu_scheduler_equivalence_singleton`.
+
+**Phase 3 complete** (2026-06-05):
+- `DeviceCommand` extended with `operator_name_id`, `timeout_ticks`, `retry_budget` fields.
+- `src/orch_service.rs`: `service_external_commands` polls the command ring, resolves operator names, executes process/IO via `UniversalExecutor`, and pushes `DeviceReceiptExt` receipts back to the GPU.
+- 7 unit tests covering outcome mapping, name resolution, dispatch kind routing, and the single-receipt-per-command invariant.
+
+**Phase 4 complete** (2026-06-05):
+- `OrchestrationState` extended with `star_counter` / `star_bound` (Phase-4 bounded-star fields).
+- CUDA: `ControlEdge`, `EffectTable` structs; `CONTROL_OP_*` defines; `effects_independent`, `find_matching_control_edge`, `star_counter_advance` device helpers; `control_flow_advance` and `check_effects_independent` kernels.
+- Rust: `ControlEdge`, `EffectTable` repr(C) structs + `DeviceRepr`; `CONTROL_OP_*` constants; `OrchestrationBuffers` extended with `control_edges`, `effect_table`, `control_op_out`; `load_control_table`, `control_flow_advance`, `check_effects_independent` wrapper methods.
+- `src/control_flow_lowering.rs`: `lower_patterns_from_json` compiles CKA pattern expressions (`seq`, `par`, `choice`, `star`) into flat `ControlEdge` arrays; 8 unit tests covering all four control constructs plus effect independence.
+- CUDA smoke tests: `control_flow_advance_seq_edge_matched`, `control_flow_par_effects_independent`, `control_flow_par_effects_conflict`, `control_flow_star_bounded_advances_counter`.
+- Total: 182 tests passing.
+
+**Phase 5 complete** (2026-06-05):
+- `FailureClass` / `FailureAction` / `FailurePolicy` / `FailureClassifyRequest` structs added to `.cu` and mirrored as `repr(C)` in Rust.
+- `FAILURE_CLASS_*`, `FAILURE_ACTION_*`, `DISPATCH_KIND_REPAIR` constants exported from `tensor.rs`.
+- `OrchestrationState` extended with `consecutive_blocks`, `block_threshold`, `hard_reset_requested`, `rollback_available`, `failure_action`.
+- `OrchestrationBuffers` extended with `failure_policies`, `rollback_consumed`, `rollback_active`, `failure_action_out`.
+- Kernels: `failure_policy_init`, `failure_policy_classify_and_emit`, `failure_policy_set_rollback_marker`, `failure_policy_apply_rollback`.
+- Rust wrappers: `failure_policy_init`, `failure_policy_classify_and_emit`, `set_rollback_marker`, `apply_rollback`.
+- CUDA smoke tests: `failure_policy_retries_until_budget`, `failure_policy_blocks_after_budget`, `failure_policy_rollback_marker_round_trip`.
+
+**Phase 6 complete** (2026-06-05):
+- `LearnedDelta` struct added to `.cu` and mirrored as `repr(C)` in Rust; `LEARNED_DELTA_RING_SIZE` constant exported.
+- `OrchestrationBuffers` extended with `receipt_priors`, `learned_delta_ring`, `learned_delta_head`, `learned_delta_tail`, `receipt_prior_snapshot_buf`.
+- Kernels: `learned_delta_init`, `learned_delta_fold_receipt`, `learned_delta_apply`, `receipt_prior_snapshot`.
+- Rust wrappers: `learned_delta_init`, `learned_delta_fold_receipt`, `learned_delta_apply`, `export_receipt_priors`.
+- Receipt prior table updated on-device on success; exploration seeding reads it without CPU round-trip.
+- Delta ring produced on-device; CPU service drains for durable JSONL/state persistence.
+- CUDA smoke tests: `learned_delta_fold_success_updates_prior`, `learned_delta_fold_failure_does_not_update_prior`, `learned_delta_apply_updates_tensor`.
+
+**Phase 7 complete** (2026-06-05):
+- Fixed pre-existing `TensorWorldBundle` by-value kernel bug: `tensor_quantale_orchestrate_step` now takes `const TensorWorldBundle* world` (pointer), fixing CUDA_ERROR_ILLEGAL_ADDRESS in all Phase-2 scheduler tests.
+- Added `orchestrate_until_wait_or_halt(max_steps)` to `TensorQuantaleWorld`: runs GPU scheduler in a burst loop, returning on `WaitExternal`, `Halted`, `Error`, or blocked/exhausted (`Continue`).
+- Added `gpu_native_supervisor_loop` function in `main.rs` (`#[cfg(feature = "cuda")]`): implements the Phase-7 supervisor pattern with injected `service_fn` for external command handling; CPU no longer in per-step hot path.
+- 4 previously-SIGABRTing Phase-2 tests now pass: `scheduler_selects_first_ready_singleton`, `scheduler_emits_external_command_for_process_node`, `cpu_gpu_scheduler_equivalence_singleton`, `gpu_dispatch_region_uses_device_slot_registry`.
+- CUDA smoke tests: `orchestrate_step_no_longer_sigabrt`, `orchestrate_until_wait_or_halt_respects_max_steps`, `gpu_native_loop_advances_graph_state`.
+- Total: 210 tests passing.
+
+**Phase 8 complete** (2026-06-05):
+- `OrchestrationState` extended with `selected_src` / `selected_dst` (Phase-8 edge tracking).
+- `OrchestrationEvent` repr(C) struct added; `ORCH_TRACE_RING_SIZE` / `ORCH_EVENT_*` constants exported.
+- `OrchestrationBuffers` extended with `trace_ring`, `trace_head`, `trace_tail`, `trace_drain_buf`, `trace_drain_count`, `orch_violation_out`, `replay_state`, `replay_consumed`, `replay_active`.
+- Kernels: `orch_event_trace_push`, `orch_event_trace_drain`, `orch_check_no_duplicate_receipts`, `orch_check_frontier_valid`, `orch_check_no_command_without_receipt`, `orch_replay_snapshot`, `orch_replay_restore`.
+- Rust wrappers: `push_trace_event`, `drain_trace_events`, `check_no_duplicate_receipts`, `check_frontier_valid`, `check_no_command_without_receipt`, `replay_snapshot`, `replay_restore`.
+- CUDA smoke tests: `trace_ring_push_drain_round_trip`, `invariant_frontier_valid_passes_on_init`, `invariant_no_duplicate_receipts_passes_on_empty_ring`, `replay_snapshot_restore_is_identity`.
+- Total: 214 tests passing.
 
 ---
 
-## 2. Par-tier: remaining gaps to fully GPU-native execution
+## 1. Par-tier keeps explicit process/IO fallback orchestration on CPU
 
-Current honest classification:
+Current state is a GPU-selected parallel dispatch tier, not fully GPU-native orchestration.
 
 ```text
-G_s = 1   GPU selects the par group
-G_c = 1   GPU commits consumed/active state; selection remains deterministic on
-          thread 0, while commit writeback uses block lanes and atomic edge marks
-E_g = 1   eligibility computed on-device from per-member is_gpu_dispatchable flags in the table
-D_h = ½   hot-region par members dispatch in-kernel through the H_f path;
-          fusion/abstract members still use thread::scope → execute_*_blocking
-R_d = ¾   H_f hot-region receipts are written by the par kernel to the device ring;
-          CPU-dispatched hot-region fallback still routes via gpu_dispatch_region
-R_k = 1   per-member (region_id, is_gpu_dispatchable) encoded in table; kernel emits region_ids
-          and dispatched_on_device flags (no per-tick hot_region_registry lookup)
+G_s = 1   GPU selects the par group.
+G_c = 1   GPU commits consumed/active state. Readiness scans are block-parallel
+          inside the par kernel; the first passing group is still selected
+          deterministically by group order.
+E_g = 1   Eligibility is computed on-device from per-member table flags.
+D_h = 2/3 Static/generated H_f and manifest-covered abstract-device members run
+          or receipt-dispatch on device. Fully device-dispatched par groups skip
+          fusion lookup and host dispatch scheduling after kernel commit.
+          Process/IO and unsupported fallback members remain host-bound and are
+          excluded from GPU par selection.
+R_d = 1   GPU-dispatched par-member successes route exactly one device-ring
+          receipt. Failed or explicit process/IO host fallbacks still use the
+          CPU lattice queue path.
+R_k = 1   Per-member region id and dispatch kind are emitted by the kernel.
+H_o = 1   Par-group node names and fusion-entry metadata are pre-resolved once
+          per epoch. Fully device-dispatched groups use a device-only fast path;
+          host orchestration remains only for explicit fallback/failure work.
 ```
 
-Next implementation plan:
-1. **~~Tighten H_f dispatch accounting.~~ ✓ Implemented**
-   The par kernel now marks `dispatched_on_device = 1` only after a known H_f region handler runs and writes its device receipt. Rust uses a shared `GPU_HOT_REGION_COUNT` constant instead of passing an over-broad region-count placeholder.
-2. **~~Add a GPU-side dispatch descriptor ABI for non-H_f members.~~ ✓ Implemented**
-   The par kernel now emits a compact per-member descriptor containing member index, node id, region id, selected src/dst, and dispatch kind. H_f members are upgraded to `PAR_DISPATCH_HF_DEVICE`; the remaining fusion/abstract members stay marked `PAR_DISPATCH_HOST_FALLBACK` for the next execution tier.
-3. Replace descriptor CPU execution incrementally.
-   - **~~Consume descriptors in the par dispatcher.~~ ✓ Implemented** `dispatch_gpu_parallel_group` now uses the GPU-emitted `dispatch_kind` as the source of truth for H_f skip behavior, and the receipt-routing loop uses the same descriptor rather than re-deriving device dispatch from a parallel flag vector.
-   - **~~Preserve fusion-entry routing in descriptors.~~ ✓ Implemented** Epoch-start par tables now include an initial dispatch kind; the GPU emits `PAR_DISPATCH_FUSION_ENTRY` descriptors for fusion entries, and the host dispatcher routes those descriptors through the fusion path instead of generic abstract fallback.
-   - **~~Route fusion descriptors through a batch dispatch boundary.~~ ✓ Implemented** The par dispatcher now collects all `PAR_DISPATCH_FUSION_ENTRY` members and sends them through `execute_fusion_entries_batch_blocking` in one fusion worker, leaving only abstract/process members on the generic host fallback path.
-   - **~~Add multi-chain fusion batch kernel synthesis/cache.~~ ✓ Implemented** `synthesize_batch_kernel` emits one CUDA kernel for multiple JIT chains and `JitCache::get_or_compile_batch` caches that batch module by chain set.
-   - **~~Launch compiled fusion batch kernels from the batch boundary.~~ ✓ Implemented** `execute_fusion_entries_batch_blocking` now compiles the batch kernel, prepares dynamic slot buffers, launches bounded one/two-chain CUDA batches, stores output slots, and returns per-member receipts.
-   - **~~Route successful fusion-batch receipts through the device ring.~~ ✓ Implemented** Successful `jit_fused_batch` par receipts are host-detected, pushed into the GPU `DeviceReceipt` ring, and drained on-device instead of using the CPU lattice queue.
-   - **~~Generalize the bounded batch launcher to three chains.~~ ✓ Implemented** The runtime launch matcher now supports one, two, or three chains with one to three inputs each, up to the current cudarc tuple arity ceiling (three-chain batches are capped at eight total inputs).
-   - Next: move beyond static tuple arities with an indirect argument table or lower fusion batches into the H_f device-function table.
-4. **~~Move par commit writeback off the thread-0 memory loop.~~ ✓ Implemented**
-   Selection remains deterministic on thread 0, but committed effects are now
-   published through shared memory and written back by block lanes: lanes clear
-   `next_active`, atomically mark `consumed[src, hop]`, set `next_active[hop]`,
-   and copy the new frontier back to `active`.
-5. Next Gap C work: rework readiness/selection itself into per-member lanes, or
-   split par execution into a two-kernel select+commit protocol if deterministic
-   first-ready selection and fully parallel readiness checks cannot coexist in one
-   maintainable kernel.
-6. Collapse receipt routing so every GPU-dispatched par member writes exactly one device-ring receipt; CPU queue routing remains only for process/abstract fallbacks.
+Remaining intentional boundary:
 
-What changed: the CPU group-selection loop is gone. The GPU now selects and commits. The par table encodes `(node_id, region_id, is_gpu_dispatchable, dispatch_kind)` tuples; the kernel computes eligibility on-device from `is_gpu_dispatchable` flags without a separate CPU-precomputed mask and emits per-member dispatch descriptors. Hot-region par members with a valid H_f region id now run their precompiled `__device__` region function inside `tensor_quantale_par_group_step`; when slot tables are present, the handler uses real slot data, and when absent it can still produce a receipt-only device dispatch. The kernel writes a `DeviceReceipt` to the device ring and emits `dispatched_on_device = 1`, so `dispatch_gpu_parallel_group` skips `execute_*_blocking` for that member and returns a synthetic success receipt. What remains CPU-side:
+1. **Host orchestration remains outside fully GPU-native scope for process/IO.**
+   Process/IO dispatch, broader runtime orchestration, and fallback operator execution are still CPU-owned. This is intentional, but it means the correct label is:
 
-**Gap A — operator dispatch is still host-bound for non-H_f members.**
-Hot-region par members with a valid H_f region id close the CPU dispatch hop: `par_group_step` calls the precompiled H_f device function and writes the receipt in-kernel. Slot-backed members use real device slot data; slotless members are receipt-only. Fusion-entry and abstract-node members still use `thread::scope → execute_fusion_entry_blocking / execute_abstract_node_blocking`.
-
-**~~Gap B — effect validation is precomputed, not on-device.~~ ✓ Closed**
-Per-member `is_gpu_dispatchable` flags are encoded in the table as the third element of each `(node_id, region_id, is_gpu_dispatchable, dispatch_kind)` tuple. The kernel computes `all_eligible` on-device by scanning flags — no separate CPU-precomputed `eligible[]` array. Build-overlay still validates `par` independence structurally, so runtime effect conflicts cannot arise.
-
-**Gap C — readiness/selection is still thread-0 control flow.**
-The kernel still uses `threadIdx.x == 0` to scan groups and choose the first all-ready group. Once selected, commit writeback is block-parallel: lanes clear/copy frontier state and use atomics to mark consumed edges. Correct term: "deterministic thread-0 selection with parallel device commit", not fully parallel par selection.
-
-**Gap D — par-tier receipts partially use the device ring.**
-H_f hot-region par members write receipts directly from `tensor_quantale_par_group_step` to the device ring. Successful batched fusion par members now push generic `DeviceReceipt`s into the same ring after the host-launched batch kernel completes. Hot-region fallback members still call `gpu_dispatch_region` + `drain_device_receipts` after CPU execution. Abstract-node and failed fallback members still use `queue_lattice_update` + `drain_lattice_queue`.
-
-Full closure requires eliminating the CPU dispatch hop for fusion-entry and abstract members too: GPU kernel emits dispatch descriptors or calls precompiled device functions for every eligible member → device writes receipt to ring. That removes the remaining `thread::scope` work from `dispatch_gpu_parallel_group`.
-
-**Correct label for the current state:**
 ```text
-GPU-selected parallel dispatch tier with in-kernel H_f hot-region dispatch;
-fusion/abstract members still CPU-dispatched
+GPU-selected parallel dispatch tier with block-parallel readiness, in-kernel
+static/generated H_f dispatch, manifest-covered abstract-device receipt dispatch,
+device-only fast path for fully device-dispatched par groups, and host-bound
+process/IO members excluded from GPU par selection.
 ```
 
-Not: "fully GPU-native orchestration" — CPU still handles non-H_f operator dispatch (Gap A).
+Not:
 
----
-
-## ~~3. CKA pattern compilation belongs at build time~~ ✓ Implemented
-
-Build-overlay emits `assets/patterns.compiled.json` as a generated artifact. The runtime loads from it on epoch start; falls back to runtime CKA compilation when the file is absent. `cli.rs` calls `compile_and_emit_pattern_edges(".")` after `build_overlay_assets`.
-
----
-
-## ~~3. `TlogRecordKind::ExplorationExpand` and `append_exploration_expand` are never called~~ ✓ Removed
-
-Both the enum variant and the writer method were deleted from `tlog.rs`.
-
----
-
-## ~~4. Tensor feedback does not persist across epoch reloads~~ ✓ Implemented
-
-`LearningBuffer` added to `learning.rs`. Wired into `RuntimeEpoch` and both execution paths in `main.rs`. Successful topology-edge executions are buffered and flushed to `state/learned_edges.jsonl` every 10 records, on epoch reload, and at shutdown. Three tests added: flush-writes-readable-jsonl, auto-flush-at-threshold, empty-flush-is-noop.
-
----
-
-## ~~5. `CompiledCkaPattern.parallel_groups` is dead weight~~ ✓ Removed
-
-`parallel_groups: Vec<Vec<i32>>` removed from `CompiledCkaPattern`. All `compile_*` internal functions updated to drop the parameter. The par effect-safety validator (`validate_parallel_independence`) is retained — it guards the constraint, not the output artifact.
+```text
+Fully GPU-native orchestration.
+```
