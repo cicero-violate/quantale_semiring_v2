@@ -7,11 +7,12 @@ use serde_json::{Value, json};
 use quantale_semiring_v2::{
     ContractContext, ContractViolation, DecisionReport, ExecutionOutcome, ExplorationConfig,
     ExplorationEngine, GraphTopology, LAYER_CONFIDENCE, LearningPolicy, Node, NodeContracts,
-    ProcessReceipt, ProjectionBias, ReloadPolicy, RuntimeContext, SystemConfig,
-    TensorQuantaleWorld, TlogWriter, TopologyInvariants, TopologyRuntime, UniversalExecutor,
-    ViolationKind, action_label, check, check_with_operators, compile_and_emit_pattern_edges,
-    compile_pattern, compile_tensor_plan, console, format_quantale_value, format_violations,
-    load_compiled_pattern_edges, load_default_patterns, load_learned_tensor_edges, runtime_check,
+    PAR_DISPATCH_HF_DEVICE, ProcessReceipt, ProjectionBias, ReloadPolicy, RuntimeContext,
+    SystemConfig, TensorQuantaleWorld, TlogWriter, TopologyInvariants, TopologyRuntime,
+    UniversalExecutor, ViolationKind, action_label, check, check_with_operators,
+    compile_and_emit_pattern_edges, compile_pattern, compile_tensor_plan, console,
+    format_quantale_value, format_violations, load_compiled_pattern_edges, load_default_patterns,
+    load_learned_tensor_edges, runtime_check,
 };
 
 use topology_core::build_overlay_assets;
@@ -434,8 +435,8 @@ fn main() {
                 group_idx,
                 par_decisions,
                 par_member_region_ids,
-                par_dispatched_on_device,
-                _par_dispatch_descriptors,
+                _par_dispatched_on_device,
+                par_dispatch_descriptors,
             ) = step;
 
             let par_names: Vec<String> = epoch
@@ -468,7 +469,7 @@ fn main() {
                 &fusion_entries,
                 &par_names,
                 &current_payload,
-                &par_dispatched_on_device,
+                &par_dispatch_descriptors,
             );
 
             console::info(
@@ -484,13 +485,13 @@ fn main() {
             let mut par_stdout: Vec<Value> = Vec::new();
             // Tracks whether any receipt was routed through the device ring.
             let mut any_device_ring = false;
-            for ((((decision, receipt), par_node_name), &kernel_region_id), &on_device) in
+            for ((((decision, receipt), par_node_name), &kernel_region_id), descriptor) in
                 par_decisions
                     .iter()
                     .zip(par_receipts.iter())
                     .zip(par_names.iter())
                     .zip(par_member_region_ids.iter())
-                    .zip(par_dispatched_on_device.iter())
+                    .zip(par_dispatch_descriptors.iter())
             {
                 if let Err(error) = tlog.append_decision(decision) {
                     fatal!("tlog", "append_decision_failed", error);
@@ -527,7 +528,7 @@ fn main() {
                 // GPU-resident.
                 //
                 // Default path: queue_lattice_update → drain_lattice_queue.
-                let via_device = if on_device != 0 {
+                let via_device = if descriptor.dispatch_kind == PAR_DISPATCH_HF_DEVICE {
                     console::info(
                         "parallel",
                         "hf_dispatch_receipt",

@@ -49,7 +49,9 @@ Next implementation plan:
    The par kernel now marks `dispatched_on_device = 1` only after a known H_f region handler runs and writes its device receipt. Rust uses a shared `GPU_HOT_REGION_COUNT` constant instead of passing an over-broad region-count placeholder.
 2. **~~Add a GPU-side dispatch descriptor ABI for non-H_f members.~~ ✓ Implemented**
    The par kernel now emits a compact per-member descriptor containing member index, node id, region id, selected src/dst, and dispatch kind. H_f members are upgraded to `PAR_DISPATCH_HF_DEVICE`; the remaining fusion/abstract members stay marked `PAR_DISPATCH_HOST_FALLBACK` for the next execution tier.
-3. Replace descriptor CPU execution incrementally. First route descriptor-backed fusion entries through a single GPU/JIT batch launch, then leave only true abstract/process nodes on the host path.
+3. Replace descriptor CPU execution incrementally.
+   - **~~Consume descriptors in the par dispatcher.~~ ✓ Implemented** `dispatch_gpu_parallel_group` now uses the GPU-emitted `dispatch_kind` as the source of truth for H_f skip behavior, and the receipt-routing loop uses the same descriptor rather than re-deriving device dispatch from a parallel flag vector.
+   - Next: route descriptor-backed fusion entries through a single GPU/JIT batch launch, then leave only true abstract/process nodes on the host path.
 4. Rework par commit from thread-0 control flow into a parallel readiness/commit kernel using per-member lanes and atomics or a two-kernel select+commit protocol. Keep the current sequential commit until the replacement is proven.
 5. Collapse receipt routing so every GPU-dispatched par member writes exactly one device-ring receipt; CPU queue routing remains only for process/abstract fallbacks.
 

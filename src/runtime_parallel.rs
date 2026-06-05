@@ -1,4 +1,6 @@
-use quantale_semiring_v2::{FusionEntry, ProcessReceipt, UniversalExecutor};
+use quantale_semiring_v2::{
+    FusionEntry, PAR_DISPATCH_HF_DEVICE, ParDispatchDescriptor, ProcessReceipt, UniversalExecutor,
+};
 use serde_json::{Value, json};
 
 /// Dispatch operators for a GPU-committed par group concurrently.
@@ -13,14 +15,18 @@ pub(super) fn dispatch_gpu_parallel_group(
     fusion_entries: &[Option<&FusionEntry>],
     node_names: &[String],
     current_payload: &Value,
-    dispatched_on_device: &[i32],
+    dispatch_descriptors: &[ParDispatchDescriptor],
 ) -> Vec<ProcessReceipt> {
     std::thread::scope(|scope| {
         let mut receipts: Vec<Option<ProcessReceipt>> = vec![None; node_names.len()];
         let mut handles = Vec::new();
 
         for (idx, name) in node_names.iter().enumerate() {
-            if dispatched_on_device.get(idx).copied().unwrap_or(0) != 0 {
+            if dispatch_descriptors
+                .get(idx)
+                .map(|descriptor| descriptor.dispatch_kind == PAR_DISPATCH_HF_DEVICE)
+                .unwrap_or(false)
+            {
                 receipts[idx] = Some(device_dispatched_receipt(name));
                 continue;
             }
@@ -66,6 +72,7 @@ fn device_dispatched_receipt(node_name: &str) -> ProcessReceipt {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use quantale_semiring_v2::PAR_DISPATCH_HOST_FALLBACK;
     use std::collections::HashMap;
 
     #[test]
@@ -73,12 +80,20 @@ mod tests {
         let executor = UniversalExecutor::new(HashMap::from([(
             "Would::FailOnHost".to_string(),
             json!({
-                "executable": "process",
-                "argv": ["/definitely/not/a/real/binary"]
+                "executable": "/definitely/not/a/real/binary"
             }),
         )]));
         let names = vec!["Would::FailOnHost".to_string()];
-        let receipts = dispatch_gpu_parallel_group(&executor, &[None], &names, &Value::Null, &[1]);
+        let descriptors = [ParDispatchDescriptor {
+            member_index: 0,
+            node_id: 0,
+            region_id: 3,
+            dispatch_kind: PAR_DISPATCH_HF_DEVICE,
+            src_node: 1,
+            dst_node: 2,
+        }];
+        let receipts =
+            dispatch_gpu_parallel_group(&executor, &[None], &names, &Value::Null, &descriptors);
 
         assert_eq!(receipts.len(), 1);
         assert_eq!(receipts[0].node_name, "Would::FailOnHost");
@@ -86,5 +101,35 @@ mod tests {
         assert!(receipts[0].stderr_payload.is_empty());
         let stdout: Value = serde_json::from_str(&receipts[0].stdout_payload).unwrap();
         assert_eq!(stdout["dispatch"], "device");
+    }
+
+    #[test]
+    fn host_fallback_descriptors_run_host_executor() {
+        let executor = UniversalExecutor::new(HashMap::from([(
+            "Would::FailOnHost".to_string(),
+            json!({
+                "executable": "/definitely/not/a/real/binary"
+            }),
+        )]));
+        let names = vec!["Would::FailOnHost".to_string()];
+        let descriptors = [ParDispatchDescriptor {
+            member_index: 0,
+            node_id: 0,
+            region_id: -1,
+            dispatch_kind: PAR_DISPATCH_HOST_FALLBACK,
+            src_node: 1,
+            dst_node: 2,
+        }];
+        let receipts =
+            dispatch_gpu_parallel_group(&executor, &[None], &names, &Value::Null, &descriptors);
+
+        assert_eq!(receipts.len(), 1);
+        assert_eq!(receipts[0].node_name, "Would::FailOnHost");
+        assert_ne!(receipts[0].exit_code, 0);
+        assert!(
+            receipts[0]
+                .stderr_payload
+                .contains("Failed to spawn process")
+        );
     }
 }
