@@ -1,5 +1,7 @@
 //! Hardcode-free universal execution pipeline for arbitrary OS processes.
 
+#[cfg(feature = "cuda")]
+use cudarc::driver::LaunchAsync;
 use std::collections::HashMap;
 use std::io::Write;
 use std::process::{Command, Stdio};
@@ -245,12 +247,27 @@ impl UniversalExecutor {
         entries: &[(usize, &FusionEntry)],
         dynamic_payload: &Value,
     ) -> Vec<(usize, ProcessReceipt)> {
+        #[cfg(feature = "cuda")]
+        {
+            return execute_jit_fusion_batch_blocking(
+                entries,
+                dynamic_payload,
+                &self.operator_registry,
+                &self.jit_cache,
+                &self.slot_buffers,
+            );
+        }
+
+        #[cfg(not(feature = "cuda"))]
         entries
             .iter()
             .map(|&(idx, entry)| {
                 (
                     idx,
-                    self.execute_fusion_entry_blocking(entry, dynamic_payload),
+                    cuda_err_receipt(
+                        &format!("Fusion::{}", entry.region),
+                        "jit_cuda fusion batch requires the cuda feature",
+                    ),
                 )
             })
             .collect()
@@ -312,6 +329,316 @@ impl UniversalExecutor {
             format!("jit_cuda operator '{node_name}' requires the cuda feature"),
         )
     }
+}
+
+#[cfg(feature = "cuda")]
+fn execute_jit_fusion_batch_blocking(
+    entries: &[(usize, &FusionEntry)],
+    dynamic_payload: &Value,
+    registry: &HashMap<String, Value>,
+    cache: &Mutex<JitCache>,
+    slot_buffers: &Mutex<SlotBuffers>,
+) -> Vec<(usize, ProcessReceipt)> {
+    use cudarc::driver::{CudaDevice, LaunchConfig};
+    use std::sync::{Arc, OnceLock};
+
+    if entries.is_empty() {
+        return Vec::new();
+    }
+
+    let batch_name = format!(
+        "FusionBatch::{}",
+        entries
+            .iter()
+            .map(|(_, entry)| entry.region.as_str())
+            .collect::<Vec<_>>()
+            .join("__")
+    );
+
+    if entries.len() > 2 {
+        return entries
+            .iter()
+            .map(|&(idx, entry)| {
+                (
+                    idx,
+                    cuda_err_receipt(
+                        &format!("Fusion::{}", entry.region),
+                        format!(
+                            "jit_cuda fusion batch launch supports at most 2 chains, got {}",
+                            entries.len()
+                        ),
+                    ),
+                )
+            })
+            .collect();
+    }
+
+    static DEVICE: OnceLock<Result<Arc<CudaDevice>, String>> = OnceLock::new();
+    let device = match DEVICE.get_or_init(|| CudaDevice::new(0).map_err(|e| e.to_string())) {
+        Ok(d) => Arc::clone(d),
+        Err(e) => {
+            return entries
+                .iter()
+                .map(|&(idx, entry)| {
+                    (
+                        idx,
+                        cuda_err_receipt(&format!("Fusion::{}", entry.region), e),
+                    )
+                })
+                .collect();
+        }
+    };
+
+    let chains: Vec<JitChain> = entries
+        .iter()
+        .map(|(_, entry)| entry.chain.clone())
+        .collect();
+    if let Some((idx, entry)) = entries
+        .iter()
+        .find(|(_, entry)| entry.chain.outputs.len() != 1 || entry.chain.inputs.len() > 3)
+    {
+        return vec![(
+            *idx,
+            cuda_err_receipt(
+                &format!("Fusion::{}", entry.region),
+                format!(
+                    "jit_cuda fusion batch supports 1 output and 1..=3 inputs per chain, got {} outputs and {} inputs",
+                    entry.chain.outputs.len(),
+                    entry.chain.inputs.len()
+                ),
+            ),
+        )];
+    }
+
+    let mut all_input_slots = Vec::new();
+    for chain in &chains {
+        all_input_slots.extend(chain.inputs.iter().cloned());
+    }
+    let n = payload_array_len_for_slots(dynamic_payload, &all_input_slots);
+
+    let mut inputs_by_chain = Vec::with_capacity(chains.len());
+    {
+        let mut buffers = slot_buffers
+            .lock()
+            .map_err(|_| cuda_err_receipt(&batch_name, "slot buffer lock poisoned"));
+        let Ok(ref mut buffers) = buffers else {
+            let receipt = buffers.err().unwrap();
+            return entries
+                .iter()
+                .map(|&(idx, _)| (idx, receipt.clone()))
+                .collect();
+        };
+
+        for chain in &chains {
+            let mut inputs = Vec::with_capacity(chain.inputs.len());
+            for (idx, slot) in chain.inputs.iter().enumerate() {
+                if let Some(buffer) = buffers.get(slot) {
+                    inputs.push(buffer.clone());
+                } else {
+                    let host = payload_slot_floats(dynamic_payload, slot, idx, n);
+                    let dev = match device.htod_copy(host) {
+                        Ok(dev) => dev,
+                        Err(error) => {
+                            return entries
+                                .iter()
+                                .map(|&(idx, entry)| {
+                                    (
+                                        idx,
+                                        cuda_err_receipt(
+                                            &format!("Fusion::{}", entry.region),
+                                            format!("htod_copy failed: {error}"),
+                                        ),
+                                    )
+                                })
+                                .collect();
+                        }
+                    };
+                    buffers.insert(slot.clone(), dev.clone());
+                    inputs.push(dev);
+                }
+            }
+            inputs_by_chain.push(inputs);
+        }
+    }
+
+    let func = {
+        let mut cache = cache
+            .lock()
+            .map_err(|_| cuda_err_receipt(&batch_name, "JIT cache lock poisoned"));
+        let Ok(ref mut cache) = cache else {
+            let receipt = cache.err().unwrap();
+            return entries
+                .iter()
+                .map(|&(idx, _)| (idx, receipt.clone()))
+                .collect();
+        };
+        match cache.get_or_compile_batch(&device, &chains, registry) {
+            Ok(func) => func,
+            Err(error) => {
+                return entries
+                    .iter()
+                    .map(|&(idx, entry)| {
+                        (
+                            idx,
+                            cuda_err_receipt(&format!("Fusion::{}", entry.region), &error),
+                        )
+                    })
+                    .collect();
+            }
+        }
+    };
+
+    let mut outputs = Vec::with_capacity(chains.len());
+    for _ in &chains {
+        match device.htod_copy(vec![0.0f32; n]) {
+            Ok(out) => outputs.push(out),
+            Err(error) => {
+                return entries
+                    .iter()
+                    .map(|&(idx, entry)| {
+                        (
+                            idx,
+                            cuda_err_receipt(
+                                &format!("Fusion::{}", entry.region),
+                                format!("htod_copy output failed: {error}"),
+                            ),
+                        )
+                    })
+                    .collect();
+            }
+        }
+    }
+
+    let threads: u32 = 256;
+    let blocks: u32 = ((n as u32) + threads - 1) / threads;
+    let cfg = LaunchConfig {
+        grid_dim: (blocks.max(1), 1, 1),
+        block_dim: (threads, 1, 1),
+        shared_mem_bytes: 0,
+    };
+
+    if let Err(error) = launch_jit_batch(func, cfg, &inputs_by_chain, &mut outputs, n) {
+        return entries
+            .iter()
+            .map(|&(idx, entry)| {
+                (
+                    idx,
+                    cuda_err_receipt(
+                        &format!("Fusion::{}", entry.region),
+                        format!("batch kernel launch failed: {error}"),
+                    ),
+                )
+            })
+            .collect();
+    }
+
+    let mut receipts = Vec::with_capacity(entries.len());
+    for ((idx, entry), out) in entries.iter().zip(outputs.iter()) {
+        let results = match device.dtoh_sync_copy(out) {
+            Ok(v) => v,
+            Err(error) => {
+                receipts.push((
+                    *idx,
+                    cuda_err_receipt(
+                        &format!("Fusion::{}", entry.region),
+                        format!("dtoh_sync_copy failed: {error}"),
+                    ),
+                ));
+                continue;
+            }
+        };
+        let stdout = serde_json::json!({
+            "node": format!("Fusion::{}", entry.region),
+            "kernel": "jit_fused_batch",
+            "n": n,
+            "chain": entry.chain.operators,
+            "outputs": entry.chain.outputs,
+            "results": &results[..results.len().min(8)],
+        })
+        .to_string();
+        receipts.push((
+            *idx,
+            ProcessReceipt {
+                node_name: format!("Fusion::{}", entry.region),
+                exit_code: 0,
+                stdout_payload: stdout,
+                stderr_payload: String::new(),
+            },
+        ));
+    }
+
+    if let Ok(mut buffers) = slot_buffers.lock() {
+        for (entry, out) in entries.iter().map(|(_, entry)| *entry).zip(outputs) {
+            buffers.insert(entry.chain.outputs[0].clone(), out);
+        }
+    }
+
+    receipts
+}
+
+#[cfg(feature = "cuda")]
+fn launch_jit_batch(
+    func: cudarc::driver::CudaFunction,
+    cfg: cudarc::driver::LaunchConfig,
+    inputs_by_chain: &[Vec<cudarc::driver::CudaSlice<f32>>],
+    outputs: &mut [cudarc::driver::CudaSlice<f32>],
+    n: usize,
+) -> Result<(), String> {
+    let launch_result = unsafe {
+        match inputs_by_chain {
+            [c0] => {
+                let out0 = &mut outputs[0];
+                match c0.as_slice() {
+                    [a] => func.launch(cfg, (a, out0, n as i32)),
+                    [a, b] => func.launch(cfg, (a, b, out0, n as i32)),
+                    [a, b, c] => func.launch(cfg, (a, b, c, out0, n as i32)),
+                    _ => return Err(format!("unsupported chain input count {}", c0.len())),
+                }
+            }
+            [c0, c1] => {
+                let (left, right) = outputs.split_at_mut(1);
+                let out0 = &mut left[0];
+                let out1 = &mut right[0];
+                match (c0.as_slice(), c1.as_slice()) {
+                    ([a0], [a1]) => func.launch(cfg, (a0, out0, a1, out1, n as i32)),
+                    ([a0], [a1, b1]) => func.launch(cfg, (a0, out0, a1, b1, out1, n as i32)),
+                    ([a0], [a1, b1, c1]) => {
+                        func.launch(cfg, (a0, out0, a1, b1, c1, out1, n as i32))
+                    }
+                    ([a0, b0], [a1]) => func.launch(cfg, (a0, b0, out0, a1, out1, n as i32)),
+                    ([a0, b0], [a1, b1]) => {
+                        func.launch(cfg, (a0, b0, out0, a1, b1, out1, n as i32))
+                    }
+                    ([a0, b0], [a1, b1, c1]) => {
+                        func.launch(cfg, (a0, b0, out0, a1, b1, c1, out1, n as i32))
+                    }
+                    ([a0, b0, c0], [a1]) => {
+                        func.launch(cfg, (a0, b0, c0, out0, a1, out1, n as i32))
+                    }
+                    ([a0, b0, c0], [a1, b1]) => {
+                        func.launch(cfg, (a0, b0, c0, out0, a1, b1, out1, n as i32))
+                    }
+                    ([a0, b0, c0], [a1, b1, c1]) => {
+                        func.launch(cfg, (a0, b0, c0, out0, a1, b1, c1, out1, n as i32))
+                    }
+                    _ => {
+                        return Err(format!(
+                            "unsupported chain input counts {} and {}",
+                            c0.len(),
+                            c1.len()
+                        ));
+                    }
+                }
+            }
+            _ => {
+                return Err(format!(
+                    "unsupported batch chain count {}",
+                    inputs_by_chain.len()
+                ));
+            }
+        }
+    };
+    launch_result.map_err(|error| format!("{error}"))
 }
 
 #[cfg(feature = "cuda")]

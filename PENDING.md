@@ -54,7 +54,8 @@ Next implementation plan:
    - **~~Preserve fusion-entry routing in descriptors.~~ ✓ Implemented** Epoch-start par tables now include an initial dispatch kind; the GPU emits `PAR_DISPATCH_FUSION_ENTRY` descriptors for fusion entries, and the host dispatcher routes those descriptors through the fusion path instead of generic abstract fallback.
    - **~~Route fusion descriptors through a batch dispatch boundary.~~ ✓ Implemented** The par dispatcher now collects all `PAR_DISPATCH_FUSION_ENTRY` members and sends them through `execute_fusion_entries_batch_blocking` in one fusion worker, leaving only abstract/process members on the generic host fallback path.
    - **~~Add multi-chain fusion batch kernel synthesis/cache.~~ ✓ Implemented** `synthesize_batch_kernel` emits one CUDA kernel for multiple JIT chains and `JitCache::get_or_compile_batch` caches that batch module by chain set.
-   - Next: wire the batch dispatch boundary to launch the compiled batch kernel with dynamic slot arguments.
+   - **~~Launch compiled fusion batch kernels from the batch boundary.~~ ✓ Implemented** `execute_fusion_entries_batch_blocking` now compiles the batch kernel, prepares dynamic slot buffers, launches bounded one/two-chain CUDA batches, stores output slots, and returns per-member receipts.
+   - Next: generalize the batch launcher beyond the current bounded one/two-chain, one-to-three-input ABI and route its receipts through the device ring.
 4. Rework par commit from thread-0 control flow into a parallel readiness/commit kernel using per-member lanes and atomics or a two-kernel select+commit protocol. Keep the current sequential commit until the replacement is proven.
 5. Collapse receipt routing so every GPU-dispatched par member writes exactly one device-ring receipt; CPU queue routing remains only for process/abstract fallbacks.
 
