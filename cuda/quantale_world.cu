@@ -201,7 +201,7 @@ struct OrchestrationState {
     int pending_receipt_count;
     int failure_count;
     int rollback_requested;
-    int star_counter;   // Phase 4: bounded-star iteration count
+    int star_counter;   // Phase 4: bounded-star iteration count (legacy single-counter)
     int star_bound;     // Phase 4: current star bound (0 = no star active)
     int consecutive_blocks;    // Phase 5: count of consecutive blocked scheduler steps
     int block_threshold;       // Phase 5: hard-reset threshold in consecutive blocks (0=disabled)
@@ -210,6 +210,14 @@ struct OrchestrationState {
     int failure_action;        // Phase 5: last FAILURE_ACTION_* decision (observability)
     int selected_src;          // Phase 8: src of the last committed edge (for trace)
     int selected_dst;          // Phase 8: dst of the last committed edge (for trace)
+    // Phase 1 (new plan): control-state ABI fields
+    int selected_control_edge;  // index into ControlEdge table, or -1
+    int selected_control_op;    // CONTROL_OP_* for last committed control op, or -1
+    int selected_control_lhs;   // lhs of selected control edge, or -1
+    int selected_control_rhs;   // rhs of selected control edge, or -1
+    int control_epoch;          // incremented on each control decision commit
+    int star_counter_epoch;     // incremented when any per-edge star counter advances
+    int last_block_reason;      // ORCH_BLOCK_REASON_* code
 };
 
 struct DeviceCommand {
@@ -262,6 +270,13 @@ extern "C" __global__ void orchestration_state_init(OrchestrationState* state) {
     state->failure_action        = 0;
     state->selected_src          = -1;
     state->selected_dst          = -1;
+    state->selected_control_edge = -1;
+    state->selected_control_op   = -1;
+    state->selected_control_lhs  = -1;
+    state->selected_control_rhs  = -1;
+    state->control_epoch         = 0;
+    state->star_counter_epoch    = 0;
+    state->last_block_reason     = 0;
 }
 
 // Copies the live device state into a separate snapshot buffer for tests/debug.
@@ -271,6 +286,20 @@ extern "C" __global__ void orchestration_state_snapshot(
 ) {
     if (threadIdx.x != 0 || blockIdx.x != 0) return;
     *out = *state;
+}
+
+// ── Block-reason codes (last_block_reason field) ──────────────────────────────
+#define ORCH_BLOCK_REASON_NONE           0
+#define ORCH_BLOCK_REASON_NO_READY_NODE  1
+#define ORCH_BLOCK_REASON_STAR_EXHAUSTED 2
+#define ORCH_BLOCK_REASON_UNSUPPORTED    3
+#define ORCH_BLOCK_REASON_ALL_CONSUMED   4
+
+// Zero-initialise the per-edge star counter table.
+// Launch with <<<ceil(count/256), 256>>> for parallel init.
+extern "C" __global__ void star_counters_init(int* star_counters, int count) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid < count) star_counters[tid] = 0;
 }
 
 // Push one DeviceCommand into the command ring (single-threaded, thread 0 only).
@@ -378,6 +407,27 @@ extern "C" __global__ void device_receipt_ext_drain(
 #define CONTROL_OP_STAR_BOUNDED 3
 #define CONTROL_OP_GATE         4
 #define CONTROL_OP_HALT         5
+
+// ── ControlDecision: outcome of select_control_decision ──────────────────────
+#define CONTROL_NONE            0
+#define CONTROL_SEQ_READY       1
+#define CONTROL_PAR_READY       2
+#define CONTROL_CHOICE_READY    3
+#define CONTROL_STAR_BODY_READY 4
+#define CONTROL_STAR_EXIT_READY 5
+#define CONTROL_HALT_READY      6
+#define CONTROL_BLOCKED         7
+
+struct ControlDecision {
+    int kind;       // CONTROL_* constant above
+    int edge_idx;   // index into ControlEdge table, or -1
+    int lhs;        // selected lhs node, or -1
+    int rhs;        // selected rhs node, or -1
+    int order;      // order key of selected edge
+};
+
+// Maximum number of par-group members for the inline PAR commit path.
+#define MAX_PAR_INLINE_SIZE 8
 
 // One edge in a lowered pattern control-flow table.
 struct ControlEdge {
@@ -1137,7 +1187,7 @@ extern "C" __global__ void tensor_quantale_push_device_receipt(
 #define ORCH_HALTED         2
 #define ORCH_ERROR          3
 
-// TensorWorldBundle: packs the seven tensor/frontier pointers into a single
+// TensorWorldBundle: packs tensor/frontier/control pointers into a single
 // struct so the LaunchAsync tuple stays within the cudarc arity limit.
 struct TensorWorldBundle {
     float* tensor;
@@ -1148,6 +1198,13 @@ struct TensorWorldBundle {
     const int* reentrant_mask;
     const ProjectionBias* bias;
     DecisionReport* decision;
+    // Phase 1/2: control-flow table pointers (null-safe; NULL = no control table loaded)
+    const ControlEdge* control_edges;
+    int                control_edge_count;
+    const EffectTable* effects;
+    int                effect_count;
+    int*               star_counters;      // per-edge bounded-star counter table
+    int                star_counter_count;
 };
 
 // Select the highest-scoring ready singleton node on-device, using the same
@@ -1193,19 +1250,274 @@ __device__ int select_ready_singleton(
     return candidates > 0 ? 1 : 0;
 }
 
+// ── Phase 3: SEQ device helpers ───────────────────────────────────────────────
+
+// Scan the control edge table for the SEQ edge with minimum (order, rhs, idx)
+// whose lhs is active and whose (lhs,rhs) edge has not been consumed.
+// Returns 1 if found; fills *out_idx, *out_lhs, *out_rhs.
+__device__ int ready_seq(
+    const TensorWorldBundle* w,
+    int* out_idx, int* out_lhs, int* out_rhs
+) {
+    int best_order = 0x7fffffff, best_rhs = 0x7fffffff, best_idx = -1;
+    for (int i = 0; i < w->control_edge_count; ++i) {
+        const ControlEdge* e = &w->control_edges[i];
+        if (e->op != CONTROL_OP_SEQ) continue;
+        if (e->lhs < 0 || e->lhs >= N || e->rhs < 0 || e->rhs >= N) continue;
+        if (!w->active[e->lhs]) continue;
+        int reusable = w->reentrant_mask
+            && (w->reentrant_mask[e->lhs] || w->reentrant_mask[e->rhs]);
+        if (!reusable && w->consumed[e->lhs * N + e->rhs]) continue;
+        if (e->order < best_order || (e->order == best_order && e->rhs < best_rhs)) {
+            best_order = e->order; best_rhs = e->rhs; best_idx = i;
+        }
+    }
+    if (best_idx < 0) return 0;
+    *out_idx = best_idx;
+    *out_lhs = w->control_edges[best_idx].lhs;
+    *out_rhs = w->control_edges[best_idx].rhs;
+    return 1;
+}
+
+// ── Phase 5: CHOICE device helpers ───────────────────────────────────────────
+
+// Score one CHOICE branch.  Uses tensor layers for confidence/cost/safety.
+// receipt_prior and failure_penalty are not yet wired (passed as 0.0).
+__device__ float score_choice_branch(
+    const TensorWorldBundle* w,
+    int root, int branch
+) {
+    if (root < 0 || root >= N || branch < 0 || branch >= N) return -COST_INFINITY;
+    float alpha = w->bias[0].confidence, beta = w->bias[0].cost, gamma = w->bias[0].safety;
+    float conf = w->tensor[tensor_idx(LAYER_CONFIDENCE, root, branch)];
+    float cost = w->tensor[tensor_idx(LAYER_COST,       root, branch)];
+    float safe = w->tensor[tensor_idx(LAYER_SAFETY,     root, branch)];
+    if (conf <= BOTTOM || safe <= BOTTOM || cost >= COST_INFINITY) return -COST_INFINITY;
+    return alpha * conf - beta * cost + gamma * safe;
+}
+
+// Scan all CHOICE edges from the same root (lhs) that share the lowest
+// order key and whose root is active.  Select the branch with the highest
+// score; tie-break by (order, rhs, edge_idx).
+// Returns 1 if a choice was made; fills *out_idx, *out_lhs, *out_rhs.
+__device__ int ready_choice(
+    const TensorWorldBundle* w,
+    int* out_idx, int* out_lhs, int* out_rhs
+) {
+    // Scan once to find active roots with CHOICE edges.
+    float best_score = -COST_INFINITY;
+    int best_idx = -1, best_lhs = -1, best_rhs = -1;
+    for (int i = 0; i < w->control_edge_count; ++i) {
+        const ControlEdge* e = &w->control_edges[i];
+        if (e->op != CONTROL_OP_CHOICE) continue;
+        if (e->lhs < 0 || e->lhs >= N || e->rhs < 0 || e->rhs >= N) continue;
+        if (!w->active[e->lhs]) continue;
+        if (w->consumed[e->lhs * N + e->rhs]) continue;
+        float sc = score_choice_branch(w, e->lhs, e->rhs);
+        if (sc > best_score
+                || (sc == best_score && (e->order < w->control_edges[best_idx].order
+                    || (e->order == w->control_edges[best_idx].order && e->rhs < best_rhs)))) {
+            best_score = sc; best_idx = i; best_lhs = e->lhs; best_rhs = e->rhs;
+        }
+    }
+    if (best_idx < 0) return 0;
+    *out_idx = best_idx; *out_lhs = best_lhs; *out_rhs = best_rhs;
+    return 1;
+}
+
+// ── Phase 6: Bounded STAR device helpers ─────────────────────────────────────
+
+// Find the lowest-order ready STAR_BOUNDED edge where:
+//   active[lhs], !consumed[lhs,rhs], star_counters[edge_idx] < bound (if bound>0).
+// Returns CONTROL_STAR_BODY_READY or CONTROL_STAR_EXIT_READY.
+__device__ int ready_star(
+    const TensorWorldBundle* w,
+    int* out_idx, int* out_lhs, int* out_rhs
+) {
+    int best_order = 0x7fffffff, best_idx = -1;
+    for (int i = 0; i < w->control_edge_count; ++i) {
+        const ControlEdge* e = &w->control_edges[i];
+        if (e->op != CONTROL_OP_STAR_BOUNDED) continue;
+        if (e->lhs < 0 || e->lhs >= N || e->rhs < 0 || e->rhs >= N) continue;
+        if (!w->active[e->lhs]) continue;
+        if (e->order < best_order) { best_order = e->order; best_idx = i; }
+    }
+    if (best_idx < 0) return CONTROL_NONE;
+    const ControlEdge* e = &w->control_edges[best_idx];
+    int counter = (w->star_counters && best_idx < w->star_counter_count)
+                  ? w->star_counters[best_idx] : 0;
+    *out_idx = best_idx; *out_lhs = e->lhs; *out_rhs = e->rhs;
+    if (e->bound > 0 && counter >= e->bound) return CONTROL_STAR_EXIT_READY;
+    return CONTROL_STAR_BODY_READY;
+}
+
+// ── Phase 4: PAR inline device helper ────────────────────────────────────────
+
+// Scan for a PAR group: all PAR edges with active lhs and all members
+// mutually independent.  A "group" is any active node that has at least one
+// PAR edge and is effect-independent of all other active PAR-paired nodes.
+// Fills par_lhs[]/par_rhs[] (up to MAX_PAR_INLINE_SIZE), returns group size.
+__device__ int ready_par(
+    const TensorWorldBundle* w,
+    int* par_edge_idx, int* par_rhs, int max_size
+) {
+    // Collect all distinct (active lhs, unconsumed rhs) PAR pairs.
+    int sz = 0;
+    for (int i = 0; i < w->control_edge_count && sz < max_size; ++i) {
+        const ControlEdge* e = &w->control_edges[i];
+        if (e->op != CONTROL_OP_PAR) continue;
+        if (e->lhs < 0 || e->lhs >= N || e->rhs < 0 || e->rhs >= N) continue;
+        if (!w->active[e->lhs]) continue;
+        if (w->consumed[e->lhs * N + e->rhs]) continue;
+        // Check effect independence with all already-selected members.
+        int ok = 1;
+        for (int j = 0; j < sz && ok; ++j)
+            ok = effects_independent(w->effects, w->effect_count, e->rhs, par_rhs[j]);
+        if (!ok) continue;
+        par_edge_idx[sz] = i;
+        par_rhs[sz] = e->rhs;
+        sz++;
+    }
+    return sz;
+}
+
+// ── Phase 2: unified select_control_decision ─────────────────────────────────
+
+// Consult the control-flow table and return the highest-priority ready decision.
+// Priority: SEQ > STAR_BODY > CHOICE > PAR > HALT.
+// Returns CONTROL_NONE when the control table is empty or no edge is ready.
+__device__ ControlDecision select_control_decision(const TensorWorldBundle* w) {
+    ControlDecision none = { CONTROL_NONE, -1, -1, -1, 0 };
+    if (!w->control_edges || w->control_edge_count == 0) return none;
+
+    int idx, lhs, rhs;
+
+    // SEQ
+    if (ready_seq(w, &idx, &lhs, &rhs)) {
+        ControlDecision d = { CONTROL_SEQ_READY, idx, lhs, rhs, w->control_edges[idx].order };
+        return d;
+    }
+    // STAR body
+    int star_kind = ready_star(w, &idx, &lhs, &rhs);
+    if (star_kind == CONTROL_STAR_BODY_READY) {
+        ControlDecision d = { CONTROL_STAR_BODY_READY, idx, lhs, rhs, w->control_edges[idx].order };
+        return d;
+    }
+    if (star_kind == CONTROL_STAR_EXIT_READY) {
+        ControlDecision d = { CONTROL_STAR_EXIT_READY, idx, lhs, rhs, w->control_edges[idx].order };
+        return d;
+    }
+    // CHOICE
+    if (ready_choice(w, &idx, &lhs, &rhs)) {
+        ControlDecision d = { CONTROL_CHOICE_READY, idx, lhs, rhs, w->control_edges[idx].order };
+        return d;
+    }
+    // HALT control edge
+    for (int i = 0; i < w->control_edge_count; ++i) {
+        const ControlEdge* e = &w->control_edges[i];
+        if (e->op == CONTROL_OP_HALT && e->lhs >= 0 && e->lhs < N && w->active[e->lhs]) {
+            ControlDecision d = { CONTROL_HALT_READY, i, e->lhs, e->rhs, e->order };
+            return d;
+        }
+    }
+    return none;
+}
+
+// ── Phase 7: unified commit_selected_node_or_command ─────────────────────────
+//
+// Common commit path for all control-flow ops and the singleton scheduler.
+// Commits the consumed/active state transition for node dst (hopped to from src).
+// For external dispatch kinds, emits a DeviceCommand and returns ORCH_WAIT_EXTERNAL.
+// For GPU-native dispatch kinds, updates frontier and returns ORCH_CONTINUE.
+// For HALT_NODE, sets state->halted and returns ORCH_HALTED.
+// Updates OrchestrationState fields (step, selected_node, selected_src/dst).
+
+__device__ int commit_selected_node_or_command(
+    const TensorWorldBundle* w,
+    OrchestrationState*      state,
+    int src, int dst,
+    int dispatch_kind,
+    int sel_ctrl_edge, int sel_ctrl_op, int sel_ctrl_lhs, int sel_ctrl_rhs,
+    DeviceCommand* cmd_ring, int* cmd_tail, const int* cmd_head, int cmd_ring_size
+) {
+    bool gpu_native = (dispatch_kind == DISPATCH_KIND_HF_DEVICE
+                    || dispatch_kind == DISPATCH_KIND_FUSION_ENTRY
+                    || dispatch_kind == DISPATCH_KIND_ABSTRACT_DEVICE
+                    || dispatch_kind == DISPATCH_KIND_NONE);
+    bool external   = (dispatch_kind == DISPATCH_KIND_EXTERNAL_PROCESS
+                    || dispatch_kind == DISPATCH_KIND_EXTERNAL_IO);
+
+    // Commit frontier.
+    if (src >= 0 && src < N && dst >= 0 && dst < N) {
+        int reusable = w->reentrant_mask
+            && (w->reentrant_mask[src] || w->reentrant_mask[dst]);
+        if (!reusable) atomicExch(&w->consumed[src * N + dst], 1);
+        for (int i = 0; i < N; ++i) w->next_active[i] = 0;
+        w->next_active[dst] = 1;
+        for (int i = 0; i < N; ++i) w->active[i] = w->next_active[i];
+    }
+
+    // Update orchestration state.
+    if (state) {
+        state->step          += 1;
+        state->selected_node  = dst;
+        state->selected_src   = src;
+        state->selected_dst   = dst;
+        state->blocked        = 0;
+        state->halted         = (dst == HALT_NODE) ? 1 : 0;
+        state->selected_control_edge = sel_ctrl_edge;
+        state->selected_control_op   = sel_ctrl_op;
+        state->selected_control_lhs  = sel_ctrl_lhs;
+        state->selected_control_rhs  = sel_ctrl_rhs;
+        if (sel_ctrl_op >= 0) state->control_epoch += 1;
+    }
+    if (w->decision) {
+        w->decision->step          += 1;
+        w->decision->selected_src   = src;
+        w->decision->selected_dst   = dst;
+        w->decision->first_hop      = dst;
+        w->decision->halted         = (dst == HALT_NODE) ? 1 : 0;
+        w->decision->blocked        = 0;
+    }
+
+    if (dst == HALT_NODE) return ORCH_HALTED;
+
+    if (external) {
+        if (state && state->pending_external_count >= cmd_ring_size)
+            return ORCH_WAIT_EXTERNAL;
+        int t = *cmd_tail, h = *cmd_head;
+        if (t - h < cmd_ring_size) {
+            DeviceCommand cmd;
+            cmd.valid            = 1;
+            cmd.command_id       = state ? state->step : 0;
+            cmd.node_id          = dst;
+            cmd.src              = src;
+            cmd.dst              = dst;
+            cmd.dispatch_kind    = dispatch_kind;
+            cmd.operator_name_id = dst;
+            cmd.timeout_ticks    = 0;
+            cmd.retry_budget     = 1;
+            cmd.payload_offset   = 0;
+            cmd.payload_len      = 0;
+            cmd_ring[t % cmd_ring_size] = cmd;
+            *cmd_tail = t + 1;
+            if (state) atomicAdd(&state->pending_external_count, 1);
+        }
+        return ORCH_WAIT_EXTERNAL;
+    }
+    if (!gpu_native) return ORCH_CONTINUE; // UNSUPPORTED treated as continue/blocked
+    return ORCH_CONTINUE;
+}
+
 // ── tensor_quantale_orchestrate_step ─────────────────────────────────────────
 //
 // Single-block, single-step GPU scheduler kernel.  On each call it:
 //   1. Drains the extended receipt ring (applies tensor updates).
-//   2. Selects the next action: GPU-native singleton > external command > block/halt.
-//      (Par-group selection is delegated to tensor_quantale_par_group_step;
-//       this kernel handles singleton and external dispatch.)
-//   3. Commits consumed/active state for GPU-native selections.
-//   4. Emits a DeviceCommand for external-dispatch nodes.
+//   2. Checks control table: SEQ / STAR / CHOICE / PAR / HALT.
+//   3. If a control decision is ready, commits it via commit_selected_node_or_command.
+//   4. Else falls back to the GPU singleton scheduler.
 //   5. Writes one of ORCH_CONTINUE / ORCH_WAIT_EXTERNAL / ORCH_HALTED / ORCH_ERROR
 //      into *status_out.
-//
-// PatternControlTable is reserved for Phase 4; pass NULL for now.
 
 extern "C" __global__ void tensor_quantale_orchestrate_step(
     const TensorWorldBundle* world,
@@ -1273,98 +1585,150 @@ extern "C" __global__ void tensor_quantale_orchestrate_step(
         return;
     }
 
-    // ── 3. Select next action ─────────────────────────────────────────────────
-    int sel_src = -1, sel_dst = -1, sel_hop = -1;
-    float sel_score = -COST_INFINITY;
-    int found = select_ready_singleton(world, dispatch_kinds, &sel_src, &sel_dst, &sel_hop, &sel_score);
+    // ── 3. Select control decision (GPU owns control flow) ───────────────────
+    ControlDecision ctrl = select_control_decision(world);
 
-    if (!found) {
-        if (state) state->blocked = 1;
-        *status_out = ORCH_CONTINUE; // blocked; caller decides on reset/retry
+    if (ctrl.kind != CONTROL_NONE) {
+        int sel_dst = ctrl.rhs;
+        int sel_src = ctrl.lhs;
+        int dkind = (dispatch_kinds && sel_dst >= 0 && sel_dst < N)
+                    ? dispatch_kinds[sel_dst] : DISPATCH_KIND_HF_DEVICE;
+
+        // HALT edge fires immediately.
+        if (ctrl.kind == CONTROL_HALT_READY) {
+            if (state) { state->halted = 1; state->step += 1;
+                         state->selected_control_edge = ctrl.edge_idx;
+                         state->selected_control_op   = CONTROL_OP_HALT;
+                         state->selected_control_lhs  = ctrl.lhs;
+                         state->selected_control_rhs  = ctrl.rhs;
+                         state->control_epoch += 1; }
+            *status_out = ORCH_HALTED;
+            return;
+        }
+
+        // STAR exit: counter exhausted — advance active to successor without body.
+        if (ctrl.kind == CONTROL_STAR_EXIT_READY) {
+            int exit_dst = (ctrl.rhs >= 0 && ctrl.rhs < N) ? ctrl.rhs : HALT_NODE;
+            if (state) { state->step += 1; state->selected_node = exit_dst;
+                         state->selected_src = ctrl.lhs; state->selected_dst = exit_dst;
+                         state->selected_control_edge = ctrl.edge_idx;
+                         state->selected_control_op   = CONTROL_OP_STAR_BOUNDED;
+                         state->selected_control_lhs  = ctrl.lhs;
+                         state->selected_control_rhs  = ctrl.rhs;
+                         state->control_epoch += 1;
+                         state->blocked = 0; }
+            for (int i = 0; i < N; ++i) world->next_active[i] = 0;
+            if (exit_dst >= 0 && exit_dst < N) world->next_active[exit_dst] = 1;
+            for (int i = 0; i < N; ++i) world->active[i] = world->next_active[i];
+            *status_out = (exit_dst == HALT_NODE) ? ORCH_HALTED : ORCH_CONTINUE;
+            return;
+        }
+
+        // STAR body: increment per-edge counter, then commit normally.
+        if (ctrl.kind == CONTROL_STAR_BODY_READY) {
+            if (world->star_counters && ctrl.edge_idx >= 0
+                    && ctrl.edge_idx < world->star_counter_count) {
+                world->star_counters[ctrl.edge_idx] += 1;
+                // Also update legacy single counter for backward compat.
+                if (state) {
+                    state->star_counter      += 1;
+                    state->star_counter_epoch += 1;
+                    const ControlEdge* e = &world->control_edges[ctrl.edge_idx];
+                    state->star_bound = e->bound;
+                }
+            }
+        }
+
+        // PAR: find all ready, independent PAR members and commit them together.
+        if (ctrl.kind == CONTROL_PAR_READY) {
+            int par_edge_idx[MAX_PAR_INLINE_SIZE];
+            int par_rhs[MAX_PAR_INLINE_SIZE];
+            int par_sz = ready_par(world, par_edge_idx, par_rhs, MAX_PAR_INLINE_SIZE);
+            if (par_sz == 0) {
+                if (state) { state->blocked = 1;
+                             state->last_block_reason = ORCH_BLOCK_REASON_NO_READY_NODE; }
+                *status_out = ORCH_CONTINUE;
+                return;
+            }
+            // Commit all independent par members.
+            for (int i = 0; i < N; ++i) world->next_active[i] = 0;
+            int any_external = 0;
+            for (int m = 0; m < par_sz; ++m) {
+                int ei = par_edge_idx[m];
+                int mlhs = world->control_edges[ei].lhs;
+                int mrhs = par_rhs[m];
+                if (mlhs >= 0 && mlhs < N && mrhs >= 0 && mrhs < N)
+                    atomicExch(&world->consumed[mlhs * N + mrhs], 1);
+                if (mrhs >= 0 && mrhs < N) world->next_active[mrhs] = 1;
+                int mk = (dispatch_kinds && mrhs >= 0 && mrhs < N)
+                         ? dispatch_kinds[mrhs] : DISPATCH_KIND_HF_DEVICE;
+                if (mk == DISPATCH_KIND_EXTERNAL_PROCESS || mk == DISPATCH_KIND_EXTERNAL_IO) {
+                    int t = *cmd_tail, hh = *cmd_head;
+                    if (t - hh < cmd_ring_size) {
+                        DeviceCommand cmd; cmd.valid = 1;
+                        cmd.command_id = state ? state->step + m : m;
+                        cmd.node_id = mrhs; cmd.src = mlhs; cmd.dst = mrhs;
+                        cmd.dispatch_kind = mk; cmd.operator_name_id = mrhs;
+                        cmd.timeout_ticks = 0; cmd.retry_budget = 1;
+                        cmd.payload_offset = 0; cmd.payload_len = 0;
+                        cmd_ring[t % cmd_ring_size] = cmd;
+                        *cmd_tail = t + 1;
+                        if (state) atomicAdd(&state->pending_external_count, 1);
+                    }
+                    any_external = 1;
+                }
+            }
+            for (int i = 0; i < N; ++i) world->active[i] = world->next_active[i];
+            if (state) {
+                state->step += 1; state->blocked = 0;
+                state->selected_control_edge = ctrl.edge_idx;
+                state->selected_control_op   = CONTROL_OP_PAR;
+                state->selected_control_lhs  = ctrl.lhs;
+                state->selected_control_rhs  = ctrl.rhs;
+                state->control_epoch += 1;
+            }
+            *status_out = any_external ? ORCH_WAIT_EXTERNAL : ORCH_CONTINUE;
+            return;
+        }
+
+        // SEQ, STAR_BODY, CHOICE: single-node commit via unified path.
+        int ctrl_op = (ctrl.kind == CONTROL_SEQ_READY)       ? CONTROL_OP_SEQ
+                    : (ctrl.kind == CONTROL_STAR_BODY_READY)  ? CONTROL_OP_STAR_BOUNDED
+                    : CONTROL_OP_CHOICE;
+        *status_out = commit_selected_node_or_command(
+            world, state, sel_src, sel_dst, dkind,
+            ctrl.edge_idx, ctrl_op, ctrl.lhs, ctrl.rhs,
+            cmd_ring, cmd_tail, cmd_head, cmd_ring_size);
         return;
     }
 
-    // ── 4. Classify selected hop ─────────────────────────────────────────────
-    int dkind = (dispatch_kinds && sel_hop >= 0 && sel_hop < N)
-                ? dispatch_kinds[sel_hop] : DISPATCH_KIND_HF_DEVICE;
+    // ── 4. Fall back to GPU singleton scheduler ───────────────────────────────
+    int sel_src = -1, sel_dst = -1, sel_hop = -1;
+    float sel_score = -COST_INFINITY;
+    int found = select_ready_singleton(world, dispatch_kinds,
+                                       &sel_src, &sel_dst, &sel_hop, &sel_score);
 
-    bool gpu_native = (dkind == DISPATCH_KIND_HF_DEVICE
-                    || dkind == DISPATCH_KIND_FUSION_ENTRY
-                    || dkind == DISPATCH_KIND_ABSTRACT_DEVICE);
-    bool external   = (dkind == DISPATCH_KIND_EXTERNAL_PROCESS
-                    || dkind == DISPATCH_KIND_EXTERNAL_IO);
-
-    if (!gpu_native && !external) {
-        // Unsupported or NONE — treat as blocked.
+    if (!found) {
+        if (state) { state->blocked = 1;
+                     state->last_block_reason = ORCH_BLOCK_REASON_NO_READY_NODE; }
         *status_out = ORCH_CONTINUE;
         return;
     }
 
-    // ── 5. Commit consumed/active state ──────────────────────────────────────
-    if (sel_src >= 0 && sel_src < N && sel_hop >= 0 && sel_hop < N) {
-        int reusable_edge = world->reentrant_mask && (world->reentrant_mask[sel_src] != 0 || world->reentrant_mask[sel_hop] != 0);
-        if (!reusable_edge) {
-            atomicExch(&world->consumed[sel_src * N + sel_hop], 1);
-        }
-        for (int i = 0; i < N; ++i) world->next_active[i] = 0;
-        world->next_active[sel_hop] = 1;
-        for (int i = 0; i < N; ++i) world->active[i] = world->next_active[i];
-    }
-
-    // Update orchestration state.
-    if (state) {
-        state->step         += 1;
-        state->selected_node = sel_hop;
-        state->selected_src  = sel_src;
-        state->selected_dst  = sel_dst;
-        state->blocked       = 0;
-        state->halted        = (sel_hop == HALT_NODE) ? 1 : 0;
-    }
-    if (world->decision) {
-        world->decision->step          += 1;
-        world->decision->selected_src   = sel_src;
-        world->decision->selected_dst   = sel_dst;
-        world->decision->first_hop      = sel_hop;
-        world->decision->selected_value = sel_score;
-        world->decision->halted         = (sel_hop == HALT_NODE) ? 1 : 0;
-        world->decision->blocked        = 0;
-    }
-
-    if (sel_hop == HALT_NODE) {
-        *status_out = ORCH_HALTED;
+    int dkind = (dispatch_kinds && sel_hop >= 0 && sel_hop < N)
+                ? dispatch_kinds[sel_hop] : DISPATCH_KIND_HF_DEVICE;
+    if (dkind == DISPATCH_KIND_UNSUPPORTED || dkind == DISPATCH_KIND_NONE) {
+        if (state) { state->blocked = 1;
+                     state->last_block_reason = ORCH_BLOCK_REASON_UNSUPPORTED; }
+        *status_out = ORCH_CONTINUE;
         return;
     }
 
-    // ── 6. Emit command for external work ─────────────────────────────────────
-    if (external) {
-        // Guard: if pending_external_count is too high, wait for receipts first.
-        if (state && state->pending_external_count >= cmd_ring_size) {
-            *status_out = ORCH_WAIT_EXTERNAL;
-            return;
-        }
-        int t = *cmd_tail, h = *cmd_head;
-        if (t - h < cmd_ring_size) {
-            DeviceCommand cmd;
-            cmd.valid            = 1;
-            cmd.command_id       = state ? state->step : 0;
-            cmd.node_id          = sel_hop;
-            cmd.src              = sel_src;
-            cmd.dst              = sel_dst;
-            cmd.dispatch_kind    = dkind;
-            cmd.operator_name_id = sel_hop; // host resolves node_id → operator name
-            cmd.timeout_ticks    = 0;       // no timeout by default
-            cmd.retry_budget     = 1;       // one retry by default
-            cmd.payload_offset   = 0;
-            cmd.payload_len      = 0;
-            cmd_ring[t % cmd_ring_size] = cmd;
-            *cmd_tail = t + 1;
-            if (state) atomicAdd(&state->pending_external_count, 1);
-        }
-        *status_out = ORCH_WAIT_EXTERNAL;
-        return;
-    }
-
-    *status_out = ORCH_CONTINUE;
+    if (world->decision) world->decision->selected_value = sel_score;
+    *status_out = commit_selected_node_or_command(
+        world, state, sel_src, sel_hop, dkind,
+        -1, -1, sel_src, sel_hop,
+        cmd_ring, cmd_tail, cmd_head, cmd_ring_size);
 }
 
 // ── Phase-4 kernels: control-flow advance and par-eligibility check ───────────
@@ -1747,12 +2111,17 @@ extern "C" __global__ void receipt_prior_snapshot(
 
 struct OrchestrationEvent {
     int step;
-    int event_kind;      // ORCH_EVENT_* constant
+    int event_kind;           // ORCH_EVENT_* constant
     int selected_node;
     int selected_group;
     int src;
     int dst;
     int outcome;
+    // Phase 8 — control trace fields
+    int selected_control_op;  // CONTROL_OP_* or -1
+    int selected_control_edge;// ControlEdge table index or -1
+    int branch_count;         // number of par members or choice candidates considered
+    int star_counter_val;     // per-edge star counter at commit time, or 0
 };
 
 // Push one event built from the current OrchestrationState into the trace ring.
@@ -1771,13 +2140,17 @@ extern "C" __global__ void orch_event_trace_push(
     int t = *trace_tail, h = *trace_head;
     if (t - h >= ring_size) return; // ring full — drop oldest-first on next push
     OrchestrationEvent ev;
-    ev.step           = state ? state->step           : 0;
-    ev.event_kind     = event_kind;
-    ev.selected_node  = state ? state->selected_node  : -1;
-    ev.selected_group = state ? state->selected_group : -1;
-    ev.src            = state ? state->selected_src   : -1;
-    ev.dst            = state ? state->selected_dst   : -1;
-    ev.outcome        = outcome;
+    ev.step                  = state ? state->step                  : 0;
+    ev.event_kind            = event_kind;
+    ev.selected_node         = state ? state->selected_node         : -1;
+    ev.selected_group        = state ? state->selected_group        : -1;
+    ev.src                   = state ? state->selected_src          : -1;
+    ev.dst                   = state ? state->selected_dst          : -1;
+    ev.outcome               = outcome;
+    ev.selected_control_op   = state ? state->selected_control_op   : -1;
+    ev.selected_control_edge = state ? state->selected_control_edge : -1;
+    ev.branch_count          = 0; // filled by caller when known
+    ev.star_counter_val      = state ? state->star_counter          : 0;
     trace_ring[t % ring_size] = ev;
     *trace_tail = t + 1;
 }
@@ -1878,39 +2251,53 @@ extern "C" __global__ void orch_check_no_command_without_receipt(
     }
 }
 
-// Deterministic replay: block-parallel snapshot of state + consumed + active.
+// Deterministic replay: block-parallel snapshot of state + consumed + active +
+// per-edge star counters.
 extern "C" __global__ void orch_replay_snapshot(
     const OrchestrationState* state,
     OrchestrationState*       out_state,
     const int*                consumed,
     int*                      out_consumed,
     const int*                active,
-    int*                      out_active
+    int*                      out_active,
+    const int*                star_counters,
+    int*                      out_star_counters,
+    int                       star_counter_count
 ) {
     int tid = threadIdx.x;
     for (int i = tid; i < MATRIX_LEN; i += blockDim.x)
         out_consumed[i] = consumed[i];
     for (int i = tid; i < N; i += blockDim.x)
         out_active[i] = active[i];
+    if (star_counters && out_star_counters)
+        for (int i = tid; i < star_counter_count; i += blockDim.x)
+            out_star_counters[i] = star_counters[i];
     __syncthreads();
     if (tid == 0 && state && out_state)
         *out_state = *state;
 }
 
-// Deterministic replay: restore state + consumed + active from a replay snapshot.
+// Deterministic replay: restore state + consumed + active + star counters from
+// a replay snapshot.
 extern "C" __global__ void orch_replay_restore(
     OrchestrationState*       state,
     const OrchestrationState* snap_state,
     int*                      consumed,
     const int*                snap_consumed,
     int*                      active,
-    const int*                snap_active
+    const int*                snap_active,
+    int*                      star_counters,
+    const int*                snap_star_counters,
+    int                       star_counter_count
 ) {
     int tid = threadIdx.x;
     for (int i = tid; i < MATRIX_LEN; i += blockDim.x)
         consumed[i] = snap_consumed[i];
     for (int i = tid; i < N; i += blockDim.x)
         active[i] = snap_active[i];
+    if (star_counters && snap_star_counters)
+        for (int i = tid; i < star_counter_count; i += blockDim.x)
+            star_counters[i] = snap_star_counters[i];
     __syncthreads();
     if (tid == 0 && state && snap_state)
         *state = *snap_state;

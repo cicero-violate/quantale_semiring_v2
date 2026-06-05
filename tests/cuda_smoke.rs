@@ -262,6 +262,13 @@ mod cuda_smoke {
                 failure_action: 0,
                 selected_src: -1,
                 selected_dst: -1,
+                selected_control_edge: -1,
+                selected_control_op: -1,
+                selected_control_lhs: -1,
+                selected_control_rhs: -1,
+                control_epoch: 0,
+                star_counter_epoch: 0,
+                last_block_reason: 0,
             }
         );
         Ok(())

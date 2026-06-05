@@ -1,28 +1,29 @@
-# Pending: Fully GPU-Native Orchestration
+# GPU-Native Orchestration — Phase 9 Remaining
 
-This document defines the work required to move from the current GPU-selected
-parallel dispatch tier to fully GPU-native orchestration.
+Phases 0–8 are complete.  The GPU-native SEQ/PAR/CHOICE/STAR scheduler
+integration (plan.gpu.native.seq.par.choice.star.md) is also complete as of
+2026-06-05.
 
-The current implementation is intentionally **not** fully GPU-native. It is a
-GPU-selected parallel dispatch tier with:
+**Current tier: GPU-native orchestration with external command service.**
 
 ```text
-G_s = 1   GPU selects the par group.
-G_c = 1   GPU commits consumed/active state with block-parallel readiness.
-E_g = 1   Eligibility is computed on-device from per-member dispatch flags.
-D_h = 2/3 Static/generated H_f and manifest-covered abstract-device members run
-          or receipt-dispatch on device.
-R_d = 1   GPU-dispatched par-member successes route exactly one device-ring
-          receipt.
-R_k = 1   Per-member region id and dispatch kind are emitted by the kernel.
-H_o = 1   Par metadata is pre-resolved per epoch; fully device-dispatched groups
-          skip host dispatch scheduling.
+S_g=1  P_g=1  E_g=1  C_g=1  R_g=1  F_g=1  H_g=0
+D_g=0 for process/IO (explicit DeviceCommand/DeviceReceiptExt protocol)
 ```
 
-The remaining boundary is that process/IO dispatch, unsupported fallback work,
-failure recovery, and broader runtime-loop orchestration are still CPU-owned.
-Fully GPU-native orchestration means removing that boundary or making it an
-explicitly external service behind a GPU-owned command/receipt protocol.
+`tensor_quantale_orchestrate_step` now owns all control-flow decisions.
+SEQ, PAR, CHOICE, and bounded STAR are selected and committed on-device.
+The ControlEdge + EffectTable device tables drive deterministic selection.
+Per-edge star counters are GPU-resident and included in replay snapshots.
+Process/IO work is explicit: the GPU emits DeviceCommand; the CPU services it.
+
+The only remaining gap is **Phase 9** (see below): retiring the standalone
+`control_flow_advance` side-path API once scheduler-integrated test coverage
+is stable.
+
+---
+
+The earlier sections below document the full design for reference.
 
 ---
 

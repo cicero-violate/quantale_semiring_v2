@@ -134,7 +134,7 @@ Rust does not own a CPU planner, a CPU group-selection loop, or a live CPU mirro
 Three distinct levels of GPU involvement, not to be conflated:
 
 ```text
-GPU-selected parallel dispatch tier (current)
+GPU-selected parallel dispatch tier (superseded)
   The GPU selects a par group, commits consumed/active state, and dispatches
   H_f / abstract-device members in-kernel.  Process/IO members are excluded from
   GPU par selection; the CPU still owns fallback routing, failure recovery, and
@@ -142,26 +142,37 @@ GPU-selected parallel dispatch tier (current)
 
   Metrics: G_s=1  G_c=1  E_g=1  D_h=2/3  R_d=1  R_k=1  H_o=1
 
-GPU-native par dispatch
+GPU-native par dispatch (superseded)
   All eligible par-group members — including fusion-entry members — are
   dispatched in-kernel. The CPU dispatches no operators in the par hot path.
   The runtime step loop is still CPU-owned.
 
   Adds: D_h=1  (no host operator calls in the par path)
 
-Fully GPU-native orchestration (target — see PENDING.gpu.native.orchestration.md)
-  The GPU owns step scheduling, par/seq/choice/star control-flow, receipt
-  routing, tensor fold-in, and retry/block/rollback decisions. The CPU is
-  demoted to a supervisor and external-command service: it executes only
-  GPU-emitted DeviceCommand entries and returns DeviceReceiptExt entries.
-  Unsupported work becomes an explicit device-visible command rather than a
-  silent CPU fallback.
+GPU-native orchestration with external command service (current)
+  tensor_quantale_orchestrate_step owns all control-flow decisions: SEQ, PAR,
+  CHOICE, and bounded STAR progression are selected and committed on-device
+  without CPU involvement.  The ControlEdge + EffectTable device tables drive
+  deterministic selection; per-edge star counters are GPU-resident and
+  snapshotted for replay.  Process/IO work is explicit: the GPU emits
+  DeviceCommand entries; the CPU services them and returns DeviceReceiptExt
+  entries.  No silent CPU fallback for control flow.
+
+  Implemented by: plan.gpu.native.seq.par.choice.star.md (2026-06-05)
+  Metrics: S_g=1  P_g=1  E_g=1  C_g=1  R_g=1  F_g=1  H_g=0
+           D_g=0 for process/IO (explicit command/receipt protocol)
+
+Fully GPU-native orchestration (Phase 9 remaining — retire side-path APIs)
+  Same as above plus: standalone control_flow_advance side-path retired;
+  all runtime test coverage migrated to orchestrate_step observations;
+  legacy CPU orchestration feature-gated rather than default.
 
   Metrics: S_g=1  P_g=1  E_g=1  D_g=1  C_g=1  R_g=1  F_g=1  H_g=0
 ```
 
-The correct current label is **GPU-selected parallel dispatch tier**, not
-"GPU-native orchestration".
+The correct current label is **GPU-native orchestration with external command
+service** (`S_g=1 P_g=1`). The CPU is a supervisor and IO service, not a
+control-flow decision maker.
 
 ## CUDA kernel split
 
@@ -170,11 +181,24 @@ Three distinct compilation and loading paths — all dispatch through cudarc:
 ```text
 cuda/quantale_world.cu
   Compiled: NVRTC at runtime (cudarc::nvrtc::compile_ptx)
-  Kernels:  tensor_quantale_reset, embed_edges, closure, project,
-            project_batch, commit_batch, frontier_step, tick,
-            update_edge, decay, seed_exploration, expand_tokens,
-            score_tokens, select_topk_tokens, commit_exploration,
-            par_group_step
+  Tensor core:
+    tensor_quantale_reset, embed_edges, closure, project,
+    project_batch, commit_batch, frontier_step, tick,
+    update_edge, decay, seed_exploration, expand_tokens,
+    score_tokens, select_topk_tokens, commit_exploration,
+    par_group_step
+  Orchestration scheduler:
+    orchestration_state_init, orchestration_state_snapshot,
+    tensor_quantale_orchestrate_step, star_counters_init,
+    control_flow_advance, check_effects_independent,
+    failure_policy_init, failure_policy_classify_and_emit,
+    failure_policy_set_rollback_marker, failure_policy_apply_rollback,
+    learned_delta_init, learned_delta_fold_receipt,
+    learned_delta_apply, receipt_prior_snapshot,
+    orch_event_trace_push, orch_event_trace_drain,
+    orch_check_no_duplicate_receipts, orch_check_frontier_valid,
+    orch_check_no_command_without_receipt,
+    orch_replay_snapshot, orch_replay_restore
 
 JIT fusion kernels (src/jit_kernel_fusion/)
   Compiled: NVRTC at runtime via JitCache::get_or_compile
@@ -182,7 +206,13 @@ JIT fusion kernels (src/jit_kernel_fusion/)
   Regions:  loaded from assets/topology.fusion.json via FusionDispatch
 ```
 
-`quantale_world.cu` provides the deterministic tensor execution core. `par_group_step` fuses the `project_batch` + `commit_batch` sequence into a single kernel that selects, validates, and commits a par group without a CPU round-trip. Fusion kernels use NVRTC to specialize operator chains at startup.
+`quantale_world.cu` provides the deterministic tensor execution core and the
+GPU-native orchestration scheduler. `tensor_quantale_orchestrate_step` is the
+primary per-step entry point: it consults the ControlEdge + EffectTable device
+tables to execute SEQ, PAR, CHOICE, and bounded STAR without CPU involvement,
+then falls back to singleton tensor scoring if no control edge is active.
+`par_group_step` remains for the legacy par-dispatch path. Fusion kernels use
+NVRTC to specialize operator chains at startup.
 
 ## Fusion architecture
 

@@ -2,7 +2,7 @@
 
 ## Status
 
-Planned.
+Implemented.
 
 This plan defines the remaining work to move device-side control-flow support
 from a callable side path into the GPU-owned orchestration scheduler.

@@ -74,46 +74,40 @@ Only remaining gaps are listed here. Completed items were removed after verifica
 - CUDA smoke tests: `trace_ring_push_drain_round_trip`, `invariant_frontier_valid_passes_on_init`, `invariant_no_duplicate_receipts_passes_on_empty_ring`, `replay_snapshot_restore_is_identity`.
 - Total: 214 tests passing.
 
+**GPU-native SEQ/PAR/CHOICE/STAR scheduler integration complete** (2026-06-05):
+- `tensor_quantale_orchestrate_step` now owns all control-flow decisions; no CPU involvement in hot-path routing.
+- `OrchestrationState` extended with 7 control-flow fields: `selected_control_edge`, `selected_control_op`, `selected_control_lhs`, `selected_control_rhs`, `control_epoch`, `star_counter_epoch`, `last_block_reason`.
+- `TensorWorldBundle` extended with 6 new fields: `control_edges`, `control_edge_count`, `effects`, `effect_count`, `star_counters`, `star_counter_count`.
+- Device helpers added: `ready_seq`, `ready_par`, `ready_choice`, `ready_star`, `score_choice_branch`, `select_control_decision`, `commit_selected_node_or_command`.
+- New kernel `star_counters_init`; per-edge star counter buffer allocated in `OrchestrationBuffers`.
+- `orch_replay_snapshot` / `orch_replay_restore` extended to include star counters.
+- `OrchestrationEvent` extended with 4 trace fields: `selected_control_op`, `selected_control_edge`, `branch_count`, `star_counter_val`.
+- Rust: `ORCH_BLOCK_REASON_*`, `CONTROL_*`, `MAX_CONTROL_EDGES`, `STAR_COUNTERS_INIT_KERNEL` constants; `star_counters_reset()` wrapper; `load_control_table` auto-resizes and reinits star counters.
+- Plan file: `plan.gpu.native.seq.par.choice.star.md` marked **Implemented**.
+- Current tier label: **GPU-native orchestration with external command service** (`S_g=1 P_g=1`).
+
 ---
 
-## 1. Par-tier keeps explicit process/IO fallback orchestration on CPU
+## Remaining: Phase 9 — retire standalone control-flow side-path APIs
 
-Current state is a GPU-selected parallel dispatch tier, not fully GPU-native orchestration.
+The `control_flow_advance` kernel and its Rust wrapper remain as a callable side-path.
+Once scheduler-integrated control-flow test coverage is stable, retire or feature-gate it.
 
 ```text
-G_s = 1   GPU selects the par group.
-G_c = 1   GPU commits consumed/active state. Readiness scans are block-parallel
-          inside the par kernel; the first passing group is still selected
-          deterministically by group order.
-E_g = 1   Eligibility is computed on-device from per-member table flags.
-D_h = 2/3 Static/generated H_f and manifest-covered abstract-device members run
-          or receipt-dispatch on device. Fully device-dispatched par groups skip
-          fusion lookup and host dispatch scheduling after kernel commit.
-          Process/IO and unsupported fallback members remain host-bound and are
-          excluded from GPU par selection.
-R_d = 1   GPU-dispatched par-member successes route exactly one device-ring
-          receipt. Failed or explicit process/IO host fallbacks still use the
-          CPU lattice queue path.
-R_k = 1   Per-member region id and dispatch kind are emitted by the kernel.
-H_o = 1   Par-group node names and fusion-entry metadata are pre-resolved once
-          per epoch. Fully device-dispatched groups use a device-only fast path;
-          host orchestration remains only for explicit fallback/failure work.
+Action: migrate control_flow_advance test coverage to orchestrate_step observations.
+        Mark control_flow_advance as #[deprecated] or gate behind a feature flag.
+        Update PENDING.gpu.native.orchestration.md Phase 9 acceptance criteria.
 ```
 
-Remaining intentional boundary:
+---
 
-1. **Host orchestration remains outside fully GPU-native scope for process/IO.**
-   Process/IO dispatch, broader runtime orchestration, and fallback operator execution are still CPU-owned. This is intentional, but it means the correct label is:
+## 2. Process/IO dispatch remains an explicit external command service
 
-```text
-GPU-selected parallel dispatch tier with block-parallel readiness, in-kernel
-static/generated H_f dispatch, manifest-covered abstract-device receipt dispatch,
-device-only fast path for fully device-dispatched par groups, and host-bound
-process/IO members excluded from GPU par selection.
-```
-
-Not:
+Process/IO work is explicit — the GPU emits `DeviceCommand`; the CPU services it and
+returns `DeviceReceiptExt`. This is intentional and correct (CPU owns OS process
+execution). The boundary is now explicit rather than silent fallback.
 
 ```text
-Fully GPU-native orchestration.
+S_g=1  P_g=1  E_g=1  C_g=1  R_g=1  F_g=1  H_g=0
+D_g=0 for process/IO (explicit command/receipt protocol — not a regression)
 ```

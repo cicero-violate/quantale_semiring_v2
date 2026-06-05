@@ -99,6 +99,29 @@ pub const CONTROL_OP_STAR_BOUNDED: i32 = 3;
 pub const CONTROL_OP_GATE: i32 = 4;
 pub const CONTROL_OP_HALT_OP: i32 = 5;
 
+// GPU-native scheduler decision kind codes (mirror CONTROL_* in .cu).
+pub const CONTROL_NONE: i32 = 0;
+pub const CONTROL_SEQ_READY: i32 = 1;
+pub const CONTROL_PAR_READY: i32 = 2;
+pub const CONTROL_CHOICE_READY: i32 = 3;
+pub const CONTROL_STAR_BODY_READY: i32 = 4;
+pub const CONTROL_STAR_EXIT_READY: i32 = 5;
+pub const CONTROL_HALT_READY: i32 = 6;
+pub const CONTROL_BLOCKED: i32 = 7;
+
+// Block-reason codes set on OrchestrationState (mirror ORCH_BLOCK_REASON_* in .cu).
+pub const ORCH_BLOCK_REASON_NONE: i32 = 0;
+pub const ORCH_BLOCK_REASON_NO_READY_NODE: i32 = 1;
+pub const ORCH_BLOCK_REASON_STAR_EXHAUSTED: i32 = 2;
+pub const ORCH_BLOCK_REASON_UNSUPPORTED: i32 = 3;
+pub const ORCH_BLOCK_REASON_ALL_CONSUMED: i32 = 4;
+
+/// Maximum number of control edges in a loaded control table.
+pub const MAX_CONTROL_EDGES: usize = 1024;
+
+/// Kernel name for zeroing the per-edge star counter buffer.
+pub const STAR_COUNTERS_INIT_KERNEL: &str = "star_counters_init";
+
 // Phase-5 failure classification codes (mirror FAILURE_CLASS_* in .cu).
 pub const FAILURE_CLASS_SPAWN_FAILURE: i32 = 0;
 pub const FAILURE_CLASS_TIMEOUT: i32 = 1;
@@ -629,6 +652,14 @@ pub struct OrchestrationState {
     pub failure_action: i32,       // Phase 5: last FAILURE_ACTION_* decision
     pub selected_src: i32,         // Phase 8: src of last committed edge
     pub selected_dst: i32,         // Phase 8: dst of last committed edge
+    // GPU-native control-flow (Plan: gpu-native seq/par/choice/star)
+    pub selected_control_edge: i32, // ControlEdge table index, or -1
+    pub selected_control_op: i32,   // CONTROL_OP_* for last committed control op, or -1
+    pub selected_control_lhs: i32,  // lhs of selected control edge, or -1
+    pub selected_control_rhs: i32,  // rhs of selected control edge, or -1
+    pub control_epoch: i32,         // incremented on each control decision commit
+    pub star_counter_epoch: i32,    // incremented when any per-edge star counter advances
+    pub last_block_reason: i32,     // ORCH_BLOCK_REASON_* code
 }
 
 unsafe impl DeviceRepr for OrchestrationState {}
@@ -770,6 +801,11 @@ pub struct OrchestrationEvent {
     pub src: i32,
     pub dst: i32,
     pub outcome: i32,
+    // Phase 8 control-trace fields
+    pub selected_control_op: i32,
+    pub selected_control_edge: i32,
+    pub branch_count: i32,
+    pub star_counter_val: i32,
 }
 
 unsafe impl DeviceRepr for OrchestrationEvent {}
@@ -859,6 +895,11 @@ pub struct OrchestrationBuffers {
     pub replay_state: CudaSlice<OrchestrationState>,
     pub replay_consumed: CudaSlice<i32>,
     pub replay_active: CudaSlice<i32>,
+    /// GPU-native control-flow: per-edge star counter buffer (length MAX_CONTROL_EDGES).
+    /// Indexed by ControlEdge table index.
+    pub star_counters: CudaSlice<i32>,
+    /// Replay snapshot of star_counters (same length as star_counters).
+    pub replay_star_counters: CudaSlice<i32>,
 }
 
 /// GPU-resident data for the par-group-step kernel.
@@ -1112,6 +1153,13 @@ pub(crate) struct TensorWorldBundleHost {
     pub reentrant_mask_dev: u64,
     pub bias_dev: u64,
     pub decision_dev: u64,
+    // GPU-native control-flow fields (Plan: gpu-native seq/par/choice/star)
+    pub control_edges_dev: u64,
+    pub control_edge_count: i32,
+    pub effects_dev: u64,
+    pub effect_count: i32,
+    pub star_counters_dev: u64,
+    pub star_counter_count: i32,
 }
 
 unsafe impl DeviceRepr for TensorWorldBundleHost {}
@@ -1456,6 +1504,13 @@ impl TensorQuantaleWorld {
         let replay_active = dev
             .htod_copy(vec![0_i32; TENSOR_NODE_COUNT])
             .map_err(|error| CudaError::new("htod_copy replay_active", error))?;
+        // GPU-native control-flow: per-edge star counter buffers.
+        let star_counters = dev
+            .htod_copy(vec![0_i32; MAX_CONTROL_EDGES])
+            .map_err(|error| CudaError::new("htod_copy star_counters", error))?;
+        let replay_star_counters = dev
+            .htod_copy(vec![0_i32; MAX_CONTROL_EDGES])
+            .map_err(|error| CudaError::new("htod_copy replay_star_counters", error))?;
 
         let mut world = Self {
             dev,
@@ -1512,6 +1567,8 @@ impl TensorQuantaleWorld {
                 replay_state,
                 replay_consumed,
                 replay_active,
+                star_counters,
+                replay_star_counters,
             },
         };
         world.orch_state_init()?;
@@ -2125,6 +2182,9 @@ impl TensorQuantaleWorld {
     pub fn orchestrate_step(&mut self) -> Result<OrchStepStatus, CudaError> {
         use cudarc::driver::DevicePtr;
 
+        let ctrl_edge_count = self.orch_buffers.control_edges.len() as i32;
+        let effect_count = self.orch_buffers.effect_table.len() as i32;
+        let star_counter_count = self.orch_buffers.star_counters.len() as i32;
         let bundle = TensorWorldBundleHost {
             tensor_dev: *self.tensor.device_ptr() as u64,
             witness_dev: *self.witness.device_ptr() as u64,
@@ -2134,6 +2194,12 @@ impl TensorQuantaleWorld {
             reentrant_mask_dev: *self.orch_buffers.reentrant_mask.device_ptr() as u64,
             bias_dev: *self.orch_buffers.default_bias.device_ptr() as u64,
             decision_dev: *self.decision.device_ptr() as u64,
+            control_edges_dev: *self.orch_buffers.control_edges.device_ptr() as u64,
+            control_edge_count: ctrl_edge_count,
+            effects_dev: *self.orch_buffers.effect_table.device_ptr() as u64,
+            effect_count,
+            star_counters_dev: *self.orch_buffers.star_counters.device_ptr() as u64,
+            star_counter_count,
         };
 
         let bundle_dev = self
@@ -2241,10 +2307,32 @@ impl TensorQuantaleWorld {
         effects: Vec<EffectTable>,
     ) -> Result<(), CudaError> {
         if !edges.is_empty() {
+            let edge_count = edges.len();
             self.orch_buffers.control_edges = self
                 .dev
                 .htod_copy(edges)
                 .map_err(|e| CudaError::new("load_control_table edges", e))?;
+            // Resize star_counters to match edge count (capped at MAX_CONTROL_EDGES).
+            let counter_len = edge_count.min(MAX_CONTROL_EDGES);
+            let init_count = counter_len as i32;
+            self.orch_buffers.star_counters = self
+                .dev
+                .htod_copy(vec![0_i32; counter_len])
+                .map_err(|e| CudaError::new("load_control_table star_counters", e))?;
+            self.orch_buffers.replay_star_counters = self
+                .dev
+                .htod_copy(vec![0_i32; counter_len])
+                .map_err(|e| CudaError::new("load_control_table replay_star_counters", e))?;
+            // Zero-init via dedicated kernel for consistency.
+            if let Some(f) = self.dev.get_func(MODULE_NAME, STAR_COUNTERS_INIT_KERNEL) {
+                unsafe {
+                    f.launch(
+                        kernel_config(),
+                        (&mut self.orch_buffers.star_counters, init_count),
+                    )
+                }
+                .map_err(|e| CudaError::new(STAR_COUNTERS_INIT_KERNEL, e))?;
+            }
         }
         if !effects.is_empty() {
             self.orch_buffers.effect_table = self
@@ -2260,6 +2348,28 @@ impl TensorQuantaleWorld {
     /// Returns the matched `CONTROL_OP_*` code, or `-1` if no matching edge is
     /// found in the current control table.  Advances the bounded-star counter
     /// in `OrchestrationState` when the matching edge is `CONTROL_OP_STAR_BOUNDED`.
+    /// Zero all per-edge star counters on device.
+    ///
+    /// Call this when entering a new STAR loop scope so iteration counts start
+    /// fresh.  Also called automatically by `load_control_table`.
+    pub fn star_counters_reset(&mut self) -> Result<(), CudaError> {
+        let count = self.orch_buffers.star_counters.len() as i32;
+        if count == 0 {
+            return Ok(());
+        }
+        let f = self
+            .dev
+            .get_func(MODULE_NAME, STAR_COUNTERS_INIT_KERNEL)
+            .ok_or(CudaError::missing_function(STAR_COUNTERS_INIT_KERNEL))?;
+        unsafe {
+            f.launch(
+                kernel_config(),
+                (&mut self.orch_buffers.star_counters, count),
+            )
+        }
+        .map_err(|e| CudaError::new(STAR_COUNTERS_INIT_KERNEL, e))
+    }
+
     pub fn control_flow_advance(&mut self, src: i32, dst: i32) -> Result<i32, CudaError> {
         let f = self
             .dev
@@ -2756,6 +2866,7 @@ impl TensorQuantaleWorld {
             block_dim: (TENSOR_NODE_COUNT as u32, 1, 1),
             shared_mem_bytes: 0,
         };
+        let star_counter_count = self.orch_buffers.star_counters.len() as i32;
         unsafe {
             f.launch(
                 cfg,
@@ -2766,6 +2877,9 @@ impl TensorQuantaleWorld {
                     &mut self.orch_buffers.replay_consumed,
                     &self.active,
                     &mut self.orch_buffers.replay_active,
+                    &self.orch_buffers.star_counters,
+                    &mut self.orch_buffers.replay_star_counters,
+                    star_counter_count,
                 ),
             )
         }
@@ -2784,6 +2898,7 @@ impl TensorQuantaleWorld {
             block_dim: (TENSOR_NODE_COUNT as u32, 1, 1),
             shared_mem_bytes: 0,
         };
+        let star_counter_count = self.orch_buffers.star_counters.len() as i32;
         unsafe {
             f.launch(
                 cfg,
@@ -2794,6 +2909,9 @@ impl TensorQuantaleWorld {
                     &self.orch_buffers.replay_consumed,
                     &mut self.active,
                     &self.orch_buffers.replay_active,
+                    &mut self.orch_buffers.star_counters,
+                    &self.orch_buffers.replay_star_counters,
+                    star_counter_count,
                 ),
             )
         }
