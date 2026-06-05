@@ -62,3 +62,29 @@ fn device_dispatched_receipt(node_name: &str) -> ProcessReceipt {
         stderr_payload: String::new(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    #[test]
+    fn device_dispatched_members_do_not_run_host_executor() {
+        let executor = UniversalExecutor::new(HashMap::from([(
+            "Would::FailOnHost".to_string(),
+            json!({
+                "executable": "process",
+                "argv": ["/definitely/not/a/real/binary"]
+            }),
+        )]));
+        let names = vec!["Would::FailOnHost".to_string()];
+        let receipts = dispatch_gpu_parallel_group(&executor, &[None], &names, &Value::Null, &[1]);
+
+        assert_eq!(receipts.len(), 1);
+        assert_eq!(receipts[0].node_name, "Would::FailOnHost");
+        assert_eq!(receipts[0].exit_code, 0);
+        assert!(receipts[0].stderr_payload.is_empty());
+        let stdout: Value = serde_json::from_str(&receipts[0].stdout_payload).unwrap();
+        assert_eq!(stdout["dispatch"], "device");
+    }
+}

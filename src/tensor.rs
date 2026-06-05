@@ -57,6 +57,10 @@ const PAR_GROUP_STEP_KERNEL: &str = "tensor_quantale_par_group_step";
 pub const MAX_PAR_GROUP_SIZE: usize = 8;
 
 pub const DEVICE_RECEIPT_RING_SIZE: usize = 256;
+pub const GPU_HOT_REGION_COUNT: i32 = 7;
+pub const PAR_DISPATCH_NONE: i32 = 0;
+pub const PAR_DISPATCH_HF_DEVICE: i32 = 1;
+pub const PAR_DISPATCH_HOST_FALLBACK: i32 = 2;
 
 pub const EXPLORATION_MAX_TOKENS: usize = TENSOR_NODE_COUNT * TENSOR_NODE_COUNT;
 pub const EXPLORATION_MAX_SELECTED: usize = TENSOR_NODE_COUNT;
@@ -333,6 +337,21 @@ impl ParGroupGpuData {
     }
 }
 
+/// C-compatible descriptor for one committed par-group member.
+/// Must match the CUDA `ParDispatchDescriptor` definition exactly.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ParDispatchDescriptor {
+    pub member_index: i32,
+    pub node_id: i32,
+    pub region_id: i32,
+    pub dispatch_kind: i32,
+    pub src_node: i32,
+    pub dst_node: i32,
+}
+
+unsafe impl DeviceRepr for ParDispatchDescriptor {}
+
 /// C-compatible output struct for `tensor_quantale_par_group_step`.
 /// Must match the CUDA `ParGroupStepOutput` definition exactly.
 #[repr(C)]
@@ -346,6 +365,10 @@ pub(crate) struct ParGroupStepOutputRaw {
     /// 1 when the member was dispatched in-kernel via the H_f path (Phase 2).
     /// CPU must skip execute_*_blocking and gpu_dispatch_region for those members.
     pub dispatched_on_device: [i32; MAX_PAR_GROUP_SIZE],
+    /// Per-member dispatch descriptors emitted by the GPU. Non-H_f members are
+    /// currently marked `PAR_DISPATCH_HOST_FALLBACK`; future tiers can consume
+    /// these descriptors without re-deriving member routing on the host.
+    pub dispatch_descriptors: [ParDispatchDescriptor; MAX_PAR_GROUP_SIZE],
 }
 
 impl Default for ParGroupStepOutputRaw {
@@ -356,6 +379,7 @@ impl Default for ParGroupStepOutputRaw {
             decisions: [DecisionReport::default(); MAX_PAR_GROUP_SIZE],
             region_ids: [-1_i32; MAX_PAR_GROUP_SIZE],
             dispatched_on_device: [0_i32; MAX_PAR_GROUP_SIZE],
+            dispatch_descriptors: [ParDispatchDescriptor::default(); MAX_PAR_GROUP_SIZE],
         }
     }
 }
@@ -823,7 +847,7 @@ impl TensorQuantaleWorld {
     /// par group, commit it atomically, and return the committed decisions.
     ///
     /// Returns `Ok(None)` when no group is ready — tensor state is unchanged.
-    /// Returns `Ok(Some((group_idx, decisions, region_ids, dispatched_on_device)))`.
+    /// Returns `Ok(Some((group_idx, decisions, region_ids, dispatched_on_device, descriptors)))`.
     ///
     /// `dispatched_on_device[i] == 1` means member `i` was dispatched in-kernel
     /// via the H_f path: the region function ran on-device and its DeviceReceipt
@@ -833,7 +857,16 @@ impl TensorQuantaleWorld {
         &mut self,
         data: &ParGroupGpuData,
         bias: ProjectionBias,
-    ) -> Result<Option<(usize, Vec<DecisionReport>, Vec<i32>, Vec<i32>)>, CudaError> {
+    ) -> Result<
+        Option<(
+            usize,
+            Vec<DecisionReport>,
+            Vec<i32>,
+            Vec<i32>,
+            Vec<ParDispatchDescriptor>,
+        )>,
+        CudaError,
+    > {
         if data.num_groups == 0 {
             return Ok(None);
         }
@@ -856,7 +889,7 @@ impl TensorQuantaleWorld {
             receipt_ring_dev: *self.device_receipt_buffer.ring.device_ptr(),
             ring_tail_dev: *self.device_receipt_buffer.tail.device_ptr(),
             ring_size: DEVICE_RECEIPT_RING_SIZE as i32,
-            region_count: 64_i32,
+            region_count: GPU_HOT_REGION_COUNT,
         };
         let hf_buf = self
             .dev
@@ -895,6 +928,7 @@ impl TensorQuantaleWorld {
             raw.decisions[..sz].to_vec(),
             raw.region_ids[..sz].to_vec(),
             raw.dispatched_on_device[..sz].to_vec(),
+            raw.dispatch_descriptors[..sz].to_vec(),
         )))
     }
 
@@ -1048,7 +1082,7 @@ impl TensorQuantaleWorld {
             .dev
             .htod_copy(vec![mailbox])
             .map_err(|error| CudaError::new("htod_copy gpu dispatch mailbox", error))?;
-        let region_count = 64_i32; // upper bound; actual regions registered at startup
+        let region_count = GPU_HOT_REGION_COUNT;
         let ring_size = DEVICE_RECEIPT_RING_SIZE as i32;
         let kernel = self
             .dev
@@ -1101,7 +1135,7 @@ impl TensorQuantaleWorld {
         let (slot_ptrs, element_count) = registry
             .device_slot_ptr_table(&self.dev, slot_names)
             .map_err(CudaError::invalid_input)?;
-        let region_count = 64_i32;
+        let region_count = GPU_HOT_REGION_COUNT;
         let ring_size = DEVICE_RECEIPT_RING_SIZE as i32;
         let kernel = self
             .dev

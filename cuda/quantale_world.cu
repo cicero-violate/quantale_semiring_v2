@@ -1154,6 +1154,18 @@ extern "C" __global__ void tensor_quantale_gpu_dispatch(
 // O(N²) inner loop is cheap relative to kernel-launch overhead.
 
 #define MAX_PAR_GROUP_SIZE 8
+#define PAR_DISPATCH_NONE 0
+#define PAR_DISPATCH_HF_DEVICE 1
+#define PAR_DISPATCH_HOST_FALLBACK 2
+
+struct ParDispatchDescriptor {
+    int member_index;
+    int node_id;
+    int region_id;
+    int dispatch_kind;
+    int src_node;
+    int dst_node;
+};
 
 struct ParGroupStepOutput {
     int selected_group_idx;
@@ -1161,6 +1173,7 @@ struct ParGroupStepOutput {
     struct DecisionReport decisions[MAX_PAR_GROUP_SIZE];
     int region_ids[MAX_PAR_GROUP_SIZE];         // hot-region id per member; -1 if not hot
     int dispatched_on_device[MAX_PAR_GROUP_SIZE]; // 1 = dispatched in-kernel via H_f path
+    struct ParDispatchDescriptor dispatch_descriptors[MAX_PAR_GROUP_SIZE];
 };
 
 // ── H_f dispatch parameter bundle ────────────────────────────────────────────
@@ -1228,6 +1241,12 @@ extern "C" __global__ void tensor_quantale_par_group_step(
             sh_srcs[i] = -1;
             sh_dsts[i] = -1;
             result->dispatched_on_device[i] = 0;
+            result->dispatch_descriptors[i].member_index = -1;
+            result->dispatch_descriptors[i].node_id = -1;
+            result->dispatch_descriptors[i].region_id = -1;
+            result->dispatch_descriptors[i].dispatch_kind = PAR_DISPATCH_NONE;
+            result->dispatch_descriptors[i].src_node = -1;
+            result->dispatch_descriptors[i].dst_node = -1;
         }
     }
     __syncthreads();
@@ -1257,9 +1276,11 @@ extern "C" __global__ void tensor_quantale_par_group_step(
             bool all_ready = true;
             struct DecisionReport decisions[MAX_PAR_GROUP_SIZE];
             int region_ids[MAX_PAR_GROUP_SIZE];
+            int node_ids[MAX_PAR_GROUP_SIZE];
 
             for (int i = 0; i < sz; i++) {
                 int target_hop = par_table[group_start + i * 3];
+                node_ids[i]    = target_hop;
                 region_ids[i]  = par_table[group_start + i * 3 + 1];
                 float best_value = -1.0e30f;
                 int best_src = -1, best_dst = -1, best_hop = -1, candidates = 0;
@@ -1325,6 +1346,12 @@ extern "C" __global__ void tensor_quantale_par_group_step(
             for (int i = 0; i < sz; i++) {
                 result->decisions[i]  = decisions[i];
                 result->region_ids[i] = region_ids[i];
+                result->dispatch_descriptors[i].member_index = i;
+                result->dispatch_descriptors[i].node_id = node_ids[i];
+                result->dispatch_descriptors[i].region_id = region_ids[i];
+                result->dispatch_descriptors[i].dispatch_kind = PAR_DISPATCH_HOST_FALLBACK;
+                result->dispatch_descriptors[i].src_node = decisions[i].selected_src;
+                result->dispatch_descriptors[i].dst_node = decisions[i].first_hop;
             }
 
             // Broadcast to shared memory for Phase 2.
@@ -1371,6 +1398,7 @@ extern "C" __global__ void tensor_quantale_par_group_step(
         r.valid        = 1;
         r.output_flags = 0;
 
+        int handled = 1;
         switch (rid) {
             case 0: region_vector_add           (slot_ptrs, elem_count, &r); break;
             case 1: region_vector_scale         (slot_ptrs, elem_count, &r); break;
@@ -1379,15 +1407,16 @@ extern "C" __global__ void tensor_quantale_par_group_step(
             case 4: region_analysis_volatility  (slot_ptrs, elem_count, &r); break;
             case 5: region_analysis_signal_score(slot_ptrs, elem_count, &r); break;
             case 6: region_commit_receipt       (slot_ptrs, elem_count, &r); break;
-            default: break;
+            default: handled = 0; break;
         }
         __syncthreads();
 
-        if (threadIdx.x == 0) {
+        if (threadIdx.x == 0 && handled) {
             int tail = *hf->ring_tail;
             hf->receipt_ring[tail % hf->ring_size] = r;
             *hf->ring_tail = tail + 1;
             result->dispatched_on_device[i] = 1;
+            result->dispatch_descriptors[i].dispatch_kind = PAR_DISPATCH_HF_DEVICE;
         }
         __syncthreads();
     }

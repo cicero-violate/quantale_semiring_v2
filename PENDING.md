@@ -44,6 +44,15 @@ R_k = 1   per-member (region_id, is_gpu_dispatchable) encoded in table; kernel e
           and dispatched_on_device flags (no per-tick hot_region_registry lookup)
 ```
 
+Next implementation plan:
+1. **~~Tighten H_f dispatch accounting.~~ ✓ Implemented**
+   The par kernel now marks `dispatched_on_device = 1` only after a known H_f region handler runs and writes its device receipt. Rust uses a shared `GPU_HOT_REGION_COUNT` constant instead of passing an over-broad region-count placeholder.
+2. **~~Add a GPU-side dispatch descriptor ABI for non-H_f members.~~ ✓ Implemented**
+   The par kernel now emits a compact per-member descriptor containing member index, node id, region id, selected src/dst, and dispatch kind. H_f members are upgraded to `PAR_DISPATCH_HF_DEVICE`; the remaining fusion/abstract members stay marked `PAR_DISPATCH_HOST_FALLBACK` for the next execution tier.
+3. Replace descriptor CPU execution incrementally. First route descriptor-backed fusion entries through a single GPU/JIT batch launch, then leave only true abstract/process nodes on the host path.
+4. Rework par commit from thread-0 control flow into a parallel readiness/commit kernel using per-member lanes and atomics or a two-kernel select+commit protocol. Keep the current sequential commit until the replacement is proven.
+5. Collapse receipt routing so every GPU-dispatched par member writes exactly one device-ring receipt; CPU queue routing remains only for process/abstract fallbacks.
+
 What changed: the CPU group-selection loop is gone. The GPU now selects and commits. The par table encodes `(node_id, region_id, is_gpu_dispatchable)` triples; the kernel computes eligibility on-device from `is_gpu_dispatchable` flags without a separate CPU-precomputed mask. Hot-region par members with registered slot tables now run their precompiled `__device__` region function inside `tensor_quantale_par_group_step`; the kernel writes a `DeviceReceipt` to the device ring and emits `dispatched_on_device = 1`, so `dispatch_gpu_parallel_group` skips `execute_*_blocking` for that member and returns a synthetic success receipt. What remains CPU-side:
 
 **Gap A — operator dispatch is still host-bound for non-H_f members.**

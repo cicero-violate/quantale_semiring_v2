@@ -430,7 +430,13 @@ fn main() {
                 Ok(None) => break 'par_tier false,
                 Ok(Some(result)) => result,
             };
-            let (group_idx, par_decisions, par_member_region_ids, par_dispatched_on_device) = step;
+            let (
+                group_idx,
+                par_decisions,
+                par_member_region_ids,
+                par_dispatched_on_device,
+                _par_dispatch_descriptors,
+            ) = step;
 
             let par_names: Vec<String> = epoch
                 .topology
