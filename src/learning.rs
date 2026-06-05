@@ -197,18 +197,15 @@ impl LearningBuffer {
         }
         if let Some(parent) = self.path.parent() {
             if !parent.as_os_str().is_empty() {
-                fs::create_dir_all(parent).map_err(|e| {
-                    format!("create learned-edges dir '{}': {e}", parent.display())
-                })?;
+                fs::create_dir_all(parent)
+                    .map_err(|e| format!("create learned-edges dir '{}': {e}", parent.display()))?;
             }
         }
         let file = fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(&self.path)
-            .map_err(|e| {
-                format!("open learned-edges '{}': {e}", self.path.display())
-            })?;
+            .map_err(|e| format!("open learned-edges '{}': {e}", self.path.display()))?;
         let mut writer = std::io::BufWriter::new(file);
         for edge in &self.pending {
             let line = serde_json::json!({
@@ -218,13 +215,15 @@ impl LearningBuffer {
                 "cost":       edge.cost,
                 "safety":     edge.safety,
             });
-            let mut bytes = serde_json::to_vec(&line)
-                .map_err(|e| format!("serialize learned edge: {e}"))?;
+            let mut bytes =
+                serde_json::to_vec(&line).map_err(|e| format!("serialize learned edge: {e}"))?;
             bytes.push(b'\n');
-            writer.write_all(&bytes)
+            writer
+                .write_all(&bytes)
                 .map_err(|e| format!("write learned-edges '{}': {e}", self.path.display()))?;
         }
-        writer.flush()
+        writer
+            .flush()
             .map_err(|e| format!("flush learned-edges '{}': {e}", self.path.display()))?;
         self.pending.clear();
         Ok(())

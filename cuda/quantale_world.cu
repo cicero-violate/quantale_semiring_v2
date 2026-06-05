@@ -1159,127 +1159,237 @@ struct ParGroupStepOutput {
     int selected_group_idx;
     int group_size;
     struct DecisionReport decisions[MAX_PAR_GROUP_SIZE];
-    int region_ids[MAX_PAR_GROUP_SIZE]; // hot-region id per member; -1 if not hot
+    int region_ids[MAX_PAR_GROUP_SIZE];         // hot-region id per member; -1 if not hot
+    int dispatched_on_device[MAX_PAR_GROUP_SIZE]; // 1 = dispatched in-kernel via H_f path
 };
 
+// ── H_f dispatch parameter bundle ────────────────────────────────────────────
+//
+// Packs the six inline-dispatch parameters into a single device struct so that
+// tensor_quantale_par_group_step stays within the cudarc LaunchAsync arity
+// limit (max 13-tuple).
+
+struct ParGroupHfParams {
+    const unsigned long long* slot_table_ptrs;  // [num_groups * MAX_PAR_GROUP_SIZE] float** addrs
+    const int*                element_counts;   // [num_groups * MAX_PAR_GROUP_SIZE]
+    DeviceReceipt*            receipt_ring;
+    int*                      ring_tail;
+    int                       ring_size;
+    int                       region_count;
+};
+
+// ── tensor_quantale_par_group_step ───────────────────────────────────────────
+//
+// Two-phase single-block kernel:
+//
+//   Phase 1 (thread 0 only): iterate the par_table, find the first eligible
+//   all-ready group, commit it (consumed/active/decision updated), populate
+//   shared memory with the selected group's region_ids, src, dst.
+//
+//   Phase 2 (all 512 threads, block 0 only): for each committed member with
+//   a registered hot-region id, call the precompiled __device__ region function
+//   with per-member slot_ptrs (H_f path).  Thread 0 writes the DeviceReceipt to
+//   the ring.  Members without per-member slot tables are dispatched in
+//   receipt-only mode (slot_ptrs == NULL); the CPU skips execute_*_blocking for
+//   those members as well since the receipt captures the success outcome.
+//
+// This closes D_h for hot-region par members without CUDA dynamic parallelism.
+// Fusion/abstract par members (region_id == -1) are not dispatched in Phase 2;
+// the CPU still calls execute_*_blocking for them (D_h partial).
+
 extern "C" __global__ void tensor_quantale_par_group_step(
-    const float*         tensor,
-    const int*           witness,
-    int*                 consumed,
-    int*                 active,
-    int*                 next_active,
-    const ProjectionBias* bias,
-    DecisionReport*      global_decision,
-    const int*           par_table,    // packed (node_id, region_id, is_gpu_dispatchable) triple table
-    int                  num_groups,
-    ParGroupStepOutput*  result
+    const float*            tensor,
+    const int*              witness,
+    int*                    consumed,
+    int*                    active,
+    int*                    next_active,
+    const ProjectionBias*   bias,
+    DecisionReport*         global_decision,
+    const int*              par_table,
+    int                     num_groups,
+    ParGroupStepOutput*     result,
+    const ParGroupHfParams* hf    // H_f inline dispatch config (slot tables + receipt ring)
 ) {
-    if (threadIdx.x != 0 || blockIdx.x != 0) return;
+    // Shared memory: Phase 1 (thread 0) writes, Phase 2 (all threads) reads.
+    __shared__ int sh_selected_g;
+    __shared__ int sh_sz;
+    __shared__ int sh_region_ids[MAX_PAR_GROUP_SIZE];
+    __shared__ int sh_srcs[MAX_PAR_GROUP_SIZE];
+    __shared__ int sh_dsts[MAX_PAR_GROUP_SIZE];
 
-    result->selected_group_idx = -1;
-    result->group_size = 0;
-
-    float alpha = bias[0].confidence;
-    float beta  = bias[0].cost;
-    float gamma = bias[0].safety;
-    int next_step = global_decision[0].step + 1;
-
-    int ptr = 0;
-    for (int g = 0; g < num_groups; g++) {
-        int sz = par_table[ptr++];
-        int group_start = ptr;
-        ptr += sz * 3; // each member is (node_id, region_id, is_gpu_dispatchable)
-
-        if (sz < 2 || sz > MAX_PAR_GROUP_SIZE) continue;
-
-        // Eligibility check: all members must be GPU-dispatchable (hot-region or fusion-entry).
-        // Computed on-device from per-member is_gpu_dispatchable flags in the table.
-        int all_eligible = 1;
-        for (int i = 0; i < sz; i++) {
-            if (!par_table[group_start + i * 3 + 2]) { all_eligible = 0; break; }
+    // ── init ──────────────────────────────────────────────────────────────────
+    if (threadIdx.x == 0) {
+        sh_selected_g = -1;
+        sh_sz = 0;
+        result->selected_group_idx = -1;
+        result->group_size = 0;
+        for (int i = 0; i < MAX_PAR_GROUP_SIZE; i++) {
+            sh_region_ids[i] = -1;
+            sh_srcs[i] = -1;
+            sh_dsts[i] = -1;
+            result->dispatched_on_device[i] = 0;
         }
-        if (!all_eligible) continue;
+    }
+    __syncthreads();
 
-        // Project each member toward its target node.
-        bool all_ready = true;
-        struct DecisionReport decisions[MAX_PAR_GROUP_SIZE];
-        int region_ids[MAX_PAR_GROUP_SIZE];
+    // ── Phase 1: group selection and commit (thread 0 only) ───────────────────
+    if (threadIdx.x == 0) {
+        float alpha = bias[0].confidence;
+        float beta  = bias[0].cost;
+        float gamma = bias[0].safety;
+        int next_step = global_decision[0].step + 1;
 
-        for (int i = 0; i < sz; i++) {
-            int target_hop = par_table[group_start + i * 3];
-            region_ids[i]  = par_table[group_start + i * 3 + 1];
-            float best_value = -1.0e30f;
-            int best_src = -1, best_dst = -1, best_hop = -1, candidates = 0;
+        int ptr = 0;
+        for (int g = 0; g < num_groups; g++) {
+            int sz = par_table[ptr++];
+            int group_start = ptr;
+            ptr += sz * 3;
 
-            if (target_hop >= 0 && target_hop < N) {
-                for (int idx = 0; idx < MATRIX_LEN; idx++) {
-                    int src = idx / N, dst = idx % N;
-                    if (src == dst || active[src] == 0) continue;
+            if (sz < 2 || sz > MAX_PAR_GROUP_SIZE) continue;
 
-                    int cidx = tensor_idx(LAYER_CONFIDENCE, src, dst);
-                    float confidence = tensor[cidx];
-                    float cost       = tensor[tensor_idx(LAYER_COST,   src, dst)];
-                    float safety     = tensor[tensor_idx(LAYER_SAFETY, src, dst)];
-                    if (confidence <= BOTTOM || safety <= BOTTOM || cost >= COST_INFINITY) continue;
+            // On-device eligibility: all members must be GPU-dispatchable.
+            int all_eligible = 1;
+            for (int i = 0; i < sz; i++) {
+                if (!par_table[group_start + i * 3 + 2]) { all_eligible = 0; break; }
+            }
+            if (!all_eligible) continue;
 
-                    int hop = witness[cidx];
-                    if (hop != target_hop || consumed[src * N + hop] != 0) continue;
+            bool all_ready = true;
+            struct DecisionReport decisions[MAX_PAR_GROUP_SIZE];
+            int region_ids[MAX_PAR_GROUP_SIZE];
 
-                    float score = alpha * confidence - beta * cost + gamma * safety;
-                    candidates++;
-                    if (score > best_value) {
-                        best_value = score;
-                        best_src = src; best_dst = dst; best_hop = hop;
+            for (int i = 0; i < sz; i++) {
+                int target_hop = par_table[group_start + i * 3];
+                region_ids[i]  = par_table[group_start + i * 3 + 1];
+                float best_value = -1.0e30f;
+                int best_src = -1, best_dst = -1, best_hop = -1, candidates = 0;
+
+                if (target_hop >= 0 && target_hop < N) {
+                    for (int idx = 0; idx < MATRIX_LEN; idx++) {
+                        int src = idx / N, dst = idx % N;
+                        if (src == dst || active[src] == 0) continue;
+
+                        int cidx = tensor_idx(LAYER_CONFIDENCE, src, dst);
+                        float confidence = tensor[cidx];
+                        float cost       = tensor[tensor_idx(LAYER_COST,   src, dst)];
+                        float safety     = tensor[tensor_idx(LAYER_SAFETY, src, dst)];
+                        if (confidence <= BOTTOM || safety <= BOTTOM || cost >= COST_INFINITY) continue;
+
+                        int hop = witness[cidx];
+                        if (hop != target_hop || consumed[src * N + hop] != 0) continue;
+
+                        float score = alpha * confidence - beta * cost + gamma * safety;
+                        candidates++;
+                        if (score > best_value) {
+                            best_value = score;
+                            best_src = src; best_dst = dst; best_hop = hop;
+                        }
                     }
                 }
+
+                decisions[i].step           = next_step;
+                decisions[i].selected_src   = best_src;
+                decisions[i].selected_dst   = best_dst;
+                decisions[i].first_hop      = best_hop;
+                decisions[i].selected_value = best_value;
+                decisions[i].halted         = (best_hop == HALT_NODE) ? 1 : 0;
+                decisions[i].blocked        = (candidates == 0) ? 1 : 0;
+
+                if (decisions[i].blocked || decisions[i].halted) { all_ready = false; break; }
             }
 
-            decisions[i].step           = next_step;
-            decisions[i].selected_src   = best_src;
-            decisions[i].selected_dst   = best_dst;
-            decisions[i].first_hop      = best_hop;
-            decisions[i].selected_value = best_value;
-            decisions[i].halted         = (best_hop == HALT_NODE) ? 1 : 0;
-            decisions[i].blocked        = (candidates == 0) ? 1 : 0;
+            if (!all_ready) continue;
 
-            if (decisions[i].blocked || decisions[i].halted) {
-                all_ready = false;
-                break;
+            // Commit atomically.
+            for (int i = 0; i < N; i++) next_active[i] = 0;
+            for (int i = 0; i < sz; i++) {
+                int src = decisions[i].selected_src;
+                int hop = decisions[i].first_hop;
+                if (src >= 0 && src < N && hop >= 0 && hop < N) {
+                    consumed[src * N + hop] = 1;
+                    next_active[hop] = 1;
+                }
             }
-        }
+            for (int i = 0; i < N; i++) active[i] = next_active[i];
 
-        if (!all_ready) continue;
+            global_decision[0].step           = next_step;
+            global_decision[0].selected_src   = decisions[0].selected_src;
+            global_decision[0].selected_dst   = decisions[0].selected_dst;
+            global_decision[0].first_hop      = decisions[0].first_hop;
+            global_decision[0].selected_value = decisions[0].selected_value;
+            global_decision[0].halted         = 0;
+            global_decision[0].blocked        = 0;
 
-        // All members ready: commit atomically.
-        for (int i = 0; i < N; i++) next_active[i] = 0;
-        for (int i = 0; i < sz; i++) {
-            int src = decisions[i].selected_src;
-            int hop = decisions[i].first_hop;
-            if (src >= 0 && src < N && hop >= 0 && hop < N) {
-                consumed[src * N + hop] = 1;
-                next_active[hop] = 1;
+            result->selected_group_idx = g;
+            result->group_size = sz;
+            for (int i = 0; i < sz; i++) {
+                result->decisions[i]  = decisions[i];
+                result->region_ids[i] = region_ids[i];
             }
+
+            // Broadcast to shared memory for Phase 2.
+            sh_selected_g = g;
+            sh_sz = sz;
+            for (int i = 0; i < sz; i++) {
+                sh_region_ids[i] = region_ids[i];
+                sh_srcs[i] = decisions[i].selected_src;
+                sh_dsts[i] = decisions[i].selected_dst;
+            }
+
+            break;
         }
-        for (int i = 0; i < N; i++) active[i] = next_active[i];
+    }
+    __syncthreads();
 
-        // Update global step counter and representative decision.
-        global_decision[0].step          = next_step;
-        global_decision[0].selected_src  = decisions[0].selected_src;
-        global_decision[0].selected_dst  = decisions[0].selected_dst;
-        global_decision[0].first_hop     = decisions[0].first_hop;
-        global_decision[0].selected_value = decisions[0].selected_value;
-        global_decision[0].halted        = 0;
-        global_decision[0].blocked       = 0;
+    // ── Phase 2: hot-region inline dispatch (H_f path, all threads) ──────────
+    //
+    // Only runs when a group was selected and the receipt ring is available.
+    // All threads see the same sh_* values → no warp divergence in the loop
+    // guard checks.  The region __device__ functions use threadIdx.x for
+    // element-wise parallelism; thread 0 writes the receipt to the ring.
 
-        // Write result with per-member region routing info.
-        result->selected_group_idx = g;
-        result->group_size = sz;
-        for (int i = 0; i < sz; i++) {
-            result->decisions[i]  = decisions[i];
-            result->region_ids[i] = region_ids[i];
+    if (sh_selected_g < 0) return;
+    if (!hf || !hf->receipt_ring || !hf->ring_tail || hf->ring_size <= 0 || hf->region_count <= 0) return;
+
+    for (int i = 0; i < sh_sz; i++) {
+        int rid = sh_region_ids[i];
+        if (rid < 0 || rid >= hf->region_count) continue;
+
+        int table_idx = sh_selected_g * MAX_PAR_GROUP_SIZE + i;
+        unsigned long long slot_table_ptr = hf->slot_table_ptrs[table_idx];
+        int elem_count = hf->element_counts[table_idx];
+        float** slot_ptrs = slot_table_ptr ? (float**)slot_table_ptr : (float**)0;
+
+        // Each thread keeps a local receipt; only thread 0's copy is written to
+        // the ring (same pattern as tensor_quantale_gpu_dispatch).
+        DeviceReceipt r;
+        r.region_id    = rid;
+        r.src          = sh_srcs[i];
+        r.dst          = sh_dsts[i];
+        r.outcome      = 0; // inline execution always succeeds at the GPU level
+        r.latency      = 0.0f;
+        r.valid        = 1;
+        r.output_flags = 0;
+
+        switch (rid) {
+            case 0: region_vector_add           (slot_ptrs, elem_count, &r); break;
+            case 1: region_vector_scale         (slot_ptrs, elem_count, &r); break;
+            case 2: region_fused_add_scale      (slot_ptrs, elem_count, &r); break;
+            case 3: region_analysis_return1     (slot_ptrs, elem_count, &r); break;
+            case 4: region_analysis_volatility  (slot_ptrs, elem_count, &r); break;
+            case 5: region_analysis_signal_score(slot_ptrs, elem_count, &r); break;
+            case 6: region_commit_receipt       (slot_ptrs, elem_count, &r); break;
+            default: break;
         }
+        __syncthreads();
 
-        break; // one committed group per tick
+        if (threadIdx.x == 0) {
+            int tail = *hf->ring_tail;
+            hf->receipt_ring[tail % hf->ring_size] = r;
+            *hf->ring_tail = tail + 1;
+            result->dispatched_on_device[i] = 1;
+        }
+        __syncthreads();
     }
 }
 

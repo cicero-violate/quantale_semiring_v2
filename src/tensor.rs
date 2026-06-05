@@ -75,7 +75,12 @@ const REGION_ANALYSIS_SIGNAL_SCORE_SLOTS: &[&str] = &[
 ];
 const REGION_COMMIT_RECEIPT_SLOTS: &[&str] = &[];
 
-fn gpu_region_slots(region_id: i32) -> Option<&'static [&'static str]> {
+/// Default number of f32 elements allocated per slot when building epoch-start
+/// par-group slot tables.  Slots are zero-initialised; real data flows in via
+/// hot-region operators once the epoch starts running.
+pub const DEFAULT_PAR_SLOT_ELEMENTS: usize = 256;
+
+pub fn gpu_region_slots(region_id: i32) -> Option<&'static [&'static str]> {
     match region_id {
         0 => Some(REGION_VECTOR_ADD_SLOTS),
         1 => Some(REGION_VECTOR_SCALE_SLOTS),
@@ -202,6 +207,15 @@ unsafe impl DeviceRepr for GpuDispatchMailboxHost {}
 pub struct ParGroupGpuData {
     pub(crate) table_buf: CudaSlice<i32>,
     pub num_groups: usize,
+    /// Per-member slot table pointer array (shape: num_groups × MAX_PAR_GROUP_SIZE).
+    /// Each entry is the device address of the `float**` pointer table for that
+    /// member's hot region.  0 = no slot table (receipt-only / non-hot member).
+    pub(crate) member_slot_table_ptrs: CudaSlice<u64>,
+    /// Element count per member slot table (same shape as member_slot_table_ptrs).
+    pub(crate) member_element_counts: CudaSlice<i32>,
+    /// Keeps the per-member `float**` device arrays alive for the epoch lifetime.
+    #[allow(dead_code)]
+    pub(crate) _slot_table_storage: Vec<CudaSlice<u64>>,
 }
 
 impl ParGroupGpuData {
@@ -216,14 +230,68 @@ impl ParGroupGpuData {
     /// — `(node_id, region_id, is_gpu_dispatchable)` triples.  The kernel computes
     /// eligibility on-device from the `is_gpu_dispatchable` flags rather than from
     /// a separate CPU-precomputed mask.
+    ///
+    /// `slot_registry` is used to build per-member `float**` slot pointer tables for
+    /// hot-region members.  When a member's slots are registered, the kernel runs the
+    /// `__device__` region function with real slot data (H_f path, D_h closed for that
+    /// member).  When slots are absent the entry is 0 (receipt-only).
     pub fn build(
         dev: &Arc<CudaDevice>,
         groups: &[Vec<i32>],
         region_ids: &[Vec<i32>],
         is_gpu_dispatchable: &[Vec<bool>],
+        slot_registry: Option<&DeviceSlotRegistry>,
     ) -> Result<Self, CudaError> {
+        use cudarc::driver::DevicePtr;
+
         assert_eq!(groups.len(), region_ids.len());
         assert_eq!(groups.len(), is_gpu_dispatchable.len());
+
+        let num_groups = groups.len();
+        let flat_size = (num_groups * MAX_PAR_GROUP_SIZE).max(1);
+
+        // Allocate host-side flat arrays for per-member slot table pointers and
+        // element counts.  Index: g * MAX_PAR_GROUP_SIZE + i.
+        let mut slot_ptrs_host = vec![0u64; flat_size];
+        let mut elem_counts_host = vec![0i32; flat_size];
+        let mut slot_table_storage: Vec<CudaSlice<u64>> = Vec::new();
+
+        if let Some(registry) = slot_registry {
+            for (g, rids) in region_ids.iter().enumerate() {
+                for (i, &rid) in rids.iter().enumerate() {
+                    if rid < 0 {
+                        continue;
+                    }
+                    let Some(slot_names) = gpu_region_slots(rid) else {
+                        continue;
+                    };
+                    if slot_names.is_empty() {
+                        continue;
+                    }
+                    match registry.device_slot_ptr_table(dev, slot_names) {
+                        Ok((ptr_table, elem_count)) => {
+                            let device_addr = *ptr_table.device_ptr();
+                            slot_ptrs_host[g * MAX_PAR_GROUP_SIZE + i] = device_addr;
+                            elem_counts_host[g * MAX_PAR_GROUP_SIZE + i] = elem_count;
+                            // Transmute: CudaSlice<CUdeviceptr> is layout-equivalent to
+                            // CudaSlice<u64> since CUdeviceptr = u64.
+                            // Safety: cudarc guarantees CUdeviceptr = u64.
+                            let raw: CudaSlice<u64> = unsafe { std::mem::transmute(ptr_table) };
+                            slot_table_storage.push(raw);
+                        }
+                        Err(_) => { /* slots not registered; stays 0 (receipt-only) */ }
+                    }
+                }
+            }
+        }
+
+        let member_slot_table_ptrs = dev
+            .htod_copy(slot_ptrs_host)
+            .map_err(|e| CudaError::new("htod par_group slot_table_ptrs", e))?;
+        let member_element_counts = dev
+            .htod_copy(elem_counts_host)
+            .map_err(|e| CudaError::new("htod par_group element_counts", e))?;
+
         if groups.is_empty() {
             let table_buf = dev
                 .htod_copy(vec![0_i32])
@@ -231,10 +299,13 @@ impl ParGroupGpuData {
             return Ok(Self {
                 table_buf,
                 num_groups: 0,
+                member_slot_table_ptrs,
+                member_element_counts,
+                _slot_table_storage: slot_table_storage,
             });
         }
+
         // Packed table: [g0_size, g0_n0, g0_r0, g0_d0, g0_n1, g0_r1, g0_d1, ..., g1_size, ...]
-        // Each member occupies three slots: (node_id, region_id, is_gpu_dispatchable).
         let mut table: Vec<i32> = Vec::new();
         for ((group, rids), dispatchable) in groups
             .iter()
@@ -242,8 +313,7 @@ impl ParGroupGpuData {
             .zip(is_gpu_dispatchable.iter())
         {
             table.push(group.len() as i32);
-            for ((&node_id, &rid), &disp) in
-                group.iter().zip(rids.iter()).zip(dispatchable.iter())
+            for ((&node_id, &rid), &disp) in group.iter().zip(rids.iter()).zip(dispatchable.iter())
             {
                 table.push(node_id);
                 table.push(rid);
@@ -255,7 +325,10 @@ impl ParGroupGpuData {
             .map_err(|e| CudaError::new("htod par_group table", e))?;
         Ok(Self {
             table_buf,
-            num_groups: groups.len(),
+            num_groups,
+            member_slot_table_ptrs,
+            member_element_counts,
+            _slot_table_storage: slot_table_storage,
         })
     }
 }
@@ -269,8 +342,10 @@ pub(crate) struct ParGroupStepOutputRaw {
     pub group_size: i32,
     pub decisions: [DecisionReport; MAX_PAR_GROUP_SIZE],
     /// Hot-region id for each committed member; -1 when the member is not a hot region.
-    /// Written by the kernel from the packed (node_id, region_id) table entries.
     pub region_ids: [i32; MAX_PAR_GROUP_SIZE],
+    /// 1 when the member was dispatched in-kernel via the H_f path (Phase 2).
+    /// CPU must skip execute_*_blocking and gpu_dispatch_region for those members.
+    pub dispatched_on_device: [i32; MAX_PAR_GROUP_SIZE],
 }
 
 impl Default for ParGroupStepOutputRaw {
@@ -280,11 +355,30 @@ impl Default for ParGroupStepOutputRaw {
             group_size: 0,
             decisions: [DecisionReport::default(); MAX_PAR_GROUP_SIZE],
             region_ids: [-1_i32; MAX_PAR_GROUP_SIZE],
+            dispatched_on_device: [0_i32; MAX_PAR_GROUP_SIZE],
         }
     }
 }
 
 unsafe impl DeviceRepr for ParGroupStepOutputRaw {}
+
+/// Host-side mirror of the CUDA `ParGroupHfParams` struct.
+///
+/// Uploaded as a single device word so the kernel parameter count stays within
+/// the cudarc `LaunchAsync` arity limit.  All pointer fields are raw device
+/// addresses (u64 = CUdeviceptr).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct ParGroupHfParamsHost {
+    pub slot_table_ptrs_dev: u64,
+    pub element_counts_dev: u64,
+    pub receipt_ring_dev: u64,
+    pub ring_tail_dev: u64,
+    pub ring_size: i32,
+    pub region_count: i32,
+}
+
+unsafe impl DeviceRepr for ParGroupHfParamsHost {}
 
 /// Device-resident ring buffer for `DeviceReceipt`s.
 ///
@@ -705,31 +799,41 @@ impl TensorQuantaleWorld {
     /// `region_ids[g][i]` is the hot-region id for member `i` (-1 if not hot).
     /// `is_gpu_dispatchable[g][i]` is `true` for hot-region / fusion-entry members.
     /// Eligibility is encoded per-member in the table and validated by the kernel.
+    ///
+    /// `slot_registry` provides `float**` device slot tables for hot-region members
+    /// so that Phase 2 of `par_group_step` can call region functions with real data.
+    /// Pass `None` to use receipt-only mode for all members.
     pub fn make_par_group_data(
         &self,
         groups: &[Vec<i32>],
         region_ids: &[Vec<i32>],
         is_gpu_dispatchable: &[Vec<bool>],
+        slot_registry: Option<&DeviceSlotRegistry>,
     ) -> Result<ParGroupGpuData, CudaError> {
-        ParGroupGpuData::build(&self.dev, groups, region_ids, is_gpu_dispatchable)
+        ParGroupGpuData::build(
+            &self.dev,
+            groups,
+            region_ids,
+            is_gpu_dispatchable,
+            slot_registry,
+        )
     }
 
     /// GPU-native parallel group step: select the first eligible, all-ready CKA
     /// par group, commit it atomically, and return the committed decisions.
     ///
     /// Returns `Ok(None)` when no group is ready — tensor state is unchanged.
-    /// Returns `Ok(Some((group_idx, decisions, region_ids)))` on commit, where
-    /// `region_ids[i]` is the hot-region id for member `i` (-1 if not hot).
-    /// The region_ids come directly from the kernel-read table entries, so the
-    /// CPU does not need to re-derive them from the hot_region_registry.
+    /// Returns `Ok(Some((group_idx, decisions, region_ids, dispatched_on_device)))`.
     ///
-    /// One kernel launch replaces the CPU loop of `project_parallel_group` +
-    /// readback + `commit_decision_batch` from the old batch tier.
+    /// `dispatched_on_device[i] == 1` means member `i` was dispatched in-kernel
+    /// via the H_f path: the region function ran on-device and its DeviceReceipt
+    /// was written to the ring.  The CPU must skip `execute_*_blocking` and
+    /// `gpu_dispatch_region` for those members (call `drain_device_receipts` only).
     pub fn par_group_step(
         &mut self,
         data: &ParGroupGpuData,
         bias: ProjectionBias,
-    ) -> Result<Option<(usize, Vec<DecisionReport>, Vec<i32>)>, CudaError> {
+    ) -> Result<Option<(usize, Vec<DecisionReport>, Vec<i32>, Vec<i32>)>, CudaError> {
         if data.num_groups == 0 {
             return Ok(None);
         }
@@ -745,6 +849,19 @@ impl TensorQuantaleWorld {
             .dev
             .get_func(MODULE_NAME, PAR_GROUP_STEP_KERNEL)
             .ok_or(CudaError::missing_function(PAR_GROUP_STEP_KERNEL))?;
+        use cudarc::driver::DevicePtr;
+        let hf_params = ParGroupHfParamsHost {
+            slot_table_ptrs_dev: *data.member_slot_table_ptrs.device_ptr(),
+            element_counts_dev: *data.member_element_counts.device_ptr(),
+            receipt_ring_dev: *self.device_receipt_buffer.ring.device_ptr(),
+            ring_tail_dev: *self.device_receipt_buffer.tail.device_ptr(),
+            ring_size: DEVICE_RECEIPT_RING_SIZE as i32,
+            region_count: 64_i32,
+        };
+        let hf_buf = self
+            .dev
+            .htod_copy(vec![hf_params])
+            .map_err(|e| CudaError::new("htod par_group hf_params", e))?;
         unsafe {
             kernel.launch(
                 kernel_config(),
@@ -759,6 +876,7 @@ impl TensorQuantaleWorld {
                     &data.table_buf,
                     data.num_groups as i32,
                     &mut out_buf,
+                    &hf_buf,
                 ),
             )
         }
@@ -776,6 +894,7 @@ impl TensorQuantaleWorld {
             raw.selected_group_idx as usize,
             raw.decisions[..sz].to_vec(),
             raw.region_ids[..sz].to_vec(),
+            raw.dispatched_on_device[..sz].to_vec(),
         )))
     }
 

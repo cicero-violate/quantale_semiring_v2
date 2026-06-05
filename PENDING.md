@@ -36,16 +36,18 @@ Current honest classification:
 G_s = 1   GPU selects the par group
 G_c = 1   GPU commits consumed/active state
 E_g = 1   eligibility computed on-device from per-member is_gpu_dispatchable flags in the table
-D_h = 1   CPU still dispatches operators (thread::scope → execute_*_blocking)
-R_d = ½   hot-region par members route receipts through device ring; fusion/abstract use CPU path
+D_h = ½   hot-region par members dispatch in-kernel through the H_f path;
+          fusion/abstract members still use thread::scope → execute_*_blocking
+R_d = ¾   H_f hot-region receipts are written by the par kernel to the device ring;
+          CPU-dispatched hot-region fallback still routes via gpu_dispatch_region
 R_k = 1   per-member (region_id, is_gpu_dispatchable) encoded in table; kernel emits region_ids
-          (no per-tick hot_region_registry lookup — routing info is GPU-native from epoch start)
+          and dispatched_on_device flags (no per-tick hot_region_registry lookup)
 ```
 
-What changed: the CPU group-selection loop is gone. The GPU now selects and commits. The par table encodes `(node_id, region_id, is_gpu_dispatchable)` triples; the kernel computes eligibility on-device from `is_gpu_dispatchable` flags without a separate CPU-precomputed mask. Hot-region par members route receipts through the device ring; `main.rs` uses `par_member_region_ids` from the kernel output. What remains CPU-side:
+What changed: the CPU group-selection loop is gone. The GPU now selects and commits. The par table encodes `(node_id, region_id, is_gpu_dispatchable)` triples; the kernel computes eligibility on-device from `is_gpu_dispatchable` flags without a separate CPU-precomputed mask. Hot-region par members with registered slot tables now run their precompiled `__device__` region function inside `tensor_quantale_par_group_step`; the kernel writes a `DeviceReceipt` to the device ring and emits `dispatched_on_device = 1`, so `dispatch_gpu_parallel_group` skips `execute_*_blocking` for that member and returns a synthetic success receipt. What remains CPU-side:
 
-**Gap A — operator dispatch is still host-bound.**
-`dispatch_gpu_parallel_group` uses `thread::scope → execute_fusion_entry_blocking / execute_abstract_node_blocking`. Operators run on the GPU (jit_cuda/fusion), but the launch is CPU-initiated per member.
+**Gap A — operator dispatch is still host-bound for non-H_f members.**
+Hot-region par members with slot tables close the CPU dispatch hop: `par_group_step` calls the precompiled H_f device function and writes the receipt in-kernel. Fusion-entry, abstract-node, and hot-region fallback members still use `thread::scope → execute_fusion_entry_blocking / execute_abstract_node_blocking`.
 
 **~~Gap B — effect validation is precomputed, not on-device.~~ ✓ Closed**
 Per-member `is_gpu_dispatchable` flags are encoded in the table as the third element of each `(node_id, region_id, is_gpu_dispatchable)` triple. The kernel computes `all_eligible` on-device by scanning flags — no separate CPU-precomputed `eligible[]` array. Build-overlay still validates `par` independence structurally, so runtime effect conflicts cannot arise.
@@ -53,18 +55,18 @@ Per-member `is_gpu_dispatchable` flags are encoded in the table as the third ele
 **Gap C — commit is single-threaded control-flow, not CUDA atomic.**
 The kernel runs `threadIdx.x == 0` only. The commit is all-or-nothing by control flow. Correct term: "device-side sequential commit", not "atomic GPU commit" (unless atomic is used in the logical/transactional sense).
 
-**Gap D — par-tier receipts partially use the device ring (hot-region members only).**
-Hot-region par members now call `gpu_dispatch_region` + `drain_device_receipts` after CPU execution, routing their tensor updates through `tensor_quantale_gpu_dispatch` → `tensor_quantale_drain_device_receipts` without a CPU drain-queue round-trip. Fusion-entry and abstract-node par members still use `queue_lattice_update` + `drain_lattice_queue`.
+**Gap D — par-tier receipts partially use the device ring.**
+H_f hot-region par members write receipts directly from `tensor_quantale_par_group_step` to the device ring. Hot-region fallback members still call `gpu_dispatch_region` + `drain_device_receipts` after CPU execution. Fusion-entry and abstract-node par members still use `queue_lattice_update` + `drain_lattice_queue`.
 
-Full closure requires eliminating the CPU dispatch hop entirely: GPU kernel emits dispatch descriptors → GPU executes operators (CUDA dynamic parallelism or pre-compiled hot functions) → device writes receipt to ring. That removes the `thread::scope` from `dispatch_gpu_parallel_group` and closes Gap A simultaneously.
+Full closure requires eliminating the CPU dispatch hop for fusion-entry and abstract members too: GPU kernel emits dispatch descriptors or calls precompiled device functions for every eligible member → device writes receipt to ring. That removes the remaining `thread::scope` work from `dispatch_gpu_parallel_group`.
 
 **Correct label for the current state:**
 ```text
-GPU-selected parallel dispatch tier with CPU-dispatched GPU operators;
-hot-region par receipts applied via device ring
+GPU-selected parallel dispatch tier with in-kernel H_f hot-region dispatch;
+fusion/abstract members still CPU-dispatched
 ```
 
-Not: "fully GPU-native orchestration" — CPU still handles operator dispatch (Gap A).
+Not: "fully GPU-native orchestration" — CPU still handles non-H_f operator dispatch (Gap A).
 
 ---
 

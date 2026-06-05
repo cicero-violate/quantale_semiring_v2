@@ -27,8 +27,8 @@ use runtime_dispatch::{
     filter_static_topology_edges, node_name, queue_execution_lattice_updates,
     record_learning_edge_for_pair, record_learning_edges, update_execution_receipt_priors,
 };
-use runtime_parallel::dispatch_gpu_parallel_group;
 use runtime_epoch::{RuntimeEpoch, build_runtime_epoch, changed_asset_fingerprint};
+use runtime_parallel::dispatch_gpu_parallel_group;
 use runtime_reset::maybe_hard_reset_after_blocks;
 
 macro_rules! fatal {
@@ -312,7 +312,13 @@ fn main() {
             let outcome = ExecutionOutcome::from(process_receipt);
             apply_hot_dispatch_if_needed(&mut epoch.world, &epoch.executor, &execution);
             queue_execution_lattice_updates(&mut epoch.world, &decision, &execution, outcome);
-            record_learning_edges(&mut epoch.learning_buffer, &epoch.topology, &decision, &execution, &learning_policy);
+            record_learning_edges(
+                &mut epoch.learning_buffer,
+                &epoch.topology,
+                &decision,
+                &execution,
+                &learning_policy,
+            );
             update_execution_receipt_priors(
                 &mut epoch.exploration_engine,
                 &decision,
@@ -414,13 +420,17 @@ fn main() {
             };
             let step = match epoch.world.par_group_step(data, projection_bias) {
                 Err(error) => {
-                    console::warn("parallel", "gpu_step_error", &[("error", error.to_string())]);
+                    console::warn(
+                        "parallel",
+                        "gpu_step_error",
+                        &[("error", error.to_string())],
+                    );
                     break 'par_tier false;
                 }
                 Ok(None) => break 'par_tier false,
                 Ok(Some(result)) => result,
             };
-            let (group_idx, par_decisions, par_member_region_ids) = step;
+            let (group_idx, par_decisions, par_member_region_ids, par_dispatched_on_device) = step;
 
             let par_names: Vec<String> = epoch
                 .topology
@@ -429,7 +439,11 @@ fn main() {
                 .map(|g| {
                     g.iter()
                         .filter_map(|&id| {
-                            epoch.topology.registry().name_of(id as usize).map(str::to_string)
+                            epoch
+                                .topology
+                                .registry()
+                                .name_of(id as usize)
+                                .map(str::to_string)
                         })
                         .collect()
                 })
@@ -440,11 +454,15 @@ fn main() {
                 .map(|n| config.fusion_dispatch.get_by_entry(n))
                 .collect();
 
+            // Members with dispatched_on_device == 1 ran their operator in-kernel (H_f path).
+            // dispatch_gpu_parallel_group returns a synthetic success receipt for those members
+            // so the CPU dispatch hop is eliminated.
             let par_receipts = dispatch_gpu_parallel_group(
                 &epoch.executor,
                 &fusion_entries,
                 &par_names,
                 &current_payload,
+                &par_dispatched_on_device,
             );
 
             console::info(
@@ -458,14 +476,15 @@ fn main() {
 
             let mut par_failures = 0usize;
             let mut par_stdout: Vec<Value> = Vec::new();
-            // Tracks whether any hot-region receipt was routed through the device ring
-            // (Gap D partial closure). Drives drain_device_receipts after the loop.
+            // Tracks whether any receipt was routed through the device ring.
             let mut any_device_ring = false;
-            for (((decision, receipt), par_node_name), &kernel_region_id) in par_decisions
-                .iter()
-                .zip(par_receipts.iter())
-                .zip(par_names.iter())
-                .zip(par_member_region_ids.iter())
+            for ((((decision, receipt), par_node_name), &kernel_region_id), &on_device) in
+                par_decisions
+                    .iter()
+                    .zip(par_receipts.iter())
+                    .zip(par_names.iter())
+                    .zip(par_member_region_ids.iter())
+                    .zip(par_dispatched_on_device.iter())
             {
                 if let Err(error) = tlog.append_decision(decision) {
                     fatal!("tlog", "append_decision_failed", error);
@@ -491,12 +510,28 @@ fn main() {
                 }
                 let par_outcome = ExecutionOutcome::from(receipt);
 
-                // Gap D (partial): hot-region par members route their receipt through the
-                // device ring (gpu_dispatch_region → drain_device_receipts) so tensor
-                // updates stay GPU-resident. Fusion/abstract members (kernel_region_id == -1)
-                // use queue_lattice_update. The region_id comes from the kernel output
-                // (packed into the par table at epoch start) — no per-tick registry lookup.
-                let via_device = if kernel_region_id >= 0 {
+                // Route the receipt to the device ring or CPU queue.
+                //
+                // H_f path (on_device == 1): the kernel already wrote the receipt to the
+                // device ring in Phase 2.  No separate gpu_dispatch_region call needed;
+                // drain_device_receipts at the end will apply the tensor update.
+                //
+                // Hot-region CPU path (kernel_region_id >= 0, on_device == 0): CPU ran the
+                // operator; route through gpu_dispatch_region so the tensor update stays
+                // GPU-resident.
+                //
+                // Default path: queue_lattice_update → drain_lattice_queue.
+                let via_device = if on_device != 0 {
+                    console::info(
+                        "parallel",
+                        "hf_dispatch_receipt",
+                        &[
+                            ("node", par_node_name.clone()),
+                            ("region_id", kernel_region_id.to_string()),
+                        ],
+                    );
+                    true
+                } else if kernel_region_id >= 0 {
                     match epoch.world.gpu_dispatch_region(
                         kernel_region_id,
                         decision.selected_src,
@@ -540,7 +575,9 @@ fn main() {
                     false
                 };
                 any_device_ring |= via_device;
-                epoch.exploration_engine.update_receipt_prior(decision.first_hop, receipt);
+                epoch
+                    .exploration_engine
+                    .update_receipt_prior(decision.first_hop, receipt);
                 if let Err(error) = tlog.append_exploration_receipt(&json!({
                     "node": par_node_name,
                     "exit_code": receipt.exit_code,
@@ -879,7 +916,13 @@ fn main() {
         }
 
         queue_execution_lattice_updates(&mut epoch.world, &decision, &execution, outcome);
-        record_learning_edges(&mut epoch.learning_buffer, &epoch.topology, &decision, &execution, &learning_policy);
+        record_learning_edges(
+            &mut epoch.learning_buffer,
+            &epoch.topology,
+            &decision,
+            &execution,
+            &learning_policy,
+        );
         update_execution_receipt_priors(
             &mut epoch.exploration_engine,
             &decision,

@@ -75,25 +75,23 @@ pub(super) fn build_runtime_epoch(
     // Prefer pre-compiled pattern edges from build-overlay; fall back to
     // runtime CKA compilation when the file is absent (e.g. first run before
     // build-overlay has been executed).
-    let pattern_edges = match load_compiled_pattern_edges(
-        "assets/patterns.compiled.json",
-        topology.registry(),
-    )
-    .map_err(|e| e.to_string())?
-    {
-        Some(edges) => edges,
-        None => {
-            let patterns = load_default_patterns().map_err(|error| error.to_string())?;
-            let mut edges = Vec::new();
-            for pattern in &patterns.patterns {
-                let compiled =
-                    compile_pattern(pattern, &topology.compiled, &config.operator_registry)
-                        .map_err(|error| error.to_string())?;
-                edges.extend(compiled.edges);
+    let pattern_edges =
+        match load_compiled_pattern_edges("assets/patterns.compiled.json", topology.registry())
+            .map_err(|e| e.to_string())?
+        {
+            Some(edges) => edges,
+            None => {
+                let patterns = load_default_patterns().map_err(|error| error.to_string())?;
+                let mut edges = Vec::new();
+                for pattern in &patterns.patterns {
+                    let compiled =
+                        compile_pattern(pattern, &topology.compiled, &config.operator_registry)
+                            .map_err(|error| error.to_string())?;
+                    edges.extend(compiled.edges);
+                }
+                edges
             }
-            edges
-        }
-    };
+        };
     tlog.append_tensor_edges(&format!("pattern:cka:epoch:{id}"), &pattern_edges)
         .map_err(|error| error.to_string())?;
     tensor_edges.extend(pattern_edges);
@@ -189,11 +187,19 @@ pub(super) fn build_runtime_epoch(
                 .collect()
         })
         .collect();
+
+    // Build a DeviceSlotRegistry with zero-initialised device buffers for all
+    // hot-region slots referenced by par-group members.  Phase 2 of
+    // par_group_step uses these as the float** tables for in-kernel H_f dispatch.
+    // Slots are filled by hot-region operators as they execute each tick.
+    let par_slot_registry = build_par_slot_registry(&world, &par_region_ids);
+
     let par_group_data = world
         .make_par_group_data(
             &topology.parallel_groups,
             &par_region_ids,
             &par_is_dispatchable,
+            par_slot_registry.as_ref(),
         )
         .ok();
 
@@ -248,4 +254,49 @@ fn watched_asset_paths() -> Vec<PathBuf> {
             );
             Vec::new()
         })
+}
+
+/// Build a `DeviceSlotRegistry` with zero-initialised device buffers for every
+/// unique slot name referenced by hot-region par-group members.
+///
+/// These persistent buffers are the `float**` tables the Phase 2 H_f dispatch
+/// path writes into and reads from.  Returned as `None` when no CUDA device is
+/// available or when no hot-region slots are referenced.
+fn build_par_slot_registry(
+    world: &TensorQuantaleWorld,
+    par_region_ids: &[Vec<i32>],
+) -> Option<quantale_semiring_v2::DeviceSlotRegistry> {
+    use quantale_semiring_v2::{DEFAULT_PAR_SLOT_ELEMENTS, DeviceSlotRegistry, gpu_region_slots};
+
+    // Collect unique slot names from all hot-region par members.
+    let mut names: BTreeSet<&'static str> = BTreeSet::new();
+    for rids in par_region_ids {
+        for &rid in rids {
+            if rid < 0 {
+                continue;
+            }
+            if let Some(slots) = gpu_region_slots(rid) {
+                for &s in slots {
+                    names.insert(s);
+                }
+            }
+        }
+    }
+    if names.is_empty() {
+        return None;
+    }
+
+    let dev = world.device().clone();
+    let mut registry = DeviceSlotRegistry::new();
+    for name in names {
+        match dev.alloc_zeros::<f32>(DEFAULT_PAR_SLOT_ELEMENTS) {
+            Ok(buf) => {
+                registry.insert(name, buf);
+            }
+            Err(_) => {
+                return None;
+            }
+        }
+    }
+    Some(registry)
 }

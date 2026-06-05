@@ -149,12 +149,18 @@ pub fn compile_and_emit_pattern_edges(root: impl AsRef<Path>) -> Result<(), Cuda
     for pattern in &patterns.patterns {
         let compiled = compile_pattern(pattern, &topology, &operator_registry)?;
         for edge in &compiled.edges {
-            let from = topology.registry.name_of(edge.src as usize).ok_or_else(|| {
-                CudaError::invalid_input(format!("no name for node id {}", edge.src))
-            })?;
-            let to = topology.registry.name_of(edge.dst as usize).ok_or_else(|| {
-                CudaError::invalid_input(format!("no name for node id {}", edge.dst))
-            })?;
+            let from = topology
+                .registry
+                .name_of(edge.src as usize)
+                .ok_or_else(|| {
+                    CudaError::invalid_input(format!("no name for node id {}", edge.src))
+                })?;
+            let to = topology
+                .registry
+                .name_of(edge.dst as usize)
+                .ok_or_else(|| {
+                    CudaError::invalid_input(format!("no name for node id {}", edge.dst))
+                })?;
             named_edges.push(serde_json::json!({
                 "from": from,
                 "to": to,
@@ -200,27 +206,32 @@ pub fn load_compiled_pattern_edges(
         .ok_or_else(|| CudaError::invalid_input("patterns.compiled.json missing 'edges' array"))?;
     let mut edges = Vec::with_capacity(arr.len());
     for (idx, item) in arr.iter().enumerate() {
-        let from = item["from"].as_str().ok_or_else(|| {
-            CudaError::invalid_input(format!("edge {idx}: missing 'from'"))
-        })?;
-        let to = item["to"].as_str().ok_or_else(|| {
-            CudaError::invalid_input(format!("edge {idx}: missing 'to'"))
-        })?;
-        let confidence = item["confidence"].as_f64().ok_or_else(|| {
-            CudaError::invalid_input(format!("edge {idx}: missing 'confidence'"))
-        })? as f32;
-        let cost = item["cost"].as_f64().ok_or_else(|| {
-            CudaError::invalid_input(format!("edge {idx}: missing 'cost'"))
-        })? as f32;
-        let safety = item["safety"].as_f64().ok_or_else(|| {
-            CudaError::invalid_input(format!("edge {idx}: missing 'safety'"))
-        })? as f32;
-        let src = registry.id_of(from).ok_or_else(|| {
-            CudaError::invalid_input(format!("edge {idx}: unknown node '{from}'"))
-        })? as i32;
-        let dst = registry.id_of(to).ok_or_else(|| {
-            CudaError::invalid_input(format!("edge {idx}: unknown node '{to}'"))
-        })? as i32;
+        let from = item["from"]
+            .as_str()
+            .ok_or_else(|| CudaError::invalid_input(format!("edge {idx}: missing 'from'")))?;
+        let to = item["to"]
+            .as_str()
+            .ok_or_else(|| CudaError::invalid_input(format!("edge {idx}: missing 'to'")))?;
+        let confidence = item["confidence"]
+            .as_f64()
+            .ok_or_else(|| CudaError::invalid_input(format!("edge {idx}: missing 'confidence'")))?
+            as f32;
+        let cost = item["cost"]
+            .as_f64()
+            .ok_or_else(|| CudaError::invalid_input(format!("edge {idx}: missing 'cost'")))?
+            as f32;
+        let safety = item["safety"]
+            .as_f64()
+            .ok_or_else(|| CudaError::invalid_input(format!("edge {idx}: missing 'safety'")))?
+            as f32;
+        let src = registry
+            .id_of(from)
+            .ok_or_else(|| CudaError::invalid_input(format!("edge {idx}: unknown node '{from}'")))?
+            as i32;
+        let dst = registry
+            .id_of(to)
+            .ok_or_else(|| CudaError::invalid_input(format!("edge {idx}: unknown node '{to}'")))?
+            as i32;
         edges.push(TensorEdge::new(src, dst, confidence, cost, safety));
     }
     Ok(Some(edges))
@@ -233,7 +244,13 @@ pub fn compile_pattern(
 ) -> Result<CompiledCkaPattern, CudaError> {
     validate_cka_expr(&pattern.expr, topology, operator_registry)?;
     let mut edges = Vec::new();
-    compile_expr(&pattern.expr, pattern, topology, operator_registry, &mut edges)?;
+    compile_expr(
+        &pattern.expr,
+        pattern,
+        topology,
+        operator_registry,
+        &mut edges,
+    )?;
     Ok(CompiledCkaPattern {
         name: pattern.name.clone(),
         edges,
@@ -318,16 +335,20 @@ fn compile_expr(
         CkaExpr::Choice(items) => {
             let mut endpoints = Endpoints::default();
             for item in items {
-                let compiled =
-                    compile_expr(item, pattern, topology, operator_registry, edges)?;
+                let compiled = compile_expr(item, pattern, topology, operator_registry, edges)?;
                 endpoints.starts.extend(compiled.starts);
                 endpoints.ends.extend(compiled.ends);
             }
             Ok(endpoints)
         }
-        CkaExpr::Star { body, max_unroll } => {
-            compile_star(body, *max_unroll, pattern, topology, operator_registry, edges)
-        }
+        CkaExpr::Star { body, max_unroll } => compile_star(
+            body,
+            *max_unroll,
+            pattern,
+            topology,
+            operator_registry,
+            edges,
+        ),
         CkaExpr::Par(branches) => {
             compile_par(branches, pattern, topology, operator_registry, edges)
         }
