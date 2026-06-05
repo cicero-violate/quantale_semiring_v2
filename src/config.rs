@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 use crate::fusion_dispatch::FusionDispatch;
 use crate::hot_region::HotRegionRegistry;
 use crate::tensor::{AbstractDeviceCoverage, FusionHfCoverage};
-use crate::topology::{GraphTopology, SplitTopologyRuntime};
+use crate::topology::GraphTopology;
 
 pub const DEFAULT_OPERATORS_JSON: &str = include_str!("../assets/operators.generated.json");
 pub const DEFAULT_RUNTIME_CONTEXT_JSON: &str = include_str!("../assets/runtime_context.json");
@@ -68,9 +68,6 @@ pub struct SystemConfig {
     /// Generated abstract/no-op marker coverage loaded from
     /// `assets/abstract_device.generated.json`.
     pub abstract_device_coverage: AbstractDeviceCoverage,
-    /// Split topology loaded from `topology.control.json` + `topology.hot.json`.
-    /// None when the split files do not yet exist.
-    pub split_topology: Option<SplitTopologyRuntime>,
     pub ingress_capacity_hint: usize,
     /// Maximum ticks before the loop exits. 0 means run forever.
     pub max_ticks: usize,
@@ -213,11 +210,6 @@ impl Default for SystemConfig {
             );
         }
 
-        let split_topology = Some(
-            SplitTopologyRuntime::load_checked(&hot_region_registry)
-                .unwrap_or_else(|error| panic!("split topology validation failed: {error}")),
-        );
-
         Self {
             matrix_dim,
             matrix_len,
@@ -230,7 +222,6 @@ impl Default for SystemConfig {
             hot_region_registry,
             fusion_hf_coverage,
             abstract_device_coverage,
-            split_topology,
             ingress_capacity_hint: runtime_policy.ingress_capacity_hint.unwrap_or(1024),
             max_ticks: max_ticks_from_env(runtime_policy.max_ticks.unwrap_or(64)),
             tick_sleep_ms: tick_sleep_ms_from_env(runtime_policy.tick_sleep_ms.unwrap_or(0)),
@@ -322,10 +313,6 @@ impl SystemConfig {
                 detail.join("; ")
             ));
         }
-        self.split_topology = Some(
-            SplitTopologyRuntime::load_checked(&self.hot_region_registry)
-                .map_err(|error| format!("split topology validation failed: {error}"))?,
-        );
         Ok(())
     }
 

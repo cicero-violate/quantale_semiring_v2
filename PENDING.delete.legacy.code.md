@@ -141,7 +141,7 @@ Possible survivors:
 
 - Small utility helpers may be kept only if still used outside CPU runtime.
 
-## Medium-Confidence Deletions
+## Completed Medium-Confidence Deletions
 
 ### 6. Host-side lattice receipt queue
 
@@ -193,24 +193,20 @@ Do not delete until:
 
 ### 8. Split topology runtime views
 
-Current generated artifacts:
+Status: implemented.
 
-- `assets/topology.control.json`
-- `assets/topology.hot.json`
+Landed:
 
-Why they may be legacy:
+- Removed `SplitTopologyRuntime`, `ControlTopologyRuntime`, and `HotTopologyRuntime` from `src/topology.rs`.
+- Removed `SystemConfig::split_topology` and startup/reload loading of `assets/topology.control.json` and `assets/topology.hot.json`.
+- Stopped `topology_core::build_overlay_assets` from emitting split topology view artifacts.
+- Deleted tracked split topology artifacts:
+  - `assets/topology.control.json`
+  - `assets/topology.hot.json`
+- Migrated hot-region validation tests to active runtime inputs:
+  - `assets/topology.generated.json`
+  - `assets/regions.hot.json`
 
-- GPU-native runtime now consumes `assets/topology.generated.json` plus
-  dispatch-kind/reentrant metadata.
-- `topology.control.json` and `topology.hot.json` are mainly older split-view
-  artifacts for CPU/control plus hot-region routing.
-
-Do not delete until:
-
-- `TopologyRuntime::load_checked_default` and `SystemConfig::default` no longer
-  load split topology views.
-- Hot/fusion generation no longer depends on these views.
-- Docs no longer present them as active runtime inputs.
 
 ## Keep For Now
 
@@ -323,6 +319,40 @@ Runtime evidence:
 
 Remaining deferred cleanup:
 
-- Split topology view artifacts remain under evaluation:
-  - `assets/topology.control.json`
-  - `assets/topology.hot.json`
+- None in this deletion plan. Split topology view artifacts have been retired.
+
+## Final Implementation Status
+
+Status: implemented.
+
+Additional landed cleanup:
+
+- Retired split topology runtime views as active runtime/generated artifacts.
+- Removed remaining code/test/generator references to `topology.control.json`, `topology.hot.json`, `SplitTopologyRuntime`, `split_topology`, and `SYNTHETIC_HOT_NODES`.
+- Deleted tracked `assets/topology.control.json` and `assets/topology.hot.json`.
+
+Additional verification completed:
+
+```bash
+rtk cargo check --features cuda
+rtk cargo check --tests --features cuda
+```
+
+Active-code cleanup checks now return no matches for:
+
+```text
+legacy-cpu-orchestration
+runtime_parallel
+runtime_reset
+runtime_dispatch
+queue_lattice_update
+drain_lattice_queue
+event_queue
+frontier_step
+tensor_quantale_tick
+topology.control.json
+topology.hot.json
+split_topology
+SplitTopologyRuntime
+SYNTHETIC_HOT_NODES
+```

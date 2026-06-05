@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::fusion::{partition_fusible_regions, FusionRegion};
+use crate::fusion::{FusionRegion, partition_fusible_regions};
 use crate::math::{apply_compiled_math_operators, compile_math_source};
 use crate::programs::{
     build_effects_map, compile_source_programs, emit_patterns_compat, validate_boundary_governance,
@@ -61,7 +61,7 @@ pub fn build_overlay_assets(root: impl AsRef<Path>) -> Result<(), String> {
     let fusion_regions: Vec<FusionRegion> = { partition_fusible_regions(&source, &transitions) };
 
     // Phase 7: emit split topology views while nodes/transitions are still owned.
-    // G_s → { G_c (topology.control.json), G_h (topology.hot.json), R_h (regions.hot.json) }
+    // G_s → { R_h (regions.hot.json) plus unified topology.generated.json }.
     emit_split_topologies(root, &source, &nodes, &transitions)?;
     emit_abstract_device_coverage(root, &source, &nodes, &operator_contracts)?;
 
@@ -108,12 +108,12 @@ fn is_hot_source_node(node: &Value) -> bool {
             == Some("cuda")
 }
 
-/// Top-level driver: emit control, hot, and regions files from source declarations.
+/// Top-level driver: emit active hot-region metadata from source declarations.
 fn emit_split_topologies(
     root: &Path,
     source: &Value,
-    nodes: &[Value],       // generated nodes (dense IDs already assigned)
-    transitions: &[Value], // full compiled transition set
+    _nodes: &[Value],       // generated nodes (dense IDs already assigned)
+    _transitions: &[Value], // full compiled transition set
 ) -> Result<(), String> {
     let source_nodes = source
         .get("nodes")
@@ -130,155 +130,9 @@ fn emit_split_topologies(
         .collect();
     let hot_set: BTreeSet<String> = hot_names_ordered.iter().cloned().collect();
 
-    let node_count = nodes.len();
-
-    emit_control_topology(root, &hot_set, nodes, transitions)?;
-    emit_hot_topology(
-        root,
-        source,
-        &hot_names_ordered,
-        &hot_set,
-        nodes,
-        node_count,
-    )?;
     emit_hot_regions(root, source_nodes, &hot_set)?;
 
     Ok(())
-}
-
-/// Emit `topology.control.json`: all non-hot nodes with their compiled transitions.
-fn emit_control_topology(
-    root: &Path,
-    hot_set: &BTreeSet<String>,
-    nodes: &[Value],
-    transitions: &[Value],
-) -> Result<(), String> {
-    let ctrl_nodes: Vec<Value> = nodes
-        .iter()
-        .filter(|n| {
-            n.get("name")
-                .and_then(Value::as_str)
-                .map(|name| !hot_set.contains(name))
-                .unwrap_or(true)
-        })
-        .cloned()
-        .collect();
-
-    let ctrl_set: BTreeSet<&str> = ctrl_nodes
-        .iter()
-        .filter_map(|n| n.get("name").and_then(Value::as_str))
-        .collect();
-
-    // Keep only transitions where both endpoints are control nodes.
-    let ctrl_transitions: Vec<Value> = transitions
-        .iter()
-        .filter(|t| {
-            let from = t.get("from").and_then(Value::as_str).unwrap_or("");
-            let to = t.get("to").and_then(Value::as_str).unwrap_or("");
-            ctrl_set.contains(from) && ctrl_set.contains(to)
-        })
-        .cloned()
-        .collect();
-
-    let page_names: Vec<Value> = ctrl_nodes
-        .iter()
-        .filter_map(|n| n.get("name").and_then(Value::as_str))
-        .map(|s| Value::String(s.to_string()))
-        .collect();
-
-    let doc = serde_json::json!({
-        "matrix_name": "quantale_control",
-        "nodes": ctrl_nodes,
-        "transitions": ctrl_transitions,
-        "pages": [{ "name": "control", "node_names": page_names }]
-    });
-    write_json(root.join("assets/topology.control.json"), &doc)
-}
-
-/// Emit `topology.hot.json`: hot kernel nodes + `Region::CommitReceipt` synthetic terminal.
-///
-/// Transitions come from source-level hot-to-hot edges; every leaf (no outgoing
-/// hot edge) gets an additional edge to `Region::CommitReceipt`.
-fn emit_hot_topology(
-    root: &Path,
-    source: &Value,
-    hot_names_ordered: &[String],
-    hot_set: &BTreeSet<String>,
-    nodes: &[Value],
-    node_count: usize,
-) -> Result<(), String> {
-    // Hot nodes with their generated-topology IDs, in generated-topology order.
-    let mut hot_nodes: Vec<Value> = nodes
-        .iter()
-        .filter(|n| {
-            n.get("name")
-                .and_then(Value::as_str)
-                .map(|name| hot_set.contains(name))
-                .unwrap_or(false)
-        })
-        .cloned()
-        .collect();
-
-    // Synthetic terminal node: ID = node_count (out of tensor range, routing only).
-    hot_nodes.push(serde_json::json!({
-        "id":   node_count,
-        "name": "Region::CommitReceipt",
-        "type": "gpu_region"
-    }));
-
-    // Source-level transitions where both endpoints are hot.
-    let source_transitions = source
-        .get("transitions")
-        .and_then(Value::as_array)
-        .map(Vec::as_slice)
-        .unwrap_or(&[]);
-
-    let mut hot_transitions: Vec<Value> = source_transitions
-        .iter()
-        .filter(|t| {
-            let from = t.get("from").and_then(Value::as_str).unwrap_or("");
-            let to = t.get("to").and_then(Value::as_str).unwrap_or("");
-            hot_set.contains(from) && hot_set.contains(to)
-        })
-        .map(strip_default_weight)
-        .collect();
-
-    // Leaf nodes = hot nodes with no outgoing hot-to-hot source transition.
-    // Collect into owned strings before mutating hot_transitions.
-    let has_outgoing: BTreeSet<String> = hot_transitions
-        .iter()
-        .filter_map(|t| t.get("from").and_then(Value::as_str).map(str::to_string))
-        .collect();
-
-    // Add CommitReceipt edges for every leaf, in stable source order.
-    let leaf_edges: Vec<Value> = hot_names_ordered
-        .iter()
-        .filter(|name| !has_outgoing.contains(*name))
-        .map(|name| {
-            serde_json::json!({
-                "from":       name,
-                "to":         "Region::CommitReceipt",
-                "confidence": 1.0,
-                "cost":       0.0,
-                "safety":     1.0
-            })
-        })
-        .collect();
-    hot_transitions.extend(leaf_edges);
-
-    let page_names: Vec<Value> = hot_nodes
-        .iter()
-        .filter_map(|n| n.get("name").and_then(Value::as_str))
-        .map(|s| Value::String(s.to_string()))
-        .collect();
-
-    let doc = serde_json::json!({
-        "matrix_name": "quantale_hot",
-        "nodes": hot_nodes,
-        "transitions": hot_transitions,
-        "pages": [{ "name": "hot", "node_names": page_names }]
-    });
-    write_json(root.join("assets/topology.hot.json"), &doc)
 }
 
 /// Emit `regions.hot.json`: slot declarations for each hot kernel node.
@@ -1117,8 +971,6 @@ mod tests {
             "topology.generated.json",
             "operators.generated.json",
             "patterns.source.json",
-            "topology.control.json",
-            "topology.hot.json",
             "regions.hot.json",
             "topology.fusion.json",
             "fusion_hf.generated.json",
@@ -1146,46 +998,12 @@ mod tests {
             "generated topology must not carry legacy default_weight"
         );
 
-        // Split-topology invariants.
-        let ctrl = read_json(assets.join("topology.control.json")).unwrap();
-        let hot = read_json(assets.join("topology.hot.json")).unwrap();
         let regions = read_json(assets.join("regions.hot.json")).unwrap();
         let fusion = read_json(assets.join("topology.fusion.json")).unwrap();
         let fusion_hf = read_json(assets.join("fusion_hf.generated.json")).unwrap();
         let fusion_hf_stubs = fs::read_to_string(assets.join("fusion_hf.stubs.cu")).unwrap();
         let abstract_device = read_json(assets.join("abstract_device.generated.json")).unwrap();
 
-        let ctrl_names: std::collections::HashSet<&str> = ctrl
-            .get("nodes")
-            .and_then(Value::as_array)
-            .unwrap()
-            .iter()
-            .filter_map(|n| n.get("name").and_then(Value::as_str))
-            .collect();
-        let hot_names: std::collections::HashSet<&str> = hot
-            .get("nodes")
-            .and_then(Value::as_array)
-            .unwrap()
-            .iter()
-            .filter_map(|n| n.get("name").and_then(Value::as_str))
-            .filter(|&n| n != "Region::CommitReceipt")
-            .collect();
-
-        // Invariant: control ∩ hot = ∅
-        let overlap: Vec<&&str> = ctrl_names.intersection(&hot_names).collect();
-        assert!(
-            overlap.is_empty(),
-            "control ∩ hot must be empty; found {overlap:?}"
-        );
-
-        // Invariant: hot topology has at least one transition.
-        let hot_transitions = hot.get("transitions").and_then(Value::as_array).unwrap();
-        assert!(
-            !hot_transitions.is_empty(),
-            "hot topology must have at least one transition"
-        );
-
-        // Invariant: every hot node (except CommitReceipt) has a region entry.
         let region_names: std::collections::HashSet<&str> = regions
             .get("regions")
             .and_then(Value::as_array)
@@ -1505,8 +1323,6 @@ mod tests {
         let artifacts = [
             "topology.generated.json",
             "operators.generated.json",
-            "topology.control.json",
-            "topology.hot.json",
             "regions.hot.json",
             "topology.fusion.json",
         ];

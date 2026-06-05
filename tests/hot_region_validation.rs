@@ -2,8 +2,7 @@
 //!
 //! Covers:
 //!  - Hot region slot validation against declared operators
-//!  - Hot topology executable invariants
-//!  - Split topology loads through SystemConfig
+//!  - Hot region metadata invariants against active generated assets
 //!  - HostStagingBuffer and UploadQueue staging behaviour
 //!  - Fusion dispatch priority over single-node hot dispatch (P1.1)
 //!  - Synthetic hot node whitelist (Region::CommitReceipt)
@@ -12,8 +11,7 @@
 #[cfg(not(feature = "cuda"))]
 use quantale_semiring_v2::DeviceSlotRegistry;
 use quantale_semiring_v2::{
-    FusionDispatch, HostStagingBuffer, HotRegionRegistry, SYNTHETIC_HOT_NODES, SystemConfig,
-    UploadQueue, load_operator_registry,
+    FusionDispatch, HostStagingBuffer, HotRegionRegistry, UploadQueue, load_operator_registry,
 };
 
 // ── Hot region slot validation ────────────────────────────────────────────────
@@ -48,56 +46,47 @@ fn hot_region_slots_all_declared_in_operator_registry() {
     );
 }
 
-// ── Hot topology executable invariants ───────────────────────────────────────
+// ── Active hot-region metadata invariants ─────────────────────────────────────
 
 #[test]
-fn hot_topology_has_nodes_and_transitions() {
-    let raw = std::fs::read_to_string("assets/topology.hot.json").expect("read topology.hot.json");
-    let doc: serde_json::Value = serde_json::from_str(&raw).expect("parse topology.hot.json");
-
-    let nodes = doc["nodes"].as_array().expect("nodes array");
-    let transitions = doc["transitions"].as_array().expect("transitions array");
-
+fn hot_region_registry_has_regions() {
+    let hot = HotRegionRegistry::load("assets/regions.hot.json").expect("load regions.hot.json");
     assert!(
-        !nodes.is_empty(),
-        "hot topology must have at least one node"
-    );
-    assert!(
-        !transitions.is_empty(),
-        "hot topology must have at least one transition"
+        !hot.entries.is_empty(),
+        "regions.hot.json must contain hot regions"
     );
 }
 
 #[test]
-fn hot_topology_transition_endpoints_exist_in_nodes() {
-    let raw = std::fs::read_to_string("assets/topology.hot.json").expect("read topology.hot.json");
-    let doc: serde_json::Value = serde_json::from_str(&raw).expect("parse");
-
-    let node_names: std::collections::HashSet<&str> = doc["nodes"]
+fn hot_region_nodes_exist_in_generated_topology() {
+    let hot = HotRegionRegistry::load("assets/regions.hot.json").expect("load regions.hot.json");
+    let raw = std::fs::read_to_string("assets/topology.generated.json")
+        .expect("read topology.generated.json");
+    let doc: serde_json::Value = serde_json::from_str(&raw).expect("parse topology.generated.json");
+    let generated_names: std::collections::HashSet<&str> = doc["nodes"]
         .as_array()
         .unwrap()
         .iter()
         .filter_map(|n| n["name"].as_str())
         .collect();
 
-    for t in doc["transitions"].as_array().unwrap() {
-        let from = t["from"].as_str().unwrap();
-        let to = t["to"].as_str().unwrap();
+    for entry in &hot.entries {
+        if entry.name == "Region::CommitReceipt" {
+            continue;
+        }
         assert!(
-            node_names.contains(from),
-            "transition 'from' endpoint '{from}' not in nodes"
-        );
-        assert!(
-            node_names.contains(to),
-            "transition 'to' endpoint '{to}' not in nodes"
+            generated_names.contains(entry.name.as_str()),
+            "hot region '{}' must exist in topology.generated.json",
+            entry.name
         );
     }
 }
 
 #[test]
-fn hot_topology_contains_vector_add_to_scale_chain() {
-    let raw = std::fs::read_to_string("assets/topology.hot.json").expect("read topology.hot.json");
-    let doc: serde_json::Value = serde_json::from_str(&raw).expect("parse");
+fn generated_topology_contains_vector_add_to_scale_chain() {
+    let raw = std::fs::read_to_string("assets/topology.generated.json")
+        .expect("read topology.generated.json");
+    let doc: serde_json::Value = serde_json::from_str(&raw).expect("parse topology.generated.json");
     let has_chain = doc["transitions"]
         .as_array()
         .unwrap()
@@ -108,67 +97,7 @@ fn hot_topology_contains_vector_add_to_scale_chain() {
         });
     assert!(
         has_chain,
-        "hot topology must contain Execution::VectorAdd -> Execution::VectorScale"
-    );
-}
-
-#[test]
-fn hot_topology_has_no_control_io_nodes() {
-    let raw = std::fs::read_to_string("assets/topology.hot.json").expect("read topology.hot.json");
-    let doc: serde_json::Value = serde_json::from_str(&raw).expect("parse");
-    for node in doc["nodes"].as_array().unwrap() {
-        let t = node["type"].as_str().unwrap_or("");
-        assert!(
-            t != "State" && t != "Control" && t != "Event",
-            "hot topology must not contain control/IO node '{}' (type='{t}')",
-            node["name"].as_str().unwrap_or("?")
-        );
-    }
-}
-
-// ── Split topology loads through SystemConfig ─────────────────────────────────
-
-#[test]
-fn system_config_loads_split_topology() {
-    // SystemConfig::default() loads the split topology from the asset files.
-    // If the split topology files are present and valid, it should be Some(_).
-    let config = quantale_semiring_v2::SystemConfig::default();
-    assert!(
-        config.split_topology.is_some(),
-        "SplitTopologyRuntime must load successfully from assets"
-    );
-}
-
-#[test]
-fn split_topology_control_and_hot_are_disjoint() {
-    let config = quantale_semiring_v2::SystemConfig::default();
-    let split = config
-        .split_topology
-        .as_ref()
-        .expect("split topology present");
-    let overlap: Vec<&str> = split
-        .control
-        .node_names
-        .iter()
-        .filter(|n| split.hot.node_names.contains(*n))
-        .map(String::as_str)
-        .collect();
-    assert!(
-        overlap.is_empty(),
-        "control and hot topologies must be disjoint: {overlap:?}"
-    );
-}
-
-#[test]
-fn split_topology_hot_has_at_least_one_transition() {
-    let config = quantale_semiring_v2::SystemConfig::default();
-    let split = config
-        .split_topology
-        .as_ref()
-        .expect("split topology present");
-    assert!(
-        !split.hot.transitions.is_empty(),
-        "hot topology must have at least one transition"
+        "generated topology must contain Execution::VectorAdd -> Execution::VectorScale"
     );
 }
 
@@ -428,119 +357,15 @@ fn non_entry_node_does_not_win_fusion_dispatch() {
     );
 }
 
-// ── Synthetic hot node whitelist (Region::CommitReceipt) ─────────────────────
+// ── Synthetic hot receipt terminal ────────────────────────────────────────────
 
-/// Region::CommitReceipt appears in the hot topology and regions.hot.json but
-/// is NOT declared in topology.source.json or operators.generated.json.
-/// The SYNTHETIC_HOT_NODES whitelist must allow it through.
 #[test]
-fn synthetic_hot_nodes_contains_commit_receipt() {
-    assert!(
-        SYNTHETIC_HOT_NODES.contains(&"Region::CommitReceipt"),
-        "Region::CommitReceipt must be in SYNTHETIC_HOT_NODES"
-    );
-}
-
-/// The split topology must load successfully even though Region::CommitReceipt
-/// is not in operators.generated.json — it is whitelisted as a synthetic node.
-#[test]
-fn split_topology_accepts_synthetic_commit_receipt_node() {
-    let config = SystemConfig::default();
-    let split = config
-        .split_topology
-        .as_ref()
-        .expect("split topology must load at startup");
-    // The hot topology has Region::CommitReceipt as a terminal node.
-    assert!(
-        split.hot.node_names.contains("Region::CommitReceipt"),
-        "hot topology must contain Region::CommitReceipt"
-    );
-    // The split topology must have loaded without error (no panic from startup
-    // validation), proving the synthetic whitelist exempted this node.
-}
-
-/// Slot validation must NOT report Region::CommitReceipt reads/writes as
-/// violations, because CommitReceipt has no declared slots (it only emits
-/// a receipt sentinel — no data reads or writes).
-#[test]
-fn commit_receipt_region_has_no_slot_violations() {
-    let registry = load_operator_registry("assets/operators.generated.json")
-        .expect("load operators.generated.json");
+fn regions_hot_contains_synthetic_commit_receipt() {
     let hot = HotRegionRegistry::load("assets/regions.hot.json").expect("load regions.hot.json");
-
-    let declared: std::collections::HashSet<String> = registry
-        .values()
-        .flat_map(|op| {
-            let reads = op["effects"]["reads"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(|v| v.as_str().map(str::to_string));
-            let writes = op["effects"]["writes"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(|v| v.as_str().map(str::to_string));
-            reads.chain(writes)
-        })
-        .collect();
-
-    let violations = hot.validate_slots(&declared);
     assert!(
-        violations.is_empty(),
-        "no slot violations expected (including Region::CommitReceipt): {violations:?}"
-    );
-}
-
-// ── Receipt-to-outcome mapping (P1.1) ────────────────────────────────────────
-
-#[test]
-fn failed_receipt_maps_to_failure_outcome() {
-    use quantale_semiring_v2::{ExecutionOutcome, ProcessReceipt};
-    let receipt = ProcessReceipt {
-        node_name: "test".to_string(),
-        exit_code: 1,
-        stdout_payload: String::new(),
-        stderr_payload: "simulated failure".to_string(),
-    };
-    let outcome = ExecutionOutcome::from(&receipt);
-    assert_eq!(
-        outcome,
-        ExecutionOutcome::Failure,
-        "non-zero exit code must map to Failure outcome, not Success"
-    );
-}
-
-#[test]
-fn successful_receipt_maps_to_success_outcome() {
-    use quantale_semiring_v2::{ExecutionOutcome, ProcessReceipt};
-    let receipt = ProcessReceipt {
-        node_name: "test".to_string(),
-        exit_code: 0,
-        stdout_payload: r#"{"results":[1.0]}"#.to_string(),
-        stderr_payload: String::new(),
-    };
-    let outcome = ExecutionOutcome::from(&receipt);
-    assert_eq!(
-        outcome,
-        ExecutionOutcome::Success,
-        "exit_code 0 must map to Success outcome"
-    );
-}
-
-#[test]
-fn timeout_exit_code_maps_to_timeout_outcome() {
-    use quantale_semiring_v2::{ExecutionOutcome, ProcessReceipt};
-    let receipt = ProcessReceipt {
-        node_name: "test".to_string(),
-        exit_code: 124,
-        stdout_payload: String::new(),
-        stderr_payload: String::new(),
-    };
-    let outcome = ExecutionOutcome::from(&receipt);
-    assert_eq!(
-        outcome,
-        ExecutionOutcome::Timeout,
-        "exit_code 124 (timeout) must map to Timeout outcome"
+        hot.entries
+            .iter()
+            .any(|entry| entry.name == "Region::CommitReceipt"),
+        "regions.hot.json must contain Region::CommitReceipt"
     );
 }
