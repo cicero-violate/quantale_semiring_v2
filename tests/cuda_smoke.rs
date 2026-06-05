@@ -318,6 +318,7 @@ mod cuda_smoke {
             }
         };
         world.embed_tensor_edges(&[TensorEdge::new(0, 1, 0.5, 5.0, 0.5)])?;
+        assert_eq!(world.orch_state_snapshot()?.pending_receipt_count, 0);
 
         // Push a success receipt for edge 0→1.
         world.push_device_receipt_ext(DeviceReceiptExt {
@@ -332,6 +333,7 @@ mod cuda_smoke {
             output_flags: 0,
             latency: 0.0,
         })?;
+        assert_eq!(world.orch_state_snapshot()?.pending_receipt_count, 1);
         // Push a failure receipt for edge 0→2 (won't affect tensor — no edge embedded).
         world.push_device_receipt_ext(DeviceReceiptExt {
             valid: 1,
@@ -345,8 +347,10 @@ mod cuda_smoke {
             output_flags: 0,
             latency: 0.0,
         })?;
+        assert_eq!(world.orch_state_snapshot()?.pending_receipt_count, 2);
         // Drain: success receipt should set confidence[0,1] = 1.0.
         world.drain_device_receipt_ext()?;
+        assert_eq!(world.orch_state_snapshot()?.pending_receipt_count, 0);
         // Verify using the existing tensor snapshot helper.
         let tensor = world.tensor()?;
         // Confidence layer 0: entry [0,1] = tensor[0 * N*N + 0*N + 1].

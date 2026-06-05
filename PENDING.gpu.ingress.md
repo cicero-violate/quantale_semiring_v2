@@ -491,6 +491,9 @@ Landed:
   state, and pending command/receipt counters.
 - Added blocked/no-progress guards so the GPU-native supervisor exits cleanly
   at a known blocked topology point instead of spinning.
+- Fixed GPU-native external receipt accounting: `DeviceReceiptExt` push now
+  increments `pending_receipt_count` after a successful ring write, matching the
+  existing drain-side decrement.
 
 Verification completed:
 
@@ -499,6 +502,9 @@ Verification completed:
 - `rtk cargo test --features cuda dispatch_kind -- --nocapture`
 - `rtk cargo test --features cuda scheduler_emits_external_command -- --nocapture`
 - `rtk cargo test --features cuda default_dispatch_table_reaches_market_feed_external_command -- --nocapture`
+- `rtk cargo test --features cuda receipt_ext_ring_push_pop_fifo -- --nocapture`
+- `rtk cargo test --features cuda`
+- `rtk cargo test --lib --tests`
 - `rtk cargo run --features cuda`
 
 Runtime evidence:
@@ -507,6 +513,7 @@ Runtime evidence:
 [gpu_native] [INFO] dispatch_kinds_uploaded hf_device=10 abstract_device=18 external_process=25 external_io=1 unsupported=7
 [gpu_native] [INFO] burst_complete status=WaitExternal ...
 [gpu_native] [INFO] external_commands_serviced count=1
+[gpu_native] [INFO] burst_complete ... pending_receipt_count=0
 ```
 
 Remaining separate diagnostics:
@@ -514,7 +521,3 @@ Remaining separate diagnostics:
 - `Execution::VectorScale` still trips the consumed-block-point topology
   warning. Fix that as a graph-shape issue by splitting the node per predecessor
   or explicitly marking it reentrant only if repeated traversal is safe.
-- GPU-native receipt accounting currently reports negative
-  `pending_receipt_count` while external commands are serviced. That is separate
-  from ingress classification and should be debugged in the device receipt
-  accounting path.

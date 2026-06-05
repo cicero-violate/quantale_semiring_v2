@@ -303,13 +303,17 @@ extern "C" __global__ void device_receipt_ext_ring_push(
     int*              tail,
     const int*        head,
     int               ring_size,
-    DeviceReceiptExt  receipt
+    DeviceReceiptExt  receipt,
+    OrchestrationState* state
 ) {
     if (threadIdx.x != 0 || blockIdx.x != 0) return;
     int t = *tail, h = *head;
     if (t - h >= ring_size) return; // full
     ring[t % ring_size] = receipt;
     *tail = t + 1;
+    if (state && receipt.valid && !receipt.consumed) {
+        atomicAdd(&state->pending_receipt_count, 1);
+    }
 }
 
 // Drain the extended receipt ring, applying tensor updates for each valid entry.

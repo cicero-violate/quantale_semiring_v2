@@ -11,11 +11,11 @@ use cudarc::driver::{CudaDevice, CudaSlice, DeviceRepr, DeviceSlice, LaunchAsync
 use cudarc::nvrtc::compile_ptx;
 use serde::{Deserialize, Serialize};
 
-use crate::config::{DEFAULT_BLOCK_SIZE, RuntimeContext};
+use crate::config::{RuntimeContext, DEFAULT_BLOCK_SIZE};
 use crate::device_slots::DeviceSlotRegistry;
 use crate::error::CudaError;
 use crate::exploration::{ExplorationCandidate, ExplorationEngine, ExplorationToken};
-use crate::graph::{DecisionReport, Node, reconstruct_path_from_witness_matrix};
+use crate::graph::{reconstruct_path_from_witness_matrix, DecisionReport, Node};
 use crate::topology::{GraphTopology, NodeRegistry};
 use crate::types::ProcessReceipt;
 
@@ -126,10 +126,10 @@ pub const LEARNED_DELTA_RING_SIZE: usize = 256;
 // Phase-8 trace ring capacity and event kind codes (mirror ORCH_TRACE_RING_SIZE
 // and ORCH_EVENT_* defines in .cu).
 pub const ORCH_TRACE_RING_SIZE: usize = 512;
-pub const ORCH_EVENT_STEP_COMMITTED:  i32 = 0;
-pub const ORCH_EVENT_WAIT_EXTERNAL:   i32 = 1;
-pub const ORCH_EVENT_HALTED:          i32 = 2;
-pub const ORCH_EVENT_BLOCKED:         i32 = 3;
+pub const ORCH_EVENT_STEP_COMMITTED: i32 = 0;
+pub const ORCH_EVENT_WAIT_EXTERNAL: i32 = 1;
+pub const ORCH_EVENT_HALTED: i32 = 2;
+pub const ORCH_EVENT_BLOCKED: i32 = 3;
 pub const ORCH_EVENT_RECEIPT_DRAINED: i32 = 4;
 
 pub const MAX_PAR_GROUP_SIZE: usize = 8;
@@ -633,15 +633,15 @@ pub struct OrchestrationState {
     pub pending_receipt_count: i32,
     pub failure_count: i32,
     pub rollback_requested: i32,
-    pub star_counter: i32,  // Phase 4: bounded-star iteration count
-    pub star_bound: i32,    // Phase 4: current star bound (0 = no star active)
-    pub consecutive_blocks: i32,    // Phase 5: count of consecutive blocked steps
-    pub block_threshold: i32,       // Phase 5: hard-reset threshold (0 = disabled)
-    pub hard_reset_requested: i32,  // Phase 5: set to 1 when HALT action fires
-    pub rollback_available: i32,    // Phase 5: 1 when rollback marker is saved
-    pub failure_action: i32,        // Phase 5: last FAILURE_ACTION_* decision
-    pub selected_src: i32,          // Phase 8: src of last committed edge
-    pub selected_dst: i32,          // Phase 8: dst of last committed edge
+    pub star_counter: i32,         // Phase 4: bounded-star iteration count
+    pub star_bound: i32,           // Phase 4: current star bound (0 = no star active)
+    pub consecutive_blocks: i32,   // Phase 5: count of consecutive blocked steps
+    pub block_threshold: i32,      // Phase 5: hard-reset threshold (0 = disabled)
+    pub hard_reset_requested: i32, // Phase 5: set to 1 when HALT action fires
+    pub rollback_available: i32,   // Phase 5: 1 when rollback marker is saved
+    pub failure_action: i32,       // Phase 5: last FAILURE_ACTION_* decision
+    pub selected_src: i32,         // Phase 8: src of last committed edge
+    pub selected_dst: i32,         // Phase 8: dst of last committed edge
 }
 
 unsafe impl DeviceRepr for OrchestrationState {}
@@ -799,10 +799,10 @@ pub enum OrchStepStatus {
 impl OrchStepStatus {
     pub fn from_code(code: i32) -> Self {
         match code {
-            ORCH_CONTINUE      => Self::Continue,
+            ORCH_CONTINUE => Self::Continue,
             ORCH_WAIT_EXTERNAL => Self::WaitExternal,
-            ORCH_HALTED        => Self::Halted,
-            _                  => Self::Error,
+            ORCH_HALTED => Self::Halted,
+            _ => Self::Error,
         }
     }
 }
@@ -1114,13 +1114,13 @@ unsafe impl DeviceRepr for ParGroupHfParamsHost {}
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct TensorWorldBundleHost {
-    pub tensor_dev:     u64,
-    pub witness_dev:    u64,
-    pub consumed_dev:   u64,
-    pub active_dev:     u64,
+    pub tensor_dev: u64,
+    pub witness_dev: u64,
+    pub consumed_dev: u64,
+    pub active_dev: u64,
     pub next_active_dev: u64,
-    pub bias_dev:       u64,
-    pub decision_dev:   u64,
+    pub bias_dev: u64,
+    pub decision_dev: u64,
 }
 
 unsafe impl DeviceRepr for TensorWorldBundleHost {}
@@ -1365,7 +1365,10 @@ impl TensorQuantaleWorld {
             .htod_copy(vec![0_i32])
             .map_err(|error| CudaError::new("htod_copy command_tail", error))?;
         let receipt_ext_ring = dev
-            .htod_copy(vec![DeviceReceiptExt::default(); DEVICE_RECEIPT_EXT_RING_SIZE])
+            .htod_copy(vec![
+                DeviceReceiptExt::default();
+                DEVICE_RECEIPT_EXT_RING_SIZE
+            ])
             .map_err(|error| CudaError::new("htod_copy receipt_ext_ring", error))?;
         let receipt_ext_head = dev
             .htod_copy(vec![0_i32])
@@ -2072,10 +2075,8 @@ impl TensorQuantaleWorld {
             .dev
             .get_func(MODULE_NAME, ORCH_STATE_SNAPSHOT_KERNEL)
             .ok_or(CudaError::missing_function(ORCH_STATE_SNAPSHOT_KERNEL))?;
-        unsafe {
-            kernel.launch(kernel_config(), (&self.orch_buffers.state, &mut snapshot))
-        }
-        .map_err(|error| CudaError::new(ORCH_STATE_SNAPSHOT_KERNEL, error))?;
+        unsafe { kernel.launch(kernel_config(), (&self.orch_buffers.state, &mut snapshot)) }
+            .map_err(|error| CudaError::new(ORCH_STATE_SNAPSHOT_KERNEL, error))?;
         let result = self
             .dev
             .dtoh_sync_copy(&snapshot)
@@ -2157,6 +2158,7 @@ impl TensorQuantaleWorld {
                     &self.orch_buffers.receipt_ext_head,
                     ring_size,
                     receipt,
+                    &mut self.orch_buffers.state,
                 ),
             )
         }
@@ -2217,13 +2219,13 @@ impl TensorQuantaleWorld {
         use cudarc::driver::DevicePtr;
 
         let bundle = TensorWorldBundleHost {
-            tensor_dev:      *self.tensor.device_ptr() as u64,
-            witness_dev:     *self.witness.device_ptr() as u64,
-            consumed_dev:    *self.consumed.device_ptr() as u64,
-            active_dev:      *self.active.device_ptr() as u64,
+            tensor_dev: *self.tensor.device_ptr() as u64,
+            witness_dev: *self.witness.device_ptr() as u64,
+            consumed_dev: *self.consumed.device_ptr() as u64,
+            active_dev: *self.active.device_ptr() as u64,
             next_active_dev: *self.next_active.device_ptr() as u64,
-            bias_dev:        *self.orch_buffers.default_bias.device_ptr() as u64,
-            decision_dev:    *self.decision.device_ptr() as u64,
+            bias_dev: *self.orch_buffers.default_bias.device_ptr() as u64,
+            decision_dev: *self.decision.device_ptr() as u64,
         };
 
         let bundle_dev = self
@@ -2311,9 +2313,9 @@ impl TensorQuantaleWorld {
                         return Ok(OrchStepStatus::Continue);
                     }
                 }
-                OrchStepStatus::WaitExternal
-                | OrchStepStatus::Halted
-                | OrchStepStatus::Error => return Ok(status),
+                OrchStepStatus::WaitExternal | OrchStepStatus::Halted | OrchStepStatus::Error => {
+                    return Ok(status)
+                }
             }
         }
         Ok(OrchStepStatus::Continue)
@@ -2390,7 +2392,9 @@ impl TensorQuantaleWorld {
         let f = self
             .dev
             .get_func(MODULE_NAME, CHECK_EFFECTS_INDEPENDENT_KERNEL)
-            .ok_or(CudaError::missing_function(CHECK_EFFECTS_INDEPENDENT_KERNEL))?;
+            .ok_or(CudaError::missing_function(
+                CHECK_EFFECTS_INDEPENDENT_KERNEL,
+            ))?;
         let mut out = self
             .dev
             .htod_copy(vec![0_i32])
@@ -2399,13 +2403,7 @@ impl TensorQuantaleWorld {
         unsafe {
             f.launch(
                 kernel_config(),
-                (
-                    &self.orch_buffers.effect_table,
-                    n_effects,
-                    a,
-                    b,
-                    &mut out,
-                ),
+                (&self.orch_buffers.effect_table, n_effects, a, b, &mut out),
             )
         }
         .map_err(|e| CudaError::new(CHECK_EFFECTS_INDEPENDENT_KERNEL, e))?;
@@ -2470,7 +2468,13 @@ impl TensorQuantaleWorld {
             .dev
             .htod_copy(vec![FAILURE_ACTION_BLOCK])
             .map_err(|e| CudaError::new("reset failure_action_out", e))?;
-        let req = FailureClassifyRequest { outcome, node_id, src, dst, command_id };
+        let req = FailureClassifyRequest {
+            outcome,
+            node_id,
+            src,
+            dst,
+            command_id,
+        };
         let req_buf = self
             .dev
             .htod_copy(vec![req])
@@ -2513,7 +2517,9 @@ impl TensorQuantaleWorld {
         let f = self
             .dev
             .get_func(MODULE_NAME, FAILURE_POLICY_SET_ROLLBACK_KERNEL)
-            .ok_or(CudaError::missing_function(FAILURE_POLICY_SET_ROLLBACK_KERNEL))?;
+            .ok_or(CudaError::missing_function(
+                FAILURE_POLICY_SET_ROLLBACK_KERNEL,
+            ))?;
         unsafe {
             f.launch(
                 kernel_config(),
@@ -2537,7 +2543,9 @@ impl TensorQuantaleWorld {
         let f = self
             .dev
             .get_func(MODULE_NAME, FAILURE_POLICY_APPLY_ROLLBACK_KERNEL)
-            .ok_or(CudaError::missing_function(FAILURE_POLICY_APPLY_ROLLBACK_KERNEL))?;
+            .ok_or(CudaError::missing_function(
+                FAILURE_POLICY_APPLY_ROLLBACK_KERNEL,
+            ))?;
         unsafe {
             f.launch(
                 kernel_config(),
@@ -2666,11 +2674,7 @@ impl TensorQuantaleWorld {
 
     /// Push one event onto the device trace ring.
     /// Single-thread kernel (1 block × 1 thread).
-    pub fn push_trace_event(
-        &mut self,
-        event_kind: i32,
-        outcome: i32,
-    ) -> Result<(), CudaError> {
+    pub fn push_trace_event(&mut self, event_kind: i32, outcome: i32) -> Result<(), CudaError> {
         let f = self
             .dev
             .get_func(MODULE_NAME, ORCH_TRACE_PUSH_KERNEL)
@@ -2678,7 +2682,11 @@ impl TensorQuantaleWorld {
         let ring_size = ORCH_TRACE_RING_SIZE as i32;
         unsafe {
             f.launch(
-                LaunchConfig { grid_dim: (1, 1, 1), block_dim: (1, 1, 1), shared_mem_bytes: 0 },
+                LaunchConfig {
+                    grid_dim: (1, 1, 1),
+                    block_dim: (1, 1, 1),
+                    shared_mem_bytes: 0,
+                },
                 (
                     &self.orch_buffers.state,
                     event_kind,
@@ -2704,7 +2712,11 @@ impl TensorQuantaleWorld {
         let max_count = ORCH_TRACE_RING_SIZE as i32;
         unsafe {
             f.launch(
-                LaunchConfig { grid_dim: (1, 1, 1), block_dim: (1, 1, 1), shared_mem_bytes: 0 },
+                LaunchConfig {
+                    grid_dim: (1, 1, 1),
+                    block_dim: (1, 1, 1),
+                    shared_mem_bytes: 0,
+                },
                 (
                     &mut self.orch_buffers.trace_ring,
                     &mut self.orch_buffers.trace_head,
@@ -2735,7 +2747,9 @@ impl TensorQuantaleWorld {
         let f = self
             .dev
             .get_func(MODULE_NAME, ORCH_CHECK_DUPLICATE_RECEIPTS_KERNEL)
-            .ok_or(CudaError::missing_function(ORCH_CHECK_DUPLICATE_RECEIPTS_KERNEL))?;
+            .ok_or(CudaError::missing_function(
+                ORCH_CHECK_DUPLICATE_RECEIPTS_KERNEL,
+            ))?;
         self.orch_buffers.orch_violation_out = self
             .dev
             .htod_copy(vec![0_i32])
@@ -2765,7 +2779,9 @@ impl TensorQuantaleWorld {
         let f = self
             .dev
             .get_func(MODULE_NAME, ORCH_CHECK_FRONTIER_VALID_KERNEL)
-            .ok_or(CudaError::missing_function(ORCH_CHECK_FRONTIER_VALID_KERNEL))?;
+            .ok_or(CudaError::missing_function(
+                ORCH_CHECK_FRONTIER_VALID_KERNEL,
+            ))?;
         self.orch_buffers.orch_violation_out = self
             .dev
             .htod_copy(vec![0_i32])
@@ -2774,11 +2790,7 @@ impl TensorQuantaleWorld {
         unsafe {
             f.launch(
                 kernel_config(),
-                (
-                    &self.active,
-                    n,
-                    &mut self.orch_buffers.orch_violation_out,
-                ),
+                (&self.active, n, &mut self.orch_buffers.orch_violation_out),
             )
         }
         .map_err(|e| CudaError::new(ORCH_CHECK_FRONTIER_VALID_KERNEL, e))?;
@@ -2795,7 +2807,9 @@ impl TensorQuantaleWorld {
         let f = self
             .dev
             .get_func(MODULE_NAME, ORCH_CHECK_NO_CMD_WITHOUT_RECEIPT_KERNEL)
-            .ok_or(CudaError::missing_function(ORCH_CHECK_NO_CMD_WITHOUT_RECEIPT_KERNEL))?;
+            .ok_or(CudaError::missing_function(
+                ORCH_CHECK_NO_CMD_WITHOUT_RECEIPT_KERNEL,
+            ))?;
         self.orch_buffers.orch_violation_out = self
             .dev
             .htod_copy(vec![0_i32])
