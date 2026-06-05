@@ -600,6 +600,17 @@ reference model and does not mutate runtime state.
 Runtime control-flow entrypoint = tensor_quantale_orchestrate_step only.
 ```
 
+### Implemented (2026-06-05)
+
+- `orchestrate_step_seq_advances_active_frontier` — SEQ fires through scheduler.
+- `orchestrate_step_choice_selects_highest_score_branch` — CHOICE scores on device.
+- `orchestrate_step_star_body_increments_counter` — STAR_BOUNDED counter via scheduler.
+- `orchestrate_step_par_commits_independent_members` — PAR independence check + commit.
+- `control_flow_advance` marked `#[deprecated]`; `#[allow(deprecated)]` on legacy test module.
+- Fixed: PAR was absent from `select_control_decision` priority chain — added.
+- Fixed: STAR_EXIT did not consume the back-edge — now marks `consumed[lhs*N+rhs]=1`
+  and holds frontier at `lhs` (the exit node) rather than advancing to body `rhs`.
+
 ---
 
 ## Validation Matrix

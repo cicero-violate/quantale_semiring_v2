@@ -86,18 +86,13 @@ Only remaining gaps are listed here. Completed items were removed after verifica
 - Plan file: `plan.gpu.native.seq.par.choice.star.md` marked **Implemented**.
 - Current tier label: **GPU-native orchestration with external command service** (`S_g=1 P_g=1`).
 
----
-
-## Remaining: Phase 9 — retire standalone control-flow side-path APIs
-
-The `control_flow_advance` kernel and its Rust wrapper remain as a callable side-path.
-Once scheduler-integrated control-flow test coverage is stable, retire or feature-gate it.
-
-```text
-Action: migrate control_flow_advance test coverage to orchestrate_step observations.
-        Mark control_flow_advance as #[deprecated] or gate behind a feature flag.
-        Update PENDING.gpu.native.orchestration.md Phase 9 acceptance criteria.
-```
+**Phase 9 complete** (2026-06-05):
+- Scheduler-integrated tests added for SEQ, PAR, CHOICE, STAR_BOUNDED via `orchestrate_step`.
+- `control_flow_advance` marked `#[deprecated]`; legacy Phase-4 tests suppressed with `#[allow(deprecated)]`.
+- Fixed: PAR missing from `select_control_decision` priority chain.
+- Fixed: STAR_EXIT now consumes the back-edge and holds frontier at exit node.
+- Plan `plan.gpu.native.seq.par.choice.star.md` fully complete.
+- Current tier: **GPU-native orchestration with external command service** — all nine phases done.
 
 ---
 

@@ -1,4 +1,5 @@
 #[cfg(feature = "cuda")]
+#[allow(deprecated)]
 mod cuda_smoke {
     use cudarc::driver::{CudaDevice, LaunchAsync, LaunchConfig};
     use quantale_semiring_v2::{
@@ -505,6 +506,8 @@ mod cuda_smoke {
     }
 
     // ── Phase-4 CUDA smoke tests ──────────────────────────────────────────────
+    // These tests use the deprecated control_flow_advance side-path as a
+    // reference model.  New coverage uses orchestrate_step (Phase-9 tests below).
 
     /// Phase-4: loading a SEQ control edge and calling control_flow_advance for
     /// the matching (lhs, rhs) pair returns CONTROL_OP_SEQ.
@@ -1055,6 +1058,179 @@ mod cuda_smoke {
         );
         assert_eq!(before.halted, after.halted);
         assert_eq!(before.blocked, after.blocked);
+        Ok(())
+    }
+
+    // ── Phase-9 scheduler-integrated control-flow tests ──────────────────────
+    // These tests exercise SEQ/PAR/CHOICE/STAR through orchestrate_step, making
+    // tensor_quantale_orchestrate_step the sole runtime control-flow entrypoint.
+
+    /// Phase-9: a SEQ control edge advances the active frontier through the
+    /// GPU scheduler without any CPU control-flow decision.
+    #[test]
+    fn orchestrate_step_seq_advances_active_frontier()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use quantale_semiring_v2::{
+            CONTROL_OP_SEQ, ControlEdge, OrchStepStatus,
+        };
+        let mut world = match TensorQuantaleWorld::empty() {
+            Ok(w) => w,
+            Err(e) => { eprintln!("skip: {e}"); return Ok(()); }
+        };
+        // Load a single SEQ edge: node 0 → node 1.
+        world.load_control_table(
+            vec![ControlEdge { op: CONTROL_OP_SEQ, lhs: 0, rhs: 1,
+                               guard: 0, order: 0, bound: 0 }],
+            vec![],
+        )?;
+        world.embed_tensor_edges(&[TensorEdge::new(0, 1, 0.8, 1.0, 0.8)])?;
+
+        let status = world.orchestrate_step()?;
+        assert_ne!(status, OrchStepStatus::Error, "must not error");
+
+        let state = world.orch_state_snapshot()?;
+        assert_eq!(state.step, 1, "step should increment");
+        assert_eq!(state.selected_node, 1, "SEQ should advance to rhs=1");
+        assert_eq!(
+            state.selected_control_op, CONTROL_OP_SEQ,
+            "selected_control_op must be SEQ"
+        );
+        assert_eq!(state.selected_control_lhs, 0);
+        assert_eq!(state.selected_control_rhs, 1);
+        assert_eq!(state.control_epoch, 1, "control_epoch must increment");
+        Ok(())
+    }
+
+    /// Phase-9: a CHOICE control edge selects the highest-scoring branch
+    /// entirely on device.
+    #[test]
+    fn orchestrate_step_choice_selects_highest_score_branch()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use quantale_semiring_v2::{
+            CONTROL_OP_CHOICE, ControlEdge, OrchStepStatus,
+        };
+        let mut world = match TensorQuantaleWorld::empty() {
+            Ok(w) => w,
+            Err(e) => { eprintln!("skip: {e}"); return Ok(()); }
+        };
+        // Two CHOICE edges from node 0.
+        world.load_control_table(
+            vec![
+                ControlEdge { op: CONTROL_OP_CHOICE, lhs: 0, rhs: 1,
+                               guard: 0, order: 0, bound: 0 },
+                ControlEdge { op: CONTROL_OP_CHOICE, lhs: 0, rhs: 2,
+                               guard: 0, order: 1, bound: 0 },
+            ],
+            vec![],
+        )?;
+        // Node 1 scores significantly higher than node 2.
+        world.embed_tensor_edges(&[
+            TensorEdge::new(0, 1, 0.9, 0.1, 0.9),
+            TensorEdge::new(0, 2, 0.3, 0.8, 0.3),
+        ])?;
+
+        let status = world.orchestrate_step()?;
+        assert_ne!(status, OrchStepStatus::Error, "must not error");
+
+        let state = world.orch_state_snapshot()?;
+        assert_eq!(state.step, 1);
+        assert_eq!(
+            state.selected_control_op, CONTROL_OP_CHOICE,
+            "selected_control_op must be CHOICE"
+        );
+        assert_eq!(
+            state.selected_node, 1,
+            "CHOICE must select the highest-scoring branch (node 1)"
+        );
+        assert_eq!(state.control_epoch, 1);
+        Ok(())
+    }
+
+    /// Phase-9: a STAR_BOUNDED control edge increments the per-edge counter and
+    /// commits the body step through the GPU scheduler.
+    #[test]
+    fn orchestrate_step_star_body_increments_counter()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use quantale_semiring_v2::{
+            CONTROL_OP_STAR_BOUNDED, ControlEdge, OrchStepStatus,
+        };
+        let mut world = match TensorQuantaleWorld::empty() {
+            Ok(w) => w,
+            Err(e) => { eprintln!("skip: {e}"); return Ok(()); }
+        };
+        // STAR_BOUNDED back-edge: lhs=0 → rhs=1 (body node), bound=3.
+        world.load_control_table(
+            vec![ControlEdge { op: CONTROL_OP_STAR_BOUNDED, lhs: 0, rhs: 1,
+                               guard: 0, order: 0, bound: 3 }],
+            vec![],
+        )?;
+        world.embed_tensor_edges(&[TensorEdge::new(0, 1, 0.8, 1.0, 0.8)])?;
+
+        let status = world.orchestrate_step()?;
+        assert_ne!(status, OrchStepStatus::Error, "must not error");
+
+        let state = world.orch_state_snapshot()?;
+        assert_eq!(state.step, 1);
+        assert_eq!(
+            state.selected_control_op, CONTROL_OP_STAR_BOUNDED,
+            "selected_control_op must be STAR_BOUNDED"
+        );
+        assert_eq!(state.selected_node, 1, "body node (rhs) must become active");
+        assert_eq!(
+            state.star_counter, 1,
+            "legacy star_counter must increment after body step"
+        );
+        assert_eq!(
+            state.star_counter_epoch, 1,
+            "star_counter_epoch must increment"
+        );
+        assert_eq!(state.star_bound, 3, "star_bound must reflect edge bound");
+        assert_eq!(state.control_epoch, 1);
+        Ok(())
+    }
+
+    /// Phase-9: PAR control edges with independent effects are committed
+    /// together by the GPU scheduler in a single step.
+    #[test]
+    fn orchestrate_step_par_commits_independent_members()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use quantale_semiring_v2::{
+            CONTROL_OP_PAR, ControlEdge, EffectTable, OrchStepStatus,
+        };
+        let mut world = match TensorQuantaleWorld::empty() {
+            Ok(w) => w,
+            Err(e) => { eprintln!("skip: {e}"); return Ok(()); }
+        };
+        // Two PAR edges from node 0 to nodes 1 and 2.
+        world.load_control_table(
+            vec![
+                ControlEdge { op: CONTROL_OP_PAR, lhs: 0, rhs: 1,
+                               guard: 0, order: 0, bound: 0 },
+                ControlEdge { op: CONTROL_OP_PAR, lhs: 0, rhs: 2,
+                               guard: 0, order: 1, bound: 0 },
+            ],
+            // Non-overlapping effect sets → nodes 1 and 2 are independent.
+            vec![
+                EffectTable { reads: 0, writes: 0, locks: 0, safety_class: 0 }, // node 0
+                EffectTable { reads: 0b0001, writes: 0b0010, locks: 0, safety_class: 0 }, // node 1
+                EffectTable { reads: 0b0100, writes: 0b1000, locks: 0, safety_class: 0 }, // node 2
+            ],
+        )?;
+        world.embed_tensor_edges(&[
+            TensorEdge::new(0, 1, 0.8, 1.0, 0.8),
+            TensorEdge::new(0, 2, 0.7, 1.0, 0.7),
+        ])?;
+
+        let status = world.orchestrate_step()?;
+        assert_ne!(status, OrchStepStatus::Error, "must not error");
+
+        let state = world.orch_state_snapshot()?;
+        assert_eq!(state.step, 1, "step must increment");
+        assert_eq!(
+            state.selected_control_op, CONTROL_OP_PAR,
+            "selected_control_op must be PAR"
+        );
+        assert_eq!(state.control_epoch, 1, "control_epoch must increment");
         Ok(())
     }
 }

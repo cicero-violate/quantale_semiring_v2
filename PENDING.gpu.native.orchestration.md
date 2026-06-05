@@ -17,9 +17,11 @@ The ControlEdge + EffectTable device tables drive deterministic selection.
 Per-edge star counters are GPU-resident and included in replay snapshots.
 Process/IO work is explicit: the GPU emits DeviceCommand; the CPU services it.
 
-The only remaining gap is **Phase 9** (see below): retiring the standalone
-`control_flow_advance` side-path API once scheduler-integrated test coverage
-is stable.
+All nine phases are complete as of 2026-06-05.  Phase 9 added
+scheduler-integrated tests for SEQ, PAR, CHOICE, and STAR_BOUNDED through
+`orchestrate_step`; `control_flow_advance` is now `#[deprecated]`.
+Two correctness fixes were applied: PAR was missing from
+`select_control_decision` and STAR_EXIT did not consume its back-edge.
 
 ---
 

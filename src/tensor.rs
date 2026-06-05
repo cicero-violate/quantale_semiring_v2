@@ -2370,6 +2370,13 @@ impl TensorQuantaleWorld {
         .map_err(|e| CudaError::new(STAR_COUNTERS_INIT_KERNEL, e))
     }
 
+    /// Look up and advance the matching control edge for (src, dst).
+    ///
+    /// Prefer `orchestrate_step` for all runtime use.  This side-path kernel
+    /// mutates `OrchestrationState` directly and bypasses the scheduler's
+    /// deterministic selection logic.  It is retained only for legacy tests;
+    /// new tests should observe control-flow behavior through `orchestrate_step`.
+    #[deprecated(since = "0.0.0", note = "use orchestrate_step; this side-path bypasses scheduler selection")]
     pub fn control_flow_advance(&mut self, src: i32, dst: i32) -> Result<i32, CudaError> {
         let f = self
             .dev

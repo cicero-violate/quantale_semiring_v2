@@ -1412,6 +1412,16 @@ __device__ ControlDecision select_control_decision(const TensorWorldBundle* w) {
         ControlDecision d = { CONTROL_CHOICE_READY, idx, lhs, rhs, w->control_edges[idx].order };
         return d;
     }
+    // PAR (lower priority than SEQ/STAR/CHOICE, higher than HALT)
+    {
+        int par_idxs[MAX_PAR_INLINE_SIZE], par_rhs_arr[MAX_PAR_INLINE_SIZE];
+        int par_sz = ready_par(w, par_idxs, par_rhs_arr, MAX_PAR_INLINE_SIZE);
+        if (par_sz > 0) {
+            const ControlEdge* e0 = &w->control_edges[par_idxs[0]];
+            ControlDecision d = { CONTROL_PAR_READY, par_idxs[0], e0->lhs, par_rhs_arr[0], e0->order };
+            return d;
+        }
+    }
     // HALT control edge
     for (int i = 0; i < w->control_edge_count; ++i) {
         const ControlEdge* e = &w->control_edges[i];
@@ -1606,11 +1616,14 @@ extern "C" __global__ void tensor_quantale_orchestrate_step(
             return;
         }
 
-        // STAR exit: counter exhausted — advance active to successor without body.
+        // STAR exit: counter exhausted — consume the back-edge so it cannot
+        // re-fire, advance active to lhs (the exit node), let subsequent SEQ/
+        // CHOICE edges from lhs route to the loop continuation.
         if (ctrl.kind == CONTROL_STAR_EXIT_READY) {
-            int exit_dst = (ctrl.rhs >= 0 && ctrl.rhs < N) ? ctrl.rhs : HALT_NODE;
-            if (state) { state->step += 1; state->selected_node = exit_dst;
-                         state->selected_src = ctrl.lhs; state->selected_dst = exit_dst;
+            if (ctrl.lhs >= 0 && ctrl.lhs < N && ctrl.rhs >= 0 && ctrl.rhs < N)
+                atomicExch(&world->consumed[ctrl.lhs * N + ctrl.rhs], 1);
+            if (state) { state->step += 1; state->selected_node = ctrl.lhs;
+                         state->selected_src = ctrl.lhs; state->selected_dst = ctrl.lhs;
                          state->selected_control_edge = ctrl.edge_idx;
                          state->selected_control_op   = CONTROL_OP_STAR_BOUNDED;
                          state->selected_control_lhs  = ctrl.lhs;
@@ -1618,9 +1631,9 @@ extern "C" __global__ void tensor_quantale_orchestrate_step(
                          state->control_epoch += 1;
                          state->blocked = 0; }
             for (int i = 0; i < N; ++i) world->next_active[i] = 0;
-            if (exit_dst >= 0 && exit_dst < N) world->next_active[exit_dst] = 1;
+            if (ctrl.lhs >= 0 && ctrl.lhs < N) world->next_active[ctrl.lhs] = 1;
             for (int i = 0; i < N; ++i) world->active[i] = world->next_active[i];
-            *status_out = (exit_dst == HALT_NODE) ? ORCH_HALTED : ORCH_CONTINUE;
+            *status_out = ORCH_CONTINUE;
             return;
         }
 
