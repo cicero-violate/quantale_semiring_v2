@@ -1,4 +1,4 @@
-# Pending: Delete Legacy Code
+# Completed: Delete Legacy Code
 
 ## Context
 
@@ -355,4 +355,21 @@ topology.hot.json
 split_topology
 SplitTopologyRuntime
 SYNTHETIC_HOT_NODES
+```
+
+## Closure Status
+
+Status: closed. No pending implementation work remains in this deletion plan.
+
+The active runtime, tests, CUDA kernels, and topology generator no longer reference the retired legacy surfaces listed in this document. The file is retained as the completion record for the deletion campaign, not as an active pending work queue.
+
+Post-closure cleanup check:
+
+```text
+legacy-cpu-orchestration: none in active code
+runtime_parallel/runtime_dispatch/runtime_reset: deleted
+queue_lattice_update/drain_lattice_queue/event_queue: deleted
+frontier_step/tick compatibility path: deleted
+topology.control.json/topology.hot.json split views: deleted
+SplitTopologyRuntime/SystemConfig::split_topology: deleted
 ```
