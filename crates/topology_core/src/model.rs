@@ -8,6 +8,8 @@ pub struct TopologyNode {
     pub node_type: String,
     #[serde(default)]
     pub action: Option<String>,
+    #[serde(default)]
+    pub consumption: Option<String>,
 }
 
 impl TopologyNode {

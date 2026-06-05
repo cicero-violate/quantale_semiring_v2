@@ -17,7 +17,9 @@ use quantale_semiring_v2::{
     Node, NodeContracts, ProcessReceipt, ProjectionBias, LAYER_CONFIDENCE,
 };
 #[cfg(all(feature = "cuda", not(feature = "legacy-cpu-orchestration")))]
-use quantale_semiring_v2::{build_node_dispatch_kinds, DispatchKindSummary};
+use quantale_semiring_v2::{
+    build_node_dispatch_kinds, build_node_reentrant_mask, DispatchKindSummary,
+};
 use quantale_semiring_v2::{
     check, check_with_operators, compile_and_emit_pattern_edges, compile_pattern, console,
     format_violations, load_compiled_pattern_edges, load_default_patterns,
@@ -119,9 +121,13 @@ fn main() {
     #[cfg(all(feature = "cuda", not(feature = "legacy-cpu-orchestration")))]
     {
         let dispatch_kinds = build_node_dispatch_kinds(&epoch.topology.document, &config);
+        let reentrant_mask = build_node_reentrant_mask(&epoch.topology.document);
         let dispatch_summary = DispatchKindSummary::from_kinds(&dispatch_kinds);
         if let Err(error) = epoch.world.set_dispatch_kinds(&dispatch_kinds) {
             fatal!("gpu_native", "dispatch_kinds_upload_failed", error);
+        }
+        if let Err(error) = epoch.world.set_reentrant_mask(&reentrant_mask) {
+            fatal!("gpu_native", "reentrant_mask_upload_failed", error);
         }
         console::info(
             "gpu_native",

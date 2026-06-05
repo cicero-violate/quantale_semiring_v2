@@ -7,6 +7,7 @@
       "type": "Execution"
     },
     {
+      "consumption": "reentrant",
       "id": 45,
       "name": "Execution::VectorScale",
       "type": "Execution"
@@ -17,16 +18,19 @@
       "type": "Execution"
     },
     {
+      "consumption": "reentrant",
       "id": 57,
       "name": "Analysis::Return1",
       "type": "Analysis"
     },
     {
+      "consumption": "reentrant",
       "id": 58,
       "name": "Analysis::Volatility",
       "type": "Analysis"
     },
     {
+      "consumption": "reentrant",
       "id": 59,
       "name": "Analysis::SignalScore",
       "type": "Analysis"

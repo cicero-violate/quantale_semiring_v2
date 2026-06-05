@@ -365,7 +365,12 @@ extern "C" __global__ void device_receipt_ext_drain(
                 atomicExch(&tensor[sidx], 0.0f);
             }
             ring[slot].consumed = 1;
-            if (state) atomicAdd(&state->pending_receipt_count, -1);
+            if (state) {
+                atomicAdd(&state->pending_receipt_count, -1);
+                if (state->pending_external_count > 0) {
+                    atomicAdd(&state->pending_external_count, -1);
+                }
+            }
         }
         h++;
     }
@@ -1288,6 +1293,7 @@ struct TensorWorldBundle {
     int*   consumed;
     int*   active;
     int*   next_active;
+    const int* reentrant_mask;
     const ProjectionBias* bias;
     DecisionReport* decision;
 };
@@ -1318,7 +1324,9 @@ __device__ int select_ready_singleton(
         if (confidence <= BOTTOM || safety <= BOTTOM || cost >= COST_INFINITY) continue;
 
         int hop = w->witness[cidx];
-        if (hop < 0 || hop >= N || w->consumed[src * N + hop] != 0) continue;
+        if (hop < 0 || hop >= N) continue;
+        int reusable_edge = w->reentrant_mask && (w->reentrant_mask[src] != 0 || w->reentrant_mask[hop] != 0);
+        if (!reusable_edge && w->consumed[src * N + hop] != 0) continue;
         if (dispatch_kinds && dispatch_kinds[hop] == DISPATCH_KIND_UNSUPPORTED) continue;
 
         float score = alpha * confidence - beta * cost + gamma * safety;
@@ -1395,7 +1403,12 @@ extern "C" __global__ void tensor_quantale_orchestrate_step(
                     atomicExch(&world->tensor[sidx], 0.0f);
                 }
                 ext_ring[slot].consumed = 1;
-                if (state) atomicAdd(&state->pending_receipt_count, -1);
+                if (state) {
+                    atomicAdd(&state->pending_receipt_count, -1);
+                    if (state->pending_external_count > 0) {
+                        atomicAdd(&state->pending_external_count, -1);
+                    }
+                }
             }
             h++;
         }
@@ -1437,7 +1450,10 @@ extern "C" __global__ void tensor_quantale_orchestrate_step(
 
     // ── 5. Commit consumed/active state ──────────────────────────────────────
     if (sel_src >= 0 && sel_src < N && sel_hop >= 0 && sel_hop < N) {
-        atomicExch(&world->consumed[sel_src * N + sel_hop], 1);
+        int reusable_edge = world->reentrant_mask && (world->reentrant_mask[sel_src] != 0 || world->reentrant_mask[sel_hop] != 0);
+        if (!reusable_edge) {
+            atomicExch(&world->consumed[sel_src * N + sel_hop], 1);
+        }
         for (int i = 0; i < N; ++i) world->next_active[i] = 0;
         world->next_active[sel_hop] = 1;
         for (int i = 0; i < N; ++i) world->active[i] = world->next_active[i];

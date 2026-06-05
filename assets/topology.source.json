@@ -282,6 +282,7 @@
       "name": "State::Input",
       "kind": "host_node",
       "purity": "deterministic_io",
+      "consumption": "reentrant",
       "runtime": {
         "backend": "python",
         "script": "crates/operators_lib/input.py"
@@ -377,6 +378,7 @@
     {
       "name": "State::Plan",
       "kind": "boundary_node",
+      "consumption": "reentrant",
       "runtime": {
         "backend": "python",
         "script": "crates/operators_lib/call_llm.py",
@@ -397,6 +399,7 @@
       "name": "State::Optimize",
       "kind": "host_node",
       "purity": "pure",
+      "consumption": "reentrant",
       "runtime": {
         "backend": "noop"
       },
@@ -412,6 +415,7 @@
       "name": "State::Execute",
       "kind": "host_node",
       "purity": "deterministic_io",
+      "consumption": "reentrant",
       "runtime": {
         "backend": "noop"
       },
@@ -448,6 +452,7 @@
       "name": "State::Memory",
       "kind": "host_node",
       "purity": "deterministic_io",
+      "consumption": "reentrant",
       "runtime": {
         "backend": "python",
         "script": "crates/operators_lib/memory.py"
@@ -466,6 +471,7 @@
       "name": "State::Learn",
       "kind": "host_node",
       "purity": "deterministic_io",
+      "consumption": "reentrant",
       "runtime": {
         "backend": "python",
         "script": "crates/operators_lib/learn.py"
@@ -666,6 +672,7 @@
     {
       "name": "Event::InputAccepted",
       "kind": "event_node",
+      "consumption": "reentrant",
       "runtime": {
         "backend": "noop"
       },
@@ -826,6 +833,7 @@
     {
       "name": "Event::LearnUpdated",
       "kind": "event_node",
+      "consumption": "reentrant",
       "runtime": {
         "backend": "noop"
       },
@@ -853,6 +861,7 @@
     {
       "name": "Execution::VectorScale",
       "kind": "kernel",
+      "consumption": "reentrant",
       "runtime": {
         "backend": "cuda",
         "module": "math",
@@ -888,6 +897,7 @@
     {
       "name": "State::MarketFeed",
       "kind": "boundary_node",
+      "consumption": "reentrant",
       "runtime": {
         "backend": "python",
         "script": "crates/operators_lib/market_feed.py"
@@ -911,6 +921,7 @@
     {
       "name": "State::AnalysisPlan",
       "kind": "boundary_node",
+      "consumption": "reentrant",
       "runtime": {
         "backend": "python",
         "script": "crates/operators_lib/call_llm.py",
@@ -931,6 +942,7 @@
     {
       "name": "State::TradePlan",
       "kind": "boundary_node",
+      "consumption": "reentrant",
       "runtime": {
         "backend": "python",
         "script": "crates/operators_lib/call_llm.py",
@@ -951,6 +963,7 @@
     {
       "name": "State::PaperTrade",
       "kind": "boundary_node",
+      "consumption": "reentrant",
       "runtime": {
         "backend": "python",
         "script": "crates/operators_lib/paper_trade.py"
@@ -975,6 +988,7 @@
     {
       "name": "Event::MarketFeedUpdated",
       "kind": "event_node",
+      "consumption": "reentrant",
       "runtime": {
         "backend": "noop"
       },
@@ -985,6 +999,7 @@
     {
       "name": "Event::AnalysisPlanReady",
       "kind": "event_node",
+      "consumption": "reentrant",
       "runtime": {
         "backend": "noop"
       },
@@ -995,6 +1010,7 @@
     {
       "name": "Event::AnalysisFinished",
       "kind": "event_node",
+      "consumption": "reentrant",
       "runtime": {
         "backend": "noop"
       },
@@ -1005,6 +1021,7 @@
     {
       "name": "Event::TradeDecisionReady",
       "kind": "event_node",
+      "consumption": "reentrant",
       "runtime": {
         "backend": "noop"
       },
@@ -1015,6 +1032,7 @@
     {
       "name": "Event::PaperTradeFilled",
       "kind": "event_node",
+      "consumption": "reentrant",
       "runtime": {
         "backend": "noop"
       },
@@ -1025,6 +1043,7 @@
     {
       "name": "Event::PaperTradeRejected",
       "kind": "event_node",
+      "consumption": "reentrant",
       "runtime": {
         "backend": "noop"
       },
@@ -1035,6 +1054,7 @@
     {
       "name": "Analysis::Return1",
       "kind": "kernel",
+      "consumption": "reentrant",
       "runtime": {
         "backend": "cuda",
         "module": "analysis",
@@ -1052,6 +1072,7 @@
     {
       "name": "Analysis::Volatility",
       "kind": "kernel",
+      "consumption": "reentrant",
       "runtime": {
         "backend": "cuda",
         "module": "analysis",
@@ -1069,6 +1090,7 @@
     {
       "name": "Analysis::SignalScore",
       "kind": "kernel",
+      "consumption": "reentrant",
       "runtime": {
         "backend": "cuda",
         "module": "analysis",
@@ -1086,6 +1108,7 @@
     {
       "name": "State::Introspect",
       "kind": "boundary_node",
+      "consumption": "reentrant",
       "runtime": {
         "backend": "python",
         "script": "crates/operators_lib/call_llm.py",

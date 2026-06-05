@@ -821,6 +821,9 @@ pub struct OrchestrationBuffers {
     /// `DISPATCH_KIND_HF_DEVICE` for all nodes; callers can overwrite entries
     /// for EXTERNAL_PROCESS / EXTERNAL_IO nodes via `set_dispatch_kinds`.
     pub dispatch_kinds: CudaSlice<i32>,
+    /// Phase-9: per-node reentrant-consumption mask.  Edges incident to nodes
+    /// with mask=1 are reusable across continuous orchestration cycles.
+    pub reentrant_mask: CudaSlice<i32>,
     /// Phase-2: single-element scratch buffer for the ORCH_* step status.
     pub step_status: CudaSlice<i32>,
     /// Phase-2: device copy of the default `ProjectionBias` used by the
@@ -1119,6 +1122,7 @@ pub(crate) struct TensorWorldBundleHost {
     pub consumed_dev: u64,
     pub active_dev: u64,
     pub next_active_dev: u64,
+    pub reentrant_mask_dev: u64,
     pub bias_dev: u64,
     pub decision_dev: u64,
 }
@@ -1381,6 +1385,9 @@ impl TensorQuantaleWorld {
         let dispatch_kinds = dev
             .htod_copy(vec![DISPATCH_KIND_HF_DEVICE; TENSOR_NODE_COUNT])
             .map_err(|error| CudaError::new("htod_copy dispatch_kinds", error))?;
+        let reentrant_mask = dev
+            .htod_copy(vec![0_i32; TENSOR_NODE_COUNT])
+            .map_err(|error| CudaError::new("htod_copy reentrant_mask", error))?;
         let step_status = dev
             .htod_copy(vec![ORCH_CONTINUE])
             .map_err(|error| CudaError::new("htod_copy step_status", error))?;
@@ -1500,6 +1507,7 @@ impl TensorQuantaleWorld {
                 receipt_ext_head,
                 receipt_ext_tail,
                 dispatch_kinds,
+                reentrant_mask,
                 step_status,
                 default_bias,
                 control_edges,
@@ -2207,6 +2215,22 @@ impl TensorQuantaleWorld {
         Ok(())
     }
 
+    /// Upload a node-level reentrant-consumption mask.
+    /// `mask[id] != 0` means edges incident to that node are not one-shot.
+    pub fn set_reentrant_mask(&mut self, mask: &[i32]) -> Result<(), CudaError> {
+        if mask.len() != TENSOR_NODE_COUNT {
+            return Err(CudaError::invalid_input(format!(
+                "set_reentrant_mask: expected {TENSOR_NODE_COUNT} entries, got {}",
+                mask.len()
+            )));
+        }
+        self.orch_buffers.reentrant_mask = self
+            .dev
+            .htod_copy(mask.to_vec())
+            .map_err(|error| CudaError::new("htod_copy reentrant_mask update", error))?;
+        Ok(())
+    }
+
     /// Launch one `tensor_quantale_orchestrate_step` and return the status.
     ///
     /// The kernel:
@@ -2224,6 +2248,7 @@ impl TensorQuantaleWorld {
             consumed_dev: *self.consumed.device_ptr() as u64,
             active_dev: *self.active.device_ptr() as u64,
             next_active_dev: *self.next_active.device_ptr() as u64,
+            reentrant_mask_dev: *self.orch_buffers.reentrant_mask.device_ptr() as u64,
             bias_dev: *self.orch_buffers.default_bias.device_ptr() as u64,
             decision_dev: *self.decision.device_ptr() as u64,
         };

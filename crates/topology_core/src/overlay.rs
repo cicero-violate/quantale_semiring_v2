@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::fusion::{FusionRegion, partition_fusible_regions};
+use crate::fusion::{partition_fusible_regions, FusionRegion};
 use crate::math::{apply_compiled_math_operators, compile_math_source};
 use crate::programs::{
     build_effects_map, compile_source_programs, emit_patterns_compat, validate_boundary_governance,
@@ -526,6 +526,12 @@ fn runtime_node_from_source(node: &Value) -> Result<Value, String> {
     );
     if let Some(action) = action_from_name(name) {
         object.insert("action".to_string(), Value::String(action.to_string()));
+    }
+    if node.get("consumption").and_then(Value::as_str) == Some("reentrant") {
+        object.insert(
+            "consumption".to_string(),
+            Value::String("reentrant".to_string()),
+        );
     }
     Ok(Value::Object(object))
 }

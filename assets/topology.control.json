@@ -7,6 +7,7 @@
       "type": "State"
     },
     {
+      "consumption": "reentrant",
       "id": 1,
       "name": "State::Input",
       "type": "State"
@@ -37,17 +38,20 @@
       "type": "State"
     },
     {
+      "consumption": "reentrant",
       "id": 7,
       "name": "State::Plan",
       "type": "State"
     },
     {
+      "consumption": "reentrant",
       "id": 8,
       "name": "State::Optimize",
       "type": "State"
     },
     {
       "action": "execute",
+      "consumption": "reentrant",
       "id": 9,
       "name": "State::Execute",
       "type": "State"
@@ -58,11 +62,13 @@
       "type": "State"
     },
     {
+      "consumption": "reentrant",
       "id": 11,
       "name": "State::Memory",
       "type": "State"
     },
     {
+      "consumption": "reentrant",
       "id": 12,
       "name": "State::Learn",
       "type": "State"
@@ -143,6 +149,7 @@
       "type": "Event"
     },
     {
+      "consumption": "reentrant",
       "id": 27,
       "name": "Event::InputAccepted",
       "type": "Event"
@@ -223,61 +230,73 @@
       "type": "Event"
     },
     {
+      "consumption": "reentrant",
       "id": 43,
       "name": "Event::LearnUpdated",
       "type": "Event"
     },
     {
+      "consumption": "reentrant",
       "id": 47,
       "name": "State::MarketFeed",
       "type": "State"
     },
     {
+      "consumption": "reentrant",
       "id": 48,
       "name": "State::AnalysisPlan",
       "type": "State"
     },
     {
+      "consumption": "reentrant",
       "id": 49,
       "name": "State::TradePlan",
       "type": "State"
     },
     {
+      "consumption": "reentrant",
       "id": 50,
       "name": "State::PaperTrade",
       "type": "State"
     },
     {
+      "consumption": "reentrant",
       "id": 51,
       "name": "Event::MarketFeedUpdated",
       "type": "Event"
     },
     {
+      "consumption": "reentrant",
       "id": 52,
       "name": "Event::AnalysisPlanReady",
       "type": "Event"
     },
     {
+      "consumption": "reentrant",
       "id": 53,
       "name": "Event::AnalysisFinished",
       "type": "Event"
     },
     {
+      "consumption": "reentrant",
       "id": 54,
       "name": "Event::TradeDecisionReady",
       "type": "Event"
     },
     {
+      "consumption": "reentrant",
       "id": 55,
       "name": "Event::PaperTradeFilled",
       "type": "Event"
     },
     {
+      "consumption": "reentrant",
       "id": 56,
       "name": "Event::PaperTradeRejected",
       "type": "Event"
     },
     {
+      "consumption": "reentrant",
       "id": 60,
       "name": "State::Introspect",
       "type": "State"

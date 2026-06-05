@@ -52,6 +52,24 @@ pub fn build_node_dispatch_kinds(topology: &GraphTopology, config: &SystemConfig
     kinds
 }
 
+pub fn build_node_reentrant_mask(topology: &GraphTopology) -> Vec<i32> {
+    let mut mask = vec![0; TENSOR_NODE_COUNT];
+
+    for node in &topology.nodes {
+        if node.id >= TENSOR_NODE_COUNT {
+            continue;
+        }
+        if node.consumption.as_deref() == Some("reentrant")
+            || matches!(node.node_type.as_str(), "Event" | "Control")
+                && node.action.as_deref() != Some("halt")
+        {
+            mask[node.id] = 1;
+        }
+    }
+
+    mask
+}
+
 fn classify_node_dispatch_kind(node: &TopologyNode, config: &SystemConfig) -> i32 {
     let name = node.name.as_str();
 
@@ -177,5 +195,17 @@ mod tests {
         let summary = DispatchKindSummary::from_kinds(&kinds);
         assert!(summary.external_io > 0);
         assert!(summary.external_process > 0);
+    }
+
+    #[test]
+    fn default_reentrant_mask_marks_repeatable_cycle_nodes() {
+        let (topology, _) = default_table();
+        let mask = build_node_reentrant_mask(&topology.document);
+        let input = topology.registry().id_of("State::Input").unwrap();
+        let vector_scale = topology.registry().id_of("Execution::VectorScale").unwrap();
+        let halt = topology.registry().id_of("Control::Halt").unwrap();
+        assert_eq!(mask[input], 1);
+        assert_eq!(mask[vector_scale], 1);
+        assert_eq!(mask[halt], 0);
     }
 }

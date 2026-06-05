@@ -574,6 +574,15 @@ fn check_structural(violations: &mut Vec<TopologyViolation>, topology: &GraphTop
         if halt_ids.contains(&nid) {
             continue;
         }
+        if topology
+            .nodes
+            .iter()
+            .find(|node| node.id == nid)
+            .and_then(|node| node.consumption.as_deref())
+            == Some("reentrant")
+        {
+            continue;
+        }
         let out_count = forward.get(&nid).map(|v| v.len()).unwrap_or(0);
         let in_count = reverse.get(&nid).map(|v| v.len()).unwrap_or(0);
         if out_count == 1 && in_count >= 2 {
