@@ -1,0 +1,487 @@
+{
+  "edges": [
+    {
+      "confidence": 0.949999988079071,
+      "cost": 1.0,
+      "from": "State::Plan",
+      "safety": 0.8999999761581421,
+      "to": "State::Optimize"
+    },
+    {
+      "confidence": 0.949999988079071,
+      "cost": 1.0,
+      "from": "State::Optimize",
+      "safety": 0.8999999761581421,
+      "to": "State::Execute"
+    },
+    {
+      "confidence": 0.800000011920929,
+      "cost": 2.0,
+      "from": "Control::Repair",
+      "safety": 0.8500000238418579,
+      "to": "State::Optimize"
+    },
+    {
+      "confidence": 0.800000011920929,
+      "cost": 2.0,
+      "from": "Control::Retry",
+      "safety": 0.8500000238418579,
+      "to": "State::Optimize"
+    },
+    {
+      "confidence": 0.699999988079071,
+      "cost": 1.0,
+      "from": "State::Validate",
+      "safety": 0.8999999761581421,
+      "to": "State::Memory"
+    },
+    {
+      "confidence": 0.699999988079071,
+      "cost": 1.0,
+      "from": "State::Memory",
+      "safety": 0.8999999761581421,
+      "to": "State::Learn"
+    },
+    {
+      "confidence": 0.699999988079071,
+      "cost": 1.0,
+      "from": "State::Validate",
+      "safety": 0.8999999761581421,
+      "to": "State::Memory"
+    },
+    {
+      "confidence": 0.699999988079071,
+      "cost": 1.0,
+      "from": "State::Memory",
+      "safety": 0.8999999761581421,
+      "to": "State::Learn"
+    },
+    {
+      "confidence": 0.699999988079071,
+      "cost": 1.0,
+      "from": "State::Learn",
+      "safety": 0.8999999761581421,
+      "to": "State::Validate"
+    },
+    {
+      "confidence": 0.699999988079071,
+      "cost": 1.0,
+      "from": "State::Validate",
+      "safety": 0.8999999761581421,
+      "to": "State::Memory"
+    },
+    {
+      "confidence": 0.699999988079071,
+      "cost": 1.0,
+      "from": "State::Memory",
+      "safety": 0.8999999761581421,
+      "to": "State::Learn"
+    },
+    {
+      "confidence": 0.699999988079071,
+      "cost": 1.0,
+      "from": "State::Learn",
+      "safety": 0.8999999761581421,
+      "to": "State::Validate"
+    },
+    {
+      "confidence": 0.9900000095367432,
+      "cost": 0.009999999776482582,
+      "from": "State::Map",
+      "safety": 0.9900000095367432,
+      "to": "State::Search"
+    },
+    {
+      "confidence": 0.9900000095367432,
+      "cost": 0.009999999776482582,
+      "from": "State::Parse",
+      "safety": 0.9900000095367432,
+      "to": "State::Score"
+    },
+    {
+      "confidence": 0.9900000095367432,
+      "cost": 0.009999999776482582,
+      "from": "Event::InputAccepted",
+      "safety": 0.9900000095367432,
+      "to": "State::Map"
+    },
+    {
+      "confidence": 0.9900000095367432,
+      "cost": 0.009999999776482582,
+      "from": "Event::InputAccepted",
+      "safety": 0.9900000095367432,
+      "to": "State::Parse"
+    },
+    {
+      "confidence": 0.9100000262260437,
+      "cost": 1.0,
+      "from": "State::Input",
+      "safety": 0.8999999761581421,
+      "to": "State::MarketFeed"
+    },
+    {
+      "confidence": 0.9100000262260437,
+      "cost": 1.0,
+      "from": "State::MarketFeed",
+      "safety": 0.8999999761581421,
+      "to": "Event::MarketFeedUpdated"
+    },
+    {
+      "confidence": 0.9100000262260437,
+      "cost": 1.0,
+      "from": "Event::MarketFeedUpdated",
+      "safety": 0.8999999761581421,
+      "to": "State::AnalysisPlan"
+    },
+    {
+      "confidence": 0.9100000262260437,
+      "cost": 1.0,
+      "from": "State::AnalysisPlan",
+      "safety": 0.8999999761581421,
+      "to": "Event::AnalysisPlanReady"
+    },
+    {
+      "confidence": 0.9100000262260437,
+      "cost": 1.0,
+      "from": "Event::AnalysisPlanReady",
+      "safety": 0.8999999761581421,
+      "to": "Analysis::Return1"
+    },
+    {
+      "confidence": 0.9100000262260437,
+      "cost": 1.0,
+      "from": "Analysis::Return1",
+      "safety": 0.8999999761581421,
+      "to": "Analysis::Volatility"
+    },
+    {
+      "confidence": 0.9100000262260437,
+      "cost": 1.0,
+      "from": "Analysis::Volatility",
+      "safety": 0.8999999761581421,
+      "to": "Analysis::SignalScore"
+    },
+    {
+      "confidence": 0.9100000262260437,
+      "cost": 1.0,
+      "from": "Analysis::SignalScore",
+      "safety": 0.8999999761581421,
+      "to": "Event::AnalysisFinished"
+    },
+    {
+      "confidence": 0.9100000262260437,
+      "cost": 1.0,
+      "from": "Event::AnalysisFinished",
+      "safety": 0.8999999761581421,
+      "to": "State::Plan"
+    },
+    {
+      "confidence": 0.9100000262260437,
+      "cost": 1.0,
+      "from": "State::Plan",
+      "safety": 0.8999999761581421,
+      "to": "State::TradePlan"
+    },
+    {
+      "confidence": 0.9100000262260437,
+      "cost": 1.0,
+      "from": "State::TradePlan",
+      "safety": 0.8999999761581421,
+      "to": "Event::TradeDecisionReady"
+    },
+    {
+      "confidence": 0.9100000262260437,
+      "cost": 1.0,
+      "from": "Event::TradeDecisionReady",
+      "safety": 0.8999999761581421,
+      "to": "State::PaperTrade"
+    },
+    {
+      "confidence": 0.7200000286102295,
+      "cost": 1.0,
+      "from": "State::PaperTrade",
+      "safety": 0.8600000143051147,
+      "to": "Event::PaperTradeRejected"
+    },
+    {
+      "confidence": 0.7200000286102295,
+      "cost": 1.0,
+      "from": "Event::PaperTradeRejected",
+      "safety": 0.8600000143051147,
+      "to": "Control::Repair"
+    },
+    {
+      "confidence": 0.7200000286102295,
+      "cost": 1.0,
+      "from": "Control::Repair",
+      "safety": 0.8600000143051147,
+      "to": "Control::Retry"
+    },
+    {
+      "confidence": 0.7200000286102295,
+      "cost": 1.0,
+      "from": "State::PaperTrade",
+      "safety": 0.8600000143051147,
+      "to": "Event::PaperTradeRejected"
+    },
+    {
+      "confidence": 0.7200000286102295,
+      "cost": 1.0,
+      "from": "Event::PaperTradeRejected",
+      "safety": 0.8600000143051147,
+      "to": "Control::Repair"
+    },
+    {
+      "confidence": 0.7200000286102295,
+      "cost": 1.0,
+      "from": "Control::Repair",
+      "safety": 0.8600000143051147,
+      "to": "Control::Retry"
+    },
+    {
+      "confidence": 0.7200000286102295,
+      "cost": 1.0,
+      "from": "Control::Retry",
+      "safety": 0.8600000143051147,
+      "to": "State::PaperTrade"
+    },
+    {
+      "confidence": 0.7200000286102295,
+      "cost": 1.0,
+      "from": "State::PaperTrade",
+      "safety": 0.8600000143051147,
+      "to": "Event::PaperTradeRejected"
+    },
+    {
+      "confidence": 0.7200000286102295,
+      "cost": 1.0,
+      "from": "Event::PaperTradeRejected",
+      "safety": 0.8600000143051147,
+      "to": "Control::Repair"
+    },
+    {
+      "confidence": 0.7200000286102295,
+      "cost": 1.0,
+      "from": "Control::Repair",
+      "safety": 0.8600000143051147,
+      "to": "Control::Retry"
+    },
+    {
+      "confidence": 0.7200000286102295,
+      "cost": 1.0,
+      "from": "Control::Retry",
+      "safety": 0.8600000143051147,
+      "to": "State::PaperTrade"
+    },
+    {
+      "confidence": 0.9100000262260437,
+      "cost": 1.0,
+      "from": "State::Input",
+      "safety": 0.8999999761581421,
+      "to": "State::MarketFeed"
+    },
+    {
+      "confidence": 0.9100000262260437,
+      "cost": 1.0,
+      "from": "State::MarketFeed",
+      "safety": 0.8999999761581421,
+      "to": "Event::MarketFeedUpdated"
+    },
+    {
+      "confidence": 0.9100000262260437,
+      "cost": 1.0,
+      "from": "Event::MarketFeedUpdated",
+      "safety": 0.8999999761581421,
+      "to": "State::AnalysisPlan"
+    },
+    {
+      "confidence": 0.9100000262260437,
+      "cost": 1.0,
+      "from": "State::AnalysisPlan",
+      "safety": 0.8999999761581421,
+      "to": "Event::AnalysisPlanReady"
+    },
+    {
+      "confidence": 0.9100000262260437,
+      "cost": 1.0,
+      "from": "Event::AnalysisPlanReady",
+      "safety": 0.8999999761581421,
+      "to": "Analysis::Return1"
+    },
+    {
+      "confidence": 0.9100000262260437,
+      "cost": 1.0,
+      "from": "Analysis::Return1",
+      "safety": 0.8999999761581421,
+      "to": "Analysis::Volatility"
+    },
+    {
+      "confidence": 0.9100000262260437,
+      "cost": 1.0,
+      "from": "Analysis::Volatility",
+      "safety": 0.8999999761581421,
+      "to": "Analysis::SignalScore"
+    },
+    {
+      "confidence": 0.9100000262260437,
+      "cost": 1.0,
+      "from": "Analysis::SignalScore",
+      "safety": 0.8999999761581421,
+      "to": "Event::AnalysisFinished"
+    },
+    {
+      "confidence": 0.9100000262260437,
+      "cost": 1.0,
+      "from": "Event::AnalysisFinished",
+      "safety": 0.8999999761581421,
+      "to": "State::Plan"
+    },
+    {
+      "confidence": 0.9100000262260437,
+      "cost": 1.0,
+      "from": "State::Plan",
+      "safety": 0.8999999761581421,
+      "to": "State::TradePlan"
+    },
+    {
+      "confidence": 0.9100000262260437,
+      "cost": 1.0,
+      "from": "State::TradePlan",
+      "safety": 0.8999999761581421,
+      "to": "Event::TradeDecisionReady"
+    },
+    {
+      "confidence": 0.9100000262260437,
+      "cost": 1.0,
+      "from": "Event::TradeDecisionReady",
+      "safety": 0.8999999761581421,
+      "to": "State::PaperTrade"
+    },
+    {
+      "confidence": 0.7400000095367432,
+      "cost": 1.0,
+      "from": "Event::PaperTradeRejected",
+      "safety": 0.8600000143051147,
+      "to": "Control::Repair"
+    },
+    {
+      "confidence": 0.7400000095367432,
+      "cost": 1.0,
+      "from": "Control::Repair",
+      "safety": 0.8600000143051147,
+      "to": "Control::Retry"
+    },
+    {
+      "confidence": 0.7400000095367432,
+      "cost": 1.0,
+      "from": "Control::Retry",
+      "safety": 0.8600000143051147,
+      "to": "State::PaperTrade"
+    },
+    {
+      "confidence": 0.7400000095367432,
+      "cost": 1.0,
+      "from": "Event::PaperTradeRejected",
+      "safety": 0.8600000143051147,
+      "to": "Control::Repair"
+    },
+    {
+      "confidence": 0.7400000095367432,
+      "cost": 1.0,
+      "from": "Control::Repair",
+      "safety": 0.8600000143051147,
+      "to": "Control::Retry"
+    },
+    {
+      "confidence": 0.7400000095367432,
+      "cost": 1.0,
+      "from": "Control::Retry",
+      "safety": 0.8600000143051147,
+      "to": "State::PaperTrade"
+    },
+    {
+      "confidence": 0.7400000095367432,
+      "cost": 1.0,
+      "from": "State::PaperTrade",
+      "safety": 0.8600000143051147,
+      "to": "Event::PaperTradeRejected"
+    },
+    {
+      "confidence": 0.7400000095367432,
+      "cost": 1.0,
+      "from": "Event::PaperTradeRejected",
+      "safety": 0.8600000143051147,
+      "to": "Control::Repair"
+    },
+    {
+      "confidence": 0.7400000095367432,
+      "cost": 1.0,
+      "from": "Control::Repair",
+      "safety": 0.8600000143051147,
+      "to": "Control::Retry"
+    },
+    {
+      "confidence": 0.7400000095367432,
+      "cost": 1.0,
+      "from": "Control::Retry",
+      "safety": 0.8600000143051147,
+      "to": "State::PaperTrade"
+    },
+    {
+      "confidence": 0.7400000095367432,
+      "cost": 1.0,
+      "from": "State::PaperTrade",
+      "safety": 0.8600000143051147,
+      "to": "Event::PaperTradeRejected"
+    },
+    {
+      "confidence": 0.949999988079071,
+      "cost": 1.0,
+      "from": "State::Input",
+      "safety": 0.9800000190734863,
+      "to": "State::MarketFeed"
+    },
+    {
+      "confidence": 0.949999988079071,
+      "cost": 1.0,
+      "from": "State::MarketFeed",
+      "safety": 0.9800000190734863,
+      "to": "State::AnalysisPlan"
+    },
+    {
+      "confidence": 0.949999988079071,
+      "cost": 1.0,
+      "from": "State::AnalysisPlan",
+      "safety": 0.9800000190734863,
+      "to": "Analysis::Return1"
+    },
+    {
+      "confidence": 0.949999988079071,
+      "cost": 1.0,
+      "from": "Analysis::Return1",
+      "safety": 0.9800000190734863,
+      "to": "Analysis::Volatility"
+    },
+    {
+      "confidence": 0.949999988079071,
+      "cost": 1.0,
+      "from": "Analysis::Volatility",
+      "safety": 0.9800000190734863,
+      "to": "Analysis::SignalScore"
+    },
+    {
+      "confidence": 0.949999988079071,
+      "cost": 1.0,
+      "from": "Analysis::SignalScore",
+      "safety": 0.9800000190734863,
+      "to": "State::Plan"
+    },
+    {
+      "confidence": 0.949999988079071,
+      "cost": 1.0,
+      "from": "State::Plan",
+      "safety": 0.9800000190734863,
+      "to": "State::TradePlan"
+    }
+  ]
+}

@@ -1,0 +1,100 @@
+{
+  "nodes": [
+    {
+      "covered": true,
+      "node": "State::Goal",
+      "reason": "noop_marker_device_receipt"
+    },
+    {
+      "covered": true,
+      "node": "Control::Allow",
+      "reason": "noop_marker_device_receipt"
+    },
+    {
+      "covered": true,
+      "node": "Control::Block",
+      "reason": "noop_marker_device_receipt"
+    },
+    {
+      "covered": true,
+      "node": "Control::Halt",
+      "reason": "noop_marker_device_receipt"
+    },
+    {
+      "covered": true,
+      "node": "Control::GateInput",
+      "reason": "noop_marker_device_receipt"
+    },
+    {
+      "covered": true,
+      "node": "Control::GateReceipt",
+      "reason": "noop_marker_device_receipt"
+    },
+    {
+      "covered": true,
+      "node": "Control::GateMemory",
+      "reason": "noop_marker_device_receipt"
+    },
+    {
+      "covered": true,
+      "node": "Control::GateLearn",
+      "reason": "noop_marker_device_receipt"
+    },
+    {
+      "covered": true,
+      "node": "Control::ChooseBest",
+      "reason": "noop_marker_device_receipt"
+    },
+    {
+      "covered": true,
+      "node": "Event::MapReady",
+      "reason": "noop_marker_device_receipt"
+    },
+    {
+      "covered": true,
+      "node": "Event::CandidateFound",
+      "reason": "noop_marker_device_receipt"
+    },
+    {
+      "covered": true,
+      "node": "Event::ScoreReady",
+      "reason": "noop_marker_device_receipt"
+    },
+    {
+      "covered": true,
+      "node": "Event::TopKSelected",
+      "reason": "noop_marker_device_receipt"
+    },
+    {
+      "covered": true,
+      "node": "Event::PlanReady",
+      "reason": "noop_marker_device_receipt"
+    },
+    {
+      "covered": true,
+      "node": "Event::OptimizeReady",
+      "reason": "noop_marker_device_receipt"
+    },
+    {
+      "covered": true,
+      "node": "Event::ExecuteStarted",
+      "reason": "noop_marker_device_receipt"
+    },
+    {
+      "covered": true,
+      "node": "Event::ExecuteFinished",
+      "reason": "noop_marker_device_receipt"
+    },
+    {
+      "covered": true,
+      "node": "Event::ReceiptAttached",
+      "reason": "noop_marker_device_receipt"
+    },
+    {
+      "covered": true,
+      "node": "Event::HashNonzero",
+      "reason": "noop_marker_device_receipt"
+    }
+  ],
+  "schema": "abstract_device_coverage.v1"
+}

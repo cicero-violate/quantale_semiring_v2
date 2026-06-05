@@ -32,6 +32,12 @@ pub(super) fn handle(args: &[String]) -> CliCommand {
                 ("topology", "assets/topology.generated.json".to_string()),
                 ("operators", "assets/operators.generated.json".to_string()),
                 ("patterns", "assets/patterns.compiled.json".to_string()),
+                ("fusion_hf", "assets/fusion_hf.generated.json".to_string()),
+                ("fusion_hf_stubs", "assets/fusion_hf.stubs.cu".to_string()),
+                (
+                    "abstract_device",
+                    "assets/abstract_device.generated.json".to_string(),
+                ),
             ],
         );
         return CliCommand::Exit(0);

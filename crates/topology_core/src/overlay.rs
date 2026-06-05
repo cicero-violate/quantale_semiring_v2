@@ -63,6 +63,7 @@ pub fn build_overlay_assets(root: impl AsRef<Path>) -> Result<(), String> {
     // Phase 7: emit split topology views while nodes/transitions are still owned.
     // G_s → { G_c (topology.control.json), G_h (topology.hot.json), R_h (regions.hot.json) }
     emit_split_topologies(root, &source, &nodes, &transitions)?;
+    emit_abstract_device_coverage(root, &source, &nodes, &operator_contracts)?;
 
     topology["nodes"] = Value::Array(nodes);
     topology["transitions"] = Value::Array(transitions);
@@ -74,6 +75,9 @@ pub fn build_overlay_assets(root: impl AsRef<Path>) -> Result<(), String> {
                 .collect(),
         );
     }
+    emit_fusion_hf_coverage(root, &fusion_regions)?;
+    emit_fusion_hf_stubs(root, &fusion_regions, &operator_contracts)?;
+
     operators["operators"] = Value::Array(operator_contracts);
 
     write_json(root.join("assets/topology.generated.json"), &topology)?;
@@ -571,11 +575,373 @@ fn read_json(path: PathBuf) -> Result<Value, String> {
     serde_json::from_str(&input).map_err(|error| format!("parse '{}': {error}", path.display()))
 }
 
+fn emit_abstract_device_coverage(
+    root: &Path,
+    source: &Value,
+    nodes: &[Value],
+    operator_contracts: &[Value],
+) -> Result<(), String> {
+    let source_nodes = source
+        .get("nodes")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+
+    let mut covered_nodes = Vec::new();
+    for node in nodes {
+        let Some(name) = node.get("name").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(op) = operator_contracts
+            .iter()
+            .find(|op| op.get("node_name").and_then(Value::as_str) == Some(name))
+        else {
+            continue;
+        };
+        let source_node = source_nodes
+            .iter()
+            .find(|source_node| source_node.get("name").and_then(Value::as_str) == Some(name))
+            .unwrap_or(node);
+        if is_abstract_device_safe_node(source_node, op) {
+            covered_nodes.push(serde_json::json!({
+                "node": name,
+                "covered": true,
+                "reason": "noop_marker_device_receipt"
+            }));
+        }
+    }
+    let coverage = serde_json::json!({
+        "schema": "abstract_device_coverage.v1",
+        "nodes": covered_nodes,
+    });
+    write_json(
+        root.join("assets/abstract_device.generated.json"),
+        &coverage,
+    )
+}
+
+fn is_abstract_device_safe_node(node: &Value, op: &Value) -> bool {
+    let executable = op.get("executable").and_then(Value::as_str);
+    if executable != Some("true") && executable != Some("noop") {
+        return false;
+    }
+    if !effect_list(op, "locks").is_empty() {
+        return false;
+    }
+    let node_kind = node.get("kind").and_then(Value::as_str).unwrap_or_default();
+    let is_marker = node_kind == "policy_node"
+        || node_kind == "event_node"
+        || node
+            .get("runtime")
+            .and_then(|runtime| runtime.get("backend"))
+            .and_then(Value::as_str)
+            == Some("noop");
+    if !is_marker {
+        return false;
+    }
+    // Allow only symbolic observation effects: they are informational marker
+    // writes produced by generated no-op/true contracts and carry no external IO.
+    effect_list(op, "reads")
+        .iter()
+        .all(|slot| slot.ends_with(".symbolic"))
+        && effect_list(op, "writes")
+            .iter()
+            .all(|slot| slot.ends_with(".observed"))
+}
+
+fn effect_list(op: &Value, field: &str) -> Vec<String> {
+    op.get("effects")
+        .and_then(|effects| effects.get(field))
+        .and_then(Value::as_array)
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn emit_fusion_hf_coverage(root: &Path, fusion_regions: &[FusionRegion]) -> Result<(), String> {
+    let mut next_generated_region_id = 8i32;
+    let mut regions = Vec::new();
+    for region in fusion_regions {
+        let static_region_id = fusion_hf_region_id(&region.region);
+        let (hf_region_id, covered, reason, symbol, slots) =
+            if let Some(region_id) = static_region_id {
+                (
+                    Some(region_id),
+                    true,
+                    "static_hf_handler",
+                    static_hf_symbol(region_id).unwrap_or_default(),
+                    static_hf_slots(region_id).unwrap_or_default(),
+                )
+            } else {
+                let region_id = next_generated_region_id;
+                next_generated_region_id += 1;
+                (
+                    Some(region_id),
+                    true,
+                    "generated_hf_handler",
+                    fusion_hf_stub_symbol(&region.region),
+                    fusion_hf_slot_order(region),
+                )
+            };
+        regions.push(serde_json::json!({
+            "region": region.region,
+            "entry": region.nodes.first().cloned().unwrap_or_default(),
+            "nodes": region.nodes,
+            "hf_region_id": hf_region_id,
+            "covered": covered,
+            "reason": reason,
+            "symbol": symbol,
+            "slots": slots,
+        }));
+    }
+    let coverage = serde_json::json!({
+        "schema": "fusion_hf_coverage.v1",
+        "regions": regions
+    });
+    write_json(root.join("assets/fusion_hf.generated.json"), &coverage)
+}
+
+fn static_hf_symbol(region_id: i32) -> Option<String> {
+    match region_id {
+        2 => Some("region_fused_add_scale".to_string()),
+        7 => Some("region_analysis_fused_signal_score".to_string()),
+        _ => None,
+    }
+}
+
+fn static_hf_slots(region_id: i32) -> Option<Vec<String>> {
+    match region_id {
+        2 => Some(vec![
+            "math.a".to_string(),
+            "math.b".to_string(),
+            "math.scale".to_string(),
+            "math.out".to_string(),
+        ]),
+        7 => Some(vec![
+            "market.price".to_string(),
+            "market.open".to_string(),
+            "analysis.signal_score".to_string(),
+        ]),
+        _ => None,
+    }
+}
+
+fn emit_fusion_hf_stubs(
+    root: &Path,
+    fusion_regions: &[FusionRegion],
+    operator_contracts: &[Value],
+) -> Result<(), String> {
+    let mut output = String::new();
+    output.push_str("// Generated by topology build-overlay. Do not edit by hand.\n");
+    output.push_str("// Device fragments for fusion regions without static H_f handlers.\n\n");
+    let mut uncovered = 0usize;
+    for region in fusion_regions {
+        if fusion_hf_region_id(&region.region).is_some() {
+            continue;
+        }
+        let region_id = 8 + uncovered as i32;
+        uncovered += 1;
+        output.push_str(&format_fusion_hf_handler(
+            region,
+            operator_contracts,
+            region_id,
+        )?);
+    }
+    if uncovered == 0 {
+        output.push_str("// All generated fusion regions are covered by static H_f handlers.\n");
+    }
+    write_text_if_changed(root.join("assets/fusion_hf.stubs.cu"), &output)
+}
+
+fn format_fusion_hf_handler(
+    region: &FusionRegion,
+    operator_contracts: &[Value],
+    region_id: i32,
+) -> Result<String, String> {
+    if region.writes.len() != 1 {
+        return Err(format!(
+            "fusion H_f handler generation for '{}' requires exactly one external write, got {}",
+            region.region,
+            region.writes.len()
+        ));
+    }
+    let symbol = fusion_hf_stub_symbol(&region.region);
+    let slot_order = fusion_hf_slot_order(region);
+    let mut source = String::new();
+    source.push_str(&format!(
+        "// region: {}\n// nodes: {}\n// reads: {}\n// writes: {}\n// hf_case: {} {}\n",
+        region.region,
+        region.nodes.join(", "),
+        region.reads.join(", "),
+        region.writes.join(", "),
+        region_id,
+        symbol,
+    ));
+    source.push_str(&format!(
+        "{}{}(float** slot_ptrs, int n, DeviceReceipt* r) {{\n",
+        "__device__ void ", symbol
+    ));
+    source.push_str("    if (!slot_ptrs || n <= 0) return;\n");
+    for (idx, slot) in slot_order.iter().enumerate() {
+        source.push_str(&format!(
+            "    float* slot_{idx} = slot_ptrs[{idx}];  // {slot}\n"
+        ));
+    }
+    source.push_str("    for (int i = threadIdx.x; i < n; i += blockDim.x) {\n");
+    for node in &region.nodes {
+        let op = operator_contracts
+            .iter()
+            .find(|op| op.get("node_name").and_then(Value::as_str) == Some(node.as_str()))
+            .ok_or_else(|| format!("operator '{node}' missing from generated contracts"))?;
+        let body = op
+            .get("jit_body")
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("operator '{node}' missing string jit_body"))?;
+        let reads = effect_strings(op, "reads");
+        let writes = effect_strings(op, "writes");
+        if writes.len() != 1 {
+            return Err(format!(
+                "operator '{node}' must declare exactly one write for fusion H_f handler generation"
+            ));
+        }
+        let lowered = lower_fusion_hf_body(body, &reads, &writes[0], &slot_order)?;
+        source.push_str("        ");
+        source.push_str(&lowered);
+        if !lowered.trim_end().ends_with(';') {
+            source.push(';');
+        }
+        source.push('\n');
+    }
+    source.push_str("    }\n");
+    source.push_str("    r->outcome = 0;\n");
+    source.push_str("}\n\n");
+    Ok(source)
+}
+
+fn fusion_hf_slot_order(region: &FusionRegion) -> Vec<String> {
+    let mut slots = region.reads.clone();
+    for slot in &region.writes {
+        if !slots.iter().any(|candidate| candidate == slot) {
+            slots.push(slot.clone());
+        }
+    }
+    slots
+}
+
+fn effect_strings(op: &Value, field: &str) -> Vec<String> {
+    op.get("effects")
+        .and_then(|effects| effects.get(field))
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn lower_fusion_hf_body(
+    body: &str,
+    reads: &[String],
+    write: &str,
+    slot_order: &[String],
+) -> Result<String, String> {
+    let mut lowered = body.trim().trim_end_matches(';').to_string();
+    for (idx, slot) in reads.iter().enumerate() {
+        let expr = slot_expr_for_fusion_hf(slot, slot_order, true);
+        lowered = lowered.replace(&format!("in{idx}[i]"), &expr);
+    }
+
+    if let Some(write_idx) = slot_order.iter().position(|candidate| candidate == write) {
+        lowered = lowered.replace("out[i]", &format!("slot_{write_idx}[i]"));
+        return Ok(format!("{lowered};"));
+    }
+
+    let prefix = "out[i]";
+    if let Some(expr) = lowered
+        .strip_prefix(prefix)
+        .and_then(|rest| rest.trim().strip_prefix('='))
+    {
+        return Ok(format!(
+            "float {} = {};",
+            fusion_hf_register_name(write),
+            expr.trim()
+        ));
+    }
+
+    Err(format!(
+        "internal write slot '{write}' must be assigned through out[i] in fusion H_f body"
+    ))
+}
+
+fn slot_expr_for_fusion_hf(slot: &str, slot_order: &[String], indexed: bool) -> String {
+    if let Some(slot_idx) = slot_order.iter().position(|candidate| candidate == slot) {
+        if indexed {
+            format!("slot_{slot_idx}[i]")
+        } else {
+            format!("slot_{slot_idx}")
+        }
+    } else {
+        fusion_hf_register_name(slot)
+    }
+}
+
+fn fusion_hf_register_name(slot: &str) -> String {
+    let mut out = String::from("reg_");
+    for ch in slot.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '_' {
+            out.push(ch.to_ascii_lowercase());
+        } else {
+            out.push('_');
+        }
+    }
+    out
+}
+
+fn fusion_hf_stub_symbol(region_name: &str) -> String {
+    let mut symbol = String::from("region_fusion_stub_");
+    let mut last_underscore = false;
+    for ch in region_name.chars() {
+        if ch.is_ascii_alphanumeric() {
+            symbol.push(ch.to_ascii_lowercase());
+            last_underscore = false;
+        } else if !last_underscore {
+            symbol.push('_');
+            last_underscore = true;
+        }
+    }
+    while symbol.ends_with('_') {
+        symbol.pop();
+    }
+    symbol
+}
+
+fn fusion_hf_region_id(region_name: &str) -> Option<i32> {
+    match region_name {
+        "Execution::VectorAdd__Execution::VectorScale" => Some(2),
+        "Analysis::Return1__Analysis::Volatility__Analysis::SignalScore" => Some(7),
+        _ => None,
+    }
+}
+
 fn write_json(path: PathBuf, value: &Value) -> Result<(), String> {
     let output = serde_json::to_string_pretty(value)
         .map_err(|error| format!("serialize '{}': {error}", path.display()))?;
     let output = format!("{output}\n");
     if fs::read_to_string(&path).ok().as_deref() == Some(output.as_str()) {
+        return Ok(());
+    }
+    fs::write(&path, output).map_err(|error| format!("write '{}': {error}", path.display()))
+}
+
+fn write_text_if_changed(path: PathBuf, output: &str) -> Result<(), String> {
+    if fs::read_to_string(&path).ok().as_deref() == Some(output) {
         return Ok(());
     }
     fs::write(&path, output).map_err(|error| format!("write '{}': {error}", path.display()))
@@ -749,6 +1115,9 @@ mod tests {
             "topology.hot.json",
             "regions.hot.json",
             "topology.fusion.json",
+            "fusion_hf.generated.json",
+            "fusion_hf.stubs.cu",
+            "abstract_device.generated.json",
         ] {
             assert!(
                 assets.join(asset).exists(),
@@ -776,6 +1145,9 @@ mod tests {
         let hot = read_json(assets.join("topology.hot.json")).unwrap();
         let regions = read_json(assets.join("regions.hot.json")).unwrap();
         let fusion = read_json(assets.join("topology.fusion.json")).unwrap();
+        let fusion_hf = read_json(assets.join("fusion_hf.generated.json")).unwrap();
+        let fusion_hf_stubs = fs::read_to_string(assets.join("fusion_hf.stubs.cu")).unwrap();
+        let abstract_device = read_json(assets.join("abstract_device.generated.json")).unwrap();
 
         let ctrl_names: std::collections::HashSet<&str> = ctrl
             .get("nodes")
@@ -844,6 +1216,50 @@ mod tests {
             "generated fusion asset must retain the analysis linear chain"
         );
 
+        let hf_regions = fusion_hf
+            .get("regions")
+            .and_then(Value::as_array)
+            .expect("fusion H_f coverage regions");
+        assert_eq!(
+            hf_regions.len(),
+            fusion_regions.len(),
+            "fusion H_f coverage must enumerate every fusion region"
+        );
+        assert!(
+            hf_regions.iter().any(|region| {
+                region.get("region").and_then(Value::as_str)
+                    == Some("Analysis::Return1__Analysis::Volatility__Analysis::SignalScore")
+                    && region.get("hf_region_id").and_then(Value::as_i64) == Some(7)
+                    && region.get("covered").and_then(Value::as_bool) == Some(true)
+                    && region.get("symbol").and_then(Value::as_str)
+                        == Some("region_analysis_fused_signal_score")
+                    && region.get("slots").and_then(Value::as_array)
+                        == Some(&vec![
+                            Value::String("market.price".to_string()),
+                            Value::String("market.open".to_string()),
+                            Value::String("analysis.signal_score".to_string()),
+                        ])
+            }),
+            "analysis fusion chain must be covered by static H_f handler 7"
+        );
+
+        assert!(
+            fusion_hf_stubs.contains("All generated fusion regions are covered"),
+            "stub file should record that no uncovered fusion regions remain"
+        );
+
+        let abstract_nodes = abstract_device
+            .get("nodes")
+            .and_then(Value::as_array)
+            .expect("abstract-device nodes");
+        assert!(
+            abstract_nodes.iter().any(|node| {
+                node.get("node").and_then(Value::as_str) == Some("Control::Allow")
+                    && node.get("covered").and_then(Value::as_bool) == Some(true)
+            }),
+            "safe no-op marker nodes should be covered by abstract-device path"
+        );
+
         // Invariant: all hot transitions reference known nodes in hot topology.
         for t in hot_transitions {
             let from = t.get("from").and_then(Value::as_str).unwrap();
@@ -866,6 +1282,181 @@ mod tests {
         }
 
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn fusion_hf_stub_symbol_is_cuda_identifier_safe() {
+        assert_eq!(
+            fusion_hf_stub_symbol("Foo::Bar-Baz__Qux"),
+            "region_fusion_stub_foo_bar_baz_qux"
+        );
+    }
+
+    fn write_minimal_uncovered_fusion_fixture(root: &Path) {
+        let assets = root.join("assets");
+        fs::create_dir_all(&assets).unwrap();
+        write_json(
+            assets.join("topology.source.json"),
+            &serde_json::json!({
+                "matrix_name": "uncovered_fusion_fixture",
+                "version": 1,
+                "slots": {
+                    "fixture.a": {"type":"f32[]", "kind":"tensor"},
+                    "fixture.b": {"type":"f32[]", "kind":"tensor"},
+                    "fixture.tmp": {"type":"f32[]", "kind":"tensor"},
+                    "fixture.scale": {"type":"f32[]", "kind":"tensor"},
+                    "fixture.out": {"type":"f32[]", "kind":"tensor"}
+                },
+                "resources": {"cuda": {"kind":"gpu", "capacity":1}},
+                "quantale": {
+                    "layers": [
+                        {"name":"confidence", "join":"max", "compose":"times", "bottom":0, "unit":1},
+                        {"name":"cost", "join":"min", "compose":"plus", "bottom":"inf", "unit":0},
+                        {"name":"safety", "join":"max", "compose":"min", "bottom":0, "unit":1}
+                    ]
+                },
+                "nodes": [
+                    {
+                        "name":"Fixture::Add",
+                        "kind":"kernel",
+                        "runtime":{"backend":"cuda", "module":"fixture", "kernel":"fixture_add"},
+                        "reads":["fixture.a", "fixture.b"],
+                        "writes":["fixture.tmp"],
+                        "locks":[]
+                    },
+                    {
+                        "name":"Fixture::Scale",
+                        "kind":"kernel",
+                        "runtime":{"backend":"cuda", "module":"fixture", "kernel":"fixture_scale"},
+                        "reads":["fixture.tmp", "fixture.scale"],
+                        "writes":["fixture.out"],
+                        "locks":[]
+                    }
+                ],
+                "transitions": [
+                    {"from":"Fixture::Add", "to":"Fixture::Scale", "policy_effect":"FixtureChain", "confidence":1.0, "cost":0.1, "safety":1.0}
+                ]
+            }),
+        )
+        .unwrap();
+        write_json(
+            assets.join("operators.json"),
+            &serde_json::json!({
+                "operators": [
+                    {
+                        "node_name":"Fixture::Add",
+                        "executable":"jit_cuda",
+                        "static_args":[],
+                        "jit_body":"out[i] = in0[i] + in1[i];",
+                        "effects":{"reads":["fixture.a", "fixture.b"], "writes":["fixture.tmp"], "locks":[]}
+                    },
+                    {
+                        "node_name":"Fixture::Scale",
+                        "executable":"jit_cuda",
+                        "static_args":[],
+                        "jit_body":"out[i] = in0[i] * in1[i];",
+                        "effects":{"reads":["fixture.tmp", "fixture.scale"], "writes":["fixture.out"], "locks":[]}
+                    }
+                ]
+            }),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn uncovered_fusion_chain_promotes_to_generated_hf_fixture() {
+        let root = std::env::temp_dir().join(format!(
+            "quantale_uncovered_fusion_fixture_{}_{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        write_minimal_uncovered_fusion_fixture(&root);
+
+        build_overlay_assets(&root).unwrap();
+
+        let assets = root.join("assets");
+        let fusion = read_json(assets.join("topology.fusion.json")).unwrap();
+        let coverage = read_json(assets.join("fusion_hf.generated.json")).unwrap();
+        let stubs = fs::read_to_string(assets.join("fusion_hf.stubs.cu")).unwrap();
+        let fusion_regions = fusion.get("regions").and_then(Value::as_array).unwrap();
+        assert_eq!(fusion_regions.len(), 1);
+        assert_eq!(
+            fusion_regions[0].get("region").and_then(Value::as_str),
+            Some("Fixture::Add__Fixture::Scale")
+        );
+
+        let hf_regions = coverage.get("regions").and_then(Value::as_array).unwrap();
+        assert_eq!(hf_regions.len(), 1);
+        let generated = &hf_regions[0];
+        assert_eq!(
+            generated.get("hf_region_id").and_then(Value::as_i64),
+            Some(8)
+        );
+        assert_eq!(
+            generated.get("covered").and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            generated.get("reason").and_then(Value::as_str),
+            Some("generated_hf_handler")
+        );
+        assert_eq!(
+            generated.get("symbol").and_then(Value::as_str),
+            Some("region_fusion_stub_fixture_add_fixture_scale")
+        );
+        assert_eq!(
+            generated.get("slots").and_then(Value::as_array),
+            Some(&vec![
+                Value::String("fixture.a".to_string()),
+                Value::String("fixture.b".to_string()),
+                Value::String("fixture.scale".to_string()),
+                Value::String("fixture.out".to_string()),
+            ])
+        );
+        assert!(stubs.contains("// hf_case: 8 region_fusion_stub_fixture_add_fixture_scale"));
+        assert!(stubs.contains("__device__ void region_fusion_stub_fixture_add_fixture_scale"));
+        assert!(stubs.contains("float reg_fixture_tmp = slot_0[i] + slot_1[i];"));
+        assert!(stubs.contains("slot_3[i] = reg_fixture_tmp * slot_2[i];"));
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn fusion_hf_handler_generation_lowers_jit_bodies_to_slot_ptrs() {
+        let region = FusionRegion {
+            region: "Foo::Add__Foo::Scale".to_string(),
+            backend: "cuda_jit".to_string(),
+            fusion: "linear_chain".to_string(),
+            nodes: vec!["Foo::Add".to_string(), "Foo::Scale".to_string()],
+            reads: vec!["a".to_string(), "b".to_string(), "scale".to_string()],
+            writes: vec!["out".to_string()],
+            locks: vec![],
+            compose: vec![],
+            join: vec![],
+        };
+        let operators = vec![
+            serde_json::json!({
+                "node_name": "Foo::Add",
+                "jit_body":"out[i] = in0[i] + in1[i];",
+                "effects":{"reads":["a","b"],"writes":["tmp"],"locks":[]}
+            }),
+            serde_json::json!({
+                "node_name": "Foo::Scale",
+                "jit_body":"out[i] = in0[i] * in1[i];",
+                "effects":{"reads":["tmp","scale"],"writes":["out"],"locks":[]}
+            }),
+        ];
+
+        let source = format_fusion_hf_handler(&region, &operators, 8).unwrap();
+
+        assert!(source.contains("__device__ void region_fusion_stub_foo_add_foo_scale"));
+        assert!(source.contains("float* slot_0 = slot_ptrs[0];  // a"));
+        assert!(source.contains("float* slot_3 = slot_ptrs[3];  // out"));
+        assert!(source.contains("float reg_tmp = slot_0[i] + slot_1[i];"));
+        assert!(source.contains("slot_3[i] = reg_tmp * slot_2[i];"));
     }
 
     #[test]

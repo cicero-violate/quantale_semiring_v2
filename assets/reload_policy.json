@@ -12,6 +12,9 @@
     "assets/learning_policy.json",
     "assets/patterns.source.json",
     "assets/topology.fusion.json",
+    "assets/fusion_hf.generated.json",
+    "assets/fusion_hf.stubs.cu",
+    "assets/abstract_device.generated.json",
     "assets/reload_policy.json"
   ]
 }

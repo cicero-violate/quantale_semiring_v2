@@ -298,6 +298,7 @@ pub(super) fn record_learning_edges(
 
 /// Record a single edge delta after a successful non-fusion execution.
 /// Convenience wrapper for callers that don't have an `ActiveExecution`.
+#[cfg(feature = "legacy-cpu-orchestration")]
 pub(super) fn record_learning_edge_for_pair(
     learning_buffer: &mut quantale_semiring_v2::LearningBuffer,
     topology: &TopologyRuntime,

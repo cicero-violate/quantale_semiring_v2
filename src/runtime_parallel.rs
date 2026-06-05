@@ -1,9 +1,9 @@
 use quantale_semiring_v2::{
-    DecisionReport, ExecutionOutcome, FusionEntry, PAR_DISPATCH_FUSION_ENTRY,
-    PAR_DISPATCH_HF_DEVICE, ParDispatchDescriptor, ProcessReceipt, TensorQuantaleWorld,
-    UniversalExecutor, console,
+    console, DecisionReport, ExecutionOutcome, FusionEntry, ParDispatchDescriptor, ProcessReceipt,
+    TensorQuantaleWorld, UniversalExecutor, PAR_DISPATCH_ABSTRACT_DEVICE,
+    PAR_DISPATCH_FUSION_ENTRY, PAR_DISPATCH_HF_DEVICE,
 };
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 /// Dispatch operators for a GPU-committed par group concurrently.
 ///
@@ -17,13 +17,11 @@ pub(super) fn dispatch_gpu_parallel_group(
     fusion_entries: &[Option<&FusionEntry>],
     node_names: &[String],
     current_payload: &Value,
+    dispatched_on_device: &[i32],
     dispatch_descriptors: &[ParDispatchDescriptor],
 ) -> Vec<ProcessReceipt> {
-    if all_members_dispatched_on_device(node_names, dispatch_descriptors) {
-        return node_names
-            .iter()
-            .map(|name| device_dispatched_receipt(name))
-            .collect();
+    if all_members_dispatched_on_device(node_names, dispatched_on_device, dispatch_descriptors) {
+        return device_dispatched_parallel_receipts(node_names);
     }
 
     let mut receipts: Vec<Option<ProcessReceipt>> = vec![None; node_names.len()];
@@ -33,7 +31,12 @@ pub(super) fn dispatch_gpu_parallel_group(
     for (idx, name) in node_names.iter().enumerate() {
         if dispatch_descriptors
             .get(idx)
-            .map(|descriptor| descriptor.dispatch_kind == PAR_DISPATCH_HF_DEVICE)
+            .zip(dispatched_on_device.get(idx))
+            .map(|(descriptor, &on_device)| {
+                on_device == 1
+                    && (descriptor.dispatch_kind == PAR_DISPATCH_HF_DEVICE
+                        || descriptor.dispatch_kind == PAR_DISPATCH_ABSTRACT_DEVICE)
+            })
             .unwrap_or(false)
         {
             receipts[idx] = Some(device_dispatched_receipt(name));
@@ -108,16 +111,30 @@ fn collect_parallel_receipts(receipts: Vec<Option<ProcessReceipt>>) -> Vec<Proce
         .collect()
 }
 
-fn all_members_dispatched_on_device(
+pub(super) fn all_members_dispatched_on_device(
     node_names: &[String],
+    dispatched_on_device: &[i32],
     dispatch_descriptors: &[ParDispatchDescriptor],
 ) -> bool {
     !node_names.is_empty()
+        && dispatched_on_device.len() >= node_names.len()
         && dispatch_descriptors.len() >= node_names.len()
         && dispatch_descriptors
             .iter()
+            .zip(dispatched_on_device.iter())
             .take(node_names.len())
-            .all(|descriptor| descriptor.dispatch_kind == PAR_DISPATCH_HF_DEVICE)
+            .all(|(descriptor, &on_device)| {
+                on_device == 1
+                    && (descriptor.dispatch_kind == PAR_DISPATCH_HF_DEVICE
+                        || descriptor.dispatch_kind == PAR_DISPATCH_ABSTRACT_DEVICE)
+            })
+}
+
+pub(super) fn device_dispatched_parallel_receipts(node_names: &[String]) -> Vec<ProcessReceipt> {
+    node_names
+        .iter()
+        .map(|name| device_dispatched_receipt(name))
+        .collect()
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -149,13 +166,17 @@ pub(super) fn route_parallel_receipt(
     node_name: &str,
     decision: &DecisionReport,
     kernel_region_id: i32,
+    dispatched_on_device: i32,
     descriptor: &ParDispatchDescriptor,
     outcome: ExecutionOutcome,
     receipt: &ProcessReceipt,
 ) -> ParallelReceiptRoute {
     // H_f path (on_device == 1): the par kernel already wrote the receipt to the
     // device ring. No separate gpu_dispatch_region call is needed.
-    if descriptor.dispatch_kind == PAR_DISPATCH_HF_DEVICE {
+    if dispatched_on_device == 1
+        && (descriptor.dispatch_kind == PAR_DISPATCH_HF_DEVICE
+            || descriptor.dispatch_kind == PAR_DISPATCH_ABSTRACT_DEVICE)
+    {
         console::info(
             "parallel",
             "hf_dispatch_receipt",
@@ -167,14 +188,12 @@ pub(super) fn route_parallel_receipt(
         return ParallelReceiptRoute::device_ring();
     }
 
-    // Successful fusion batches are host-launched today, but their tensor update
-    // is already routed through the device ring.
-    if descriptor.dispatch_kind == PAR_DISPATCH_FUSION_ENTRY
-        && receipt.exit_code == 0
-        && receipt
-            .stdout_payload
-            .contains("\"kernel\":\"jit_fused_batch\"")
-    {
+    // Successful fusion descriptors are GPU-dispatched work.  Even though the
+    // launch boundary is host-owned today, the tensor-update receipt is exactly
+    // one device-ring receipt per successful member.  Do not depend on stdout
+    // serialization here; descriptor kind + successful receipt is the routing
+    // contract.
+    if descriptor.dispatch_kind == PAR_DISPATCH_FUSION_ENTRY && receipt.exit_code == 0 {
         return match world.push_device_receipt(
             -1,
             decision.selected_src,
@@ -294,8 +313,14 @@ mod tests {
             src_node: 1,
             dst_node: 2,
         }];
-        let receipts =
-            dispatch_gpu_parallel_group(&executor, &[None], &names, &Value::Null, &descriptors);
+        let receipts = dispatch_gpu_parallel_group(
+            &executor,
+            &[None],
+            &names,
+            &Value::Null,
+            &[1],
+            &descriptors,
+        );
 
         assert_eq!(receipts.len(), 1);
         assert_eq!(receipts[0].node_name, "Would::FailOnHost");
@@ -345,16 +370,15 @@ mod tests {
             &[None, None],
             &names,
             &Value::Null,
+            &[1, 1],
             &descriptors,
         );
 
         assert_eq!(receipts.len(), 2);
         assert!(receipts.iter().all(|receipt| receipt.exit_code == 0));
-        assert!(
-            receipts
-                .iter()
-                .all(|receipt| receipt.stderr_payload.is_empty())
-        );
+        assert!(receipts
+            .iter()
+            .all(|receipt| receipt.stderr_payload.is_empty()));
         assert!(receipts.iter().all(|receipt| {
             serde_json::from_str::<Value>(&receipt.stdout_payload)
                 .map(|stdout| stdout["dispatch"] == "device")
@@ -384,7 +408,11 @@ mod tests {
             },
         ];
 
-        assert!(!all_members_dispatched_on_device(&names, &descriptors));
+        assert!(!all_members_dispatched_on_device(
+            &names,
+            &[1, 0],
+            &descriptors
+        ));
     }
 
     #[test]
@@ -404,28 +432,32 @@ mod tests {
             src_node: 1,
             dst_node: 2,
         }];
-        let receipts =
-            dispatch_gpu_parallel_group(&executor, &[None], &names, &Value::Null, &descriptors);
+        let receipts = dispatch_gpu_parallel_group(
+            &executor,
+            &[None],
+            &names,
+            &Value::Null,
+            &[0],
+            &descriptors,
+        );
 
         assert_eq!(receipts.len(), 1);
         assert_eq!(receipts[0].node_name, "Would::FailOnHost");
         assert_ne!(receipts[0].exit_code, 0);
-        assert!(
-            receipts[0]
-                .stderr_payload
-                .contains("Failed to spawn process")
-        );
+        assert!(receipts[0]
+            .stderr_payload
+            .contains("Failed to spawn process"));
     }
 
     #[test]
-    fn abstract_device_scaffold_still_uses_host_until_device_lowering_exists() {
+    fn abstract_device_descriptor_skips_host_and_returns_device_receipt() {
         let executor = UniversalExecutor::new(HashMap::from([(
-            "Abstract::NotYetLowered".to_string(),
+            "Abstract::DeviceAck".to_string(),
             json!({
                 "executable": "/definitely/not/a/real/binary"
             }),
         )]));
-        let names = vec!["Abstract::NotYetLowered".to_string()];
+        let names = vec!["Abstract::DeviceAck".to_string()];
         let descriptors = [ParDispatchDescriptor {
             member_index: 0,
             node_id: 0,
@@ -434,17 +466,21 @@ mod tests {
             src_node: 1,
             dst_node: 2,
         }];
-        let receipts =
-            dispatch_gpu_parallel_group(&executor, &[None], &names, &Value::Null, &descriptors);
+        let receipts = dispatch_gpu_parallel_group(
+            &executor,
+            &[None],
+            &names,
+            &Value::Null,
+            &[1],
+            &descriptors,
+        );
 
         assert_eq!(receipts.len(), 1);
-        assert_eq!(receipts[0].node_name, "Abstract::NotYetLowered");
-        assert_ne!(receipts[0].exit_code, 0);
-        assert!(
-            receipts[0]
-                .stderr_payload
-                .contains("Failed to spawn process")
-        );
+        assert_eq!(receipts[0].node_name, "Abstract::DeviceAck");
+        assert_eq!(receipts[0].exit_code, 0);
+        assert!(receipts[0]
+            .stdout_payload
+            .contains("tensor_quantale_par_group_step"));
     }
 
     #[test]
@@ -460,16 +496,20 @@ mod tests {
             dst_node: 2,
         }];
 
-        let receipts =
-            dispatch_gpu_parallel_group(&executor, &[None], &names, &Value::Null, &descriptors);
+        let receipts = dispatch_gpu_parallel_group(
+            &executor,
+            &[None],
+            &names,
+            &Value::Null,
+            &[0],
+            &descriptors,
+        );
 
         assert_eq!(receipts.len(), 1);
         assert_eq!(receipts[0].exit_code, 1);
-        assert!(
-            receipts[0]
-                .stderr_payload
-                .contains("requested fusion dispatch")
-        );
+        assert!(receipts[0]
+            .stderr_payload
+            .contains("requested fusion dispatch"));
     }
 
     #[test]
@@ -484,16 +524,159 @@ mod tests {
             src_node: 1,
             dst_node: 2,
         }];
-        let receipts =
-            dispatch_gpu_parallel_group(&executor, &[None], &names, &Value::Null, &descriptors);
+        let receipts = dispatch_gpu_parallel_group(
+            &executor,
+            &[None],
+            &names,
+            &Value::Null,
+            &[0],
+            &descriptors,
+        );
 
         assert_eq!(receipts.len(), 1);
         assert_eq!(receipts[0].node_name, "Fusion::Entry");
         assert_eq!(receipts[0].exit_code, 1);
-        assert!(
-            receipts[0]
-                .stderr_payload
-                .contains("requested fusion dispatch")
+        assert!(receipts[0]
+            .stderr_payload
+            .contains("requested fusion dispatch"));
+    }
+
+    // ── Phase-0 boundary tests ────────────────────────────────────────────────
+
+    /// Phase-0 boundary: process/IO members (HOST_FALLBACK) are excluded from the
+    /// all-device fast path.  A group with at least one host-fallback member must
+    /// return false from `all_members_dispatched_on_device`.
+    #[test]
+    fn process_io_member_excluded_from_gpu_device_only_path() {
+        let names = vec!["A".to_string(), "B".to_string()];
+        let descriptors = [
+            ParDispatchDescriptor {
+                member_index: 0,
+                node_id: 0,
+                region_id: 3,
+                dispatch_kind: PAR_DISPATCH_HF_DEVICE,
+                src_node: 0,
+                dst_node: 1,
+            },
+            ParDispatchDescriptor {
+                member_index: 1,
+                node_id: 1,
+                region_id: -1,
+                dispatch_kind: PAR_DISPATCH_HOST_FALLBACK,
+                src_node: 0,
+                dst_node: 2,
+            },
+        ];
+        // Second member was not dispatched on device (on_device=0).
+        assert!(!all_members_dispatched_on_device(
+            &names,
+            &[1, 0],
+            &descriptors
+        ));
+    }
+
+    /// Phase-0 boundary: host fallback is CPU-owned — dispatching a HOST_FALLBACK
+    /// member invokes the CPU executor, not a device path.
+    #[test]
+    fn host_fallback_remains_cpu_owned() {
+        let executor = UniversalExecutor::new(HashMap::from([(
+            "IO::ReadFile".to_string(),
+            json!({ "executable": "/definitely/not/real" }),
+        )]));
+        let names = vec!["IO::ReadFile".to_string()];
+        let descriptors = [ParDispatchDescriptor {
+            member_index: 0,
+            node_id: 0,
+            region_id: -1,
+            dispatch_kind: PAR_DISPATCH_HOST_FALLBACK,
+            src_node: 0,
+            dst_node: 1,
+        }];
+        let receipts = dispatch_gpu_parallel_group(
+            &executor,
+            &[None],
+            &names,
+            &Value::Null,
+            &[0],
+            &descriptors,
         );
+        // CPU-owned path: executor was invoked and reported a spawn failure (not a device success).
+        assert_eq!(receipts.len(), 1);
+        assert_ne!(receipts[0].exit_code, 0);
+        assert!(receipts[0]
+            .stderr_payload
+            .contains("Failed to spawn process"));
+    }
+
+    /// Phase-0 boundary: a fully device-dispatched group produces exactly one
+    /// receipt per member, all with exit_code == 0 and no stderr.
+    #[test]
+    fn gpu_dispatched_members_produce_exactly_one_receipt_each() {
+        let executor = UniversalExecutor::new(HashMap::new());
+        let names = vec![
+            "Kernel::A".to_string(),
+            "Kernel::B".to_string(),
+            "Kernel::C".to_string(),
+        ];
+        let descriptors: Vec<ParDispatchDescriptor> = (0..3)
+            .map(|i| ParDispatchDescriptor {
+                member_index: i,
+                node_id: i,
+                region_id: i as i32,
+                dispatch_kind: PAR_DISPATCH_HF_DEVICE,
+                src_node: 0,
+                dst_node: i + 1,
+            })
+            .collect();
+        let on_device = vec![1i32; 3];
+        let receipts = dispatch_gpu_parallel_group(
+            &executor,
+            &[None, None, None],
+            &names,
+            &Value::Null,
+            &on_device,
+            &descriptors,
+        );
+        // Exactly one receipt per member, all device-success.
+        assert_eq!(receipts.len(), names.len());
+        for (receipt, name) in receipts.iter().zip(names.iter()) {
+            assert_eq!(receipt.node_name, *name);
+            assert_eq!(receipt.exit_code, 0, "member {name} expected exit_code 0");
+            assert!(
+                receipt.stderr_payload.is_empty(),
+                "member {name} had unexpected stderr"
+            );
+        }
+    }
+
+    /// Phase-0 boundary: fully device-dispatched groups skip host dispatch
+    /// scheduling — `all_members_dispatched_on_device` returns true and the
+    /// dispatch function returns without entering any CPU executor scope.
+    #[test]
+    fn fully_device_dispatched_group_skips_host_dispatch_scheduling() {
+        let names = vec!["Kernel::X".to_string(), "Kernel::Y".to_string()];
+        let descriptors = [
+            ParDispatchDescriptor {
+                member_index: 0,
+                node_id: 0,
+                region_id: 0,
+                dispatch_kind: PAR_DISPATCH_HF_DEVICE,
+                src_node: 0,
+                dst_node: 1,
+            },
+            ParDispatchDescriptor {
+                member_index: 1,
+                node_id: 1,
+                region_id: 1,
+                dispatch_kind: PAR_DISPATCH_ABSTRACT_DEVICE,
+                src_node: 0,
+                dst_node: 2,
+            },
+        ];
+        assert!(all_members_dispatched_on_device(
+            &names,
+            &[1, 1],
+            &descriptors
+        ));
     }
 }

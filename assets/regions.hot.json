@@ -86,20 +86,6 @@
       ]
     },
     {
-      "kernel": "jit_fused",
-      "kind": "gpu_region",
-      "name": "Analysis::FusedReturnVolatilitySignalScore",
-      "pure": true,
-      "reads": [
-        "market.open",
-        "market.price"
-      ],
-      "region_id": 7,
-      "writes": [
-        "analysis.signal_score"
-      ]
-    },
-    {
       "kernel": "terminal",
       "kind": "gpu_region",
       "name": "Region::CommitReceipt",

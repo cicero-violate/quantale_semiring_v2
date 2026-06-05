@@ -1,7 +1,9 @@
 pub mod config;
 pub mod console;
+pub mod control_flow_lowering;
 pub mod contracts;
 pub mod device_slots;
+pub mod dispatch_kind;
 pub mod egress;
 pub mod error;
 pub mod exploration;
@@ -10,6 +12,7 @@ pub mod graph;
 pub mod hot_region;
 pub mod jit_kernel_fusion;
 pub mod learning;
+pub mod orch_service;
 pub mod pattern;
 pub mod plan;
 pub mod runtime_check;
@@ -27,6 +30,7 @@ pub use device_slots::{
     DeviceBufferPool, DeviceRingBuffer, DeviceSlot, DeviceSlotRegistry, HostStagingBuffer,
     UploadQueue,
 };
+pub use dispatch_kind::*;
 pub use egress::*;
 pub use error::*;
 pub use exploration::*;

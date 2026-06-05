@@ -259,18 +259,21 @@ impl UniversalExecutor {
         }
 
         #[cfg(not(feature = "cuda"))]
-        entries
-            .iter()
-            .map(|&(idx, entry)| {
-                (
-                    idx,
-                    cuda_err_receipt(
-                        &format!("Fusion::{}", entry.region),
-                        "jit_cuda fusion batch requires the cuda feature",
-                    ),
-                )
-            })
-            .collect()
+        {
+            let _ = dynamic_payload;
+            entries
+                .iter()
+                .map(|&(idx, entry)| {
+                    (
+                        idx,
+                        cuda_err_receipt(
+                            &format!("Fusion::{}", entry.region),
+                            "jit_cuda fusion batch requires the cuda feature",
+                        ),
+                    )
+                })
+                .collect()
+        }
     }
 
     #[cfg(feature = "cuda")]

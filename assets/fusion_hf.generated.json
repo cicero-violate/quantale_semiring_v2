@@ -1,0 +1,41 @@
+{
+  "regions": [
+    {
+      "covered": true,
+      "entry": "Analysis::Return1",
+      "hf_region_id": 7,
+      "nodes": [
+        "Analysis::Return1",
+        "Analysis::Volatility",
+        "Analysis::SignalScore"
+      ],
+      "reason": "static_hf_handler",
+      "region": "Analysis::Return1__Analysis::Volatility__Analysis::SignalScore",
+      "slots": [
+        "market.price",
+        "market.open",
+        "analysis.signal_score"
+      ],
+      "symbol": "region_analysis_fused_signal_score"
+    },
+    {
+      "covered": true,
+      "entry": "Execution::VectorAdd",
+      "hf_region_id": 2,
+      "nodes": [
+        "Execution::VectorAdd",
+        "Execution::VectorScale"
+      ],
+      "reason": "static_hf_handler",
+      "region": "Execution::VectorAdd__Execution::VectorScale",
+      "slots": [
+        "math.a",
+        "math.b",
+        "math.scale",
+        "math.out"
+      ],
+      "symbol": "region_fused_add_scale"
+    }
+  ],
+  "schema": "fusion_hf_coverage.v1"
+}

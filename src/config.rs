@@ -9,6 +9,7 @@ use serde_json::{Value, json};
 
 use crate::fusion_dispatch::FusionDispatch;
 use crate::hot_region::HotRegionRegistry;
+use crate::tensor::{AbstractDeviceCoverage, FusionHfCoverage};
 use crate::topology::{GraphTopology, SplitTopologyRuntime};
 
 pub const DEFAULT_OPERATORS_JSON: &str = include_str!("../assets/operators.generated.json");
@@ -61,6 +62,12 @@ pub struct SystemConfig {
     /// Hot GPU region metadata loaded from `assets/regions.hot.json`.
     /// Empty when the file doesn't exist yet.
     pub hot_region_registry: HotRegionRegistry,
+    /// Generated fusion-region → H_f handler coverage loaded from
+    /// `assets/fusion_hf.generated.json`.
+    pub fusion_hf_coverage: FusionHfCoverage,
+    /// Generated abstract/no-op marker coverage loaded from
+    /// `assets/abstract_device.generated.json`.
+    pub abstract_device_coverage: AbstractDeviceCoverage,
     /// Split topology loaded from `topology.control.json` + `topology.hot.json`.
     /// None when the split files do not yet exist.
     pub split_topology: Option<SplitTopologyRuntime>,
@@ -185,6 +192,11 @@ impl Default for SystemConfig {
 
         let hot_region_registry = HotRegionRegistry::load("assets/regions.hot.json")
             .unwrap_or_else(|error| panic!("failed to load required hot regions: {error}"));
+        let fusion_hf_coverage = FusionHfCoverage::load("assets/fusion_hf.generated.json")
+            .unwrap_or_else(|error| panic!("failed to load fusion H_f coverage: {error}"));
+        let abstract_device_coverage =
+            AbstractDeviceCoverage::load("assets/abstract_device.generated.json")
+                .unwrap_or_else(|error| panic!("failed to load abstract-device coverage: {error}"));
 
         // Fatal on slot mismatch: every hot region's reads/writes must be
         // declared in operators.generated.json effects.
@@ -216,6 +228,8 @@ impl Default for SystemConfig {
             operator_registry,
             fusion_dispatch,
             hot_region_registry,
+            fusion_hf_coverage,
+            abstract_device_coverage,
             split_topology,
             ingress_capacity_hint: runtime_policy.ingress_capacity_hint.unwrap_or(1024),
             max_ticks: max_ticks_from_env(runtime_policy.max_ticks.unwrap_or(64)),
@@ -252,6 +266,8 @@ impl SystemConfig {
     pub fn reload_operator_registry(&mut self) -> Result<(), String> {
         self.operator_registry = load_operator_registry(&self.operators_path)?;
         self.reload_fusion_dispatch()?;
+        self.reload_fusion_hf_coverage()?;
+        self.reload_abstract_device_coverage()?;
         Ok(())
     }
 
@@ -270,6 +286,21 @@ impl SystemConfig {
         }
         self.fusion_dispatch =
             FusionDispatch::load("assets/topology.fusion.json", &self.operator_registry)?;
+        Ok(())
+    }
+
+    /// Reload generated fusion H_f coverage.
+    pub fn reload_fusion_hf_coverage(&mut self) -> Result<(), String> {
+        self.fusion_hf_coverage = FusionHfCoverage::load("assets/fusion_hf.generated.json")
+            .map_err(|error| error.to_string())?;
+        Ok(())
+    }
+
+    /// Reload generated abstract-device coverage.
+    pub fn reload_abstract_device_coverage(&mut self) -> Result<(), String> {
+        self.abstract_device_coverage =
+            AbstractDeviceCoverage::load("assets/abstract_device.generated.json")
+                .map_err(|error| error.to_string())?;
         Ok(())
     }
 
@@ -300,6 +331,16 @@ impl SystemConfig {
 
     pub fn with_hot_region_registry(mut self, registry: HotRegionRegistry) -> Self {
         self.hot_region_registry = registry;
+        self
+    }
+
+    pub fn with_fusion_hf_coverage(mut self, coverage: FusionHfCoverage) -> Self {
+        self.fusion_hf_coverage = coverage;
+        self
+    }
+
+    pub fn with_abstract_device_coverage(mut self, coverage: AbstractDeviceCoverage) -> Self {
+        self.abstract_device_coverage = coverage;
         self
     }
 

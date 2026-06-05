@@ -7,7 +7,7 @@
 
 use std::sync::Arc;
 
-use cudarc::driver::{CudaDevice, CudaSlice, DeviceRepr, LaunchAsync, LaunchConfig};
+use cudarc::driver::{CudaDevice, CudaSlice, DeviceRepr, DeviceSlice, LaunchAsync, LaunchConfig};
 use cudarc::nvrtc::compile_ptx;
 use serde::{Deserialize, Serialize};
 
@@ -54,10 +54,89 @@ const RING_POP_KERNEL: &str = "device_ring_pop";
 const PARALLEL_REDUCE_KERNEL: &str = "quantale_parallel_reduce";
 const TOPK_BITONIC_KERNEL: &str = "quantale_topk_bitonic";
 const PAR_GROUP_STEP_KERNEL: &str = "tensor_quantale_par_group_step";
+const ORCH_STATE_INIT_KERNEL: &str = "orchestration_state_init";
+const ORCH_STATE_SNAPSHOT_KERNEL: &str = "orchestration_state_snapshot";
+const DEVICE_CMD_RING_PUSH_KERNEL: &str = "device_command_ring_push";
+const DEVICE_RECEIPT_EXT_PUSH_KERNEL: &str = "device_receipt_ext_ring_push";
+const DEVICE_RECEIPT_EXT_DRAIN_KERNEL: &str = "device_receipt_ext_drain";
+const ORCHESTRATE_STEP_KERNEL: &str = "tensor_quantale_orchestrate_step";
+const CONTROL_FLOW_ADVANCE_KERNEL: &str = "control_flow_advance";
+const CHECK_EFFECTS_INDEPENDENT_KERNEL: &str = "check_effects_independent";
+const FAILURE_POLICY_INIT_KERNEL: &str = "failure_policy_init";
+const FAILURE_POLICY_CLASSIFY_KERNEL: &str = "failure_policy_classify_and_emit";
+const FAILURE_POLICY_SET_ROLLBACK_KERNEL: &str = "failure_policy_set_rollback_marker";
+const FAILURE_POLICY_APPLY_ROLLBACK_KERNEL: &str = "failure_policy_apply_rollback";
+const LEARNED_DELTA_INIT_KERNEL: &str = "learned_delta_init";
+const LEARNED_DELTA_FOLD_KERNEL: &str = "learned_delta_fold_receipt";
+const LEARNED_DELTA_APPLY_KERNEL: &str = "learned_delta_apply";
+const RECEIPT_PRIOR_SNAPSHOT_KERNEL: &str = "receipt_prior_snapshot";
+const ORCH_TRACE_PUSH_KERNEL: &str = "orch_event_trace_push";
+const ORCH_TRACE_DRAIN_KERNEL: &str = "orch_event_trace_drain";
+const ORCH_CHECK_DUPLICATE_RECEIPTS_KERNEL: &str = "orch_check_no_duplicate_receipts";
+const ORCH_CHECK_FRONTIER_VALID_KERNEL: &str = "orch_check_frontier_valid";
+const ORCH_CHECK_NO_CMD_WITHOUT_RECEIPT_KERNEL: &str = "orch_check_no_command_without_receipt";
+const ORCH_REPLAY_SNAPSHOT_KERNEL: &str = "orch_replay_snapshot";
+const ORCH_REPLAY_RESTORE_KERNEL: &str = "orch_replay_restore";
+
+// Phase-2 orchestration step status codes (mirror ORCH_* defines in .cu).
+pub const ORCH_CONTINUE: i32 = 0;
+pub const ORCH_WAIT_EXTERNAL: i32 = 1;
+pub const ORCH_HALTED: i32 = 2;
+pub const ORCH_ERROR: i32 = 3;
+
+// Phase-2 dispatch kind codes (mirror DISPATCH_KIND_* defines in .cu).
+pub const DISPATCH_KIND_NONE: i32 = 0;
+pub const DISPATCH_KIND_HF_DEVICE: i32 = 1;
+pub const DISPATCH_KIND_HOST_FALLBACK: i32 = 2;
+pub const DISPATCH_KIND_FUSION_ENTRY: i32 = 3;
+pub const DISPATCH_KIND_ABSTRACT_DEVICE: i32 = 4;
+pub const DISPATCH_KIND_EXTERNAL_PROCESS: i32 = 5;
+pub const DISPATCH_KIND_EXTERNAL_IO: i32 = 6;
+pub const DISPATCH_KIND_UNSUPPORTED: i32 = 7;
+
+// Phase-4 control-flow operation codes (mirror CONTROL_OP_* in .cu).
+pub const CONTROL_OP_SEQ: i32 = 0;
+pub const CONTROL_OP_PAR: i32 = 1;
+pub const CONTROL_OP_CHOICE: i32 = 2;
+pub const CONTROL_OP_STAR_BOUNDED: i32 = 3;
+pub const CONTROL_OP_GATE: i32 = 4;
+pub const CONTROL_OP_HALT_OP: i32 = 5;
+
+// Phase-5 failure classification codes (mirror FAILURE_CLASS_* in .cu).
+pub const FAILURE_CLASS_SPAWN_FAILURE: i32 = 0;
+pub const FAILURE_CLASS_TIMEOUT: i32 = 1;
+pub const FAILURE_CLASS_SAFETY: i32 = 2;
+pub const FAILURE_CLASS_CONTRACT: i32 = 3;
+pub const FAILURE_CLASS_GPU_ERROR: i32 = 4;
+pub const FAILURE_CLASS_UNKNOWN: i32 = 5;
+
+// Phase-5 failure action codes (mirror FAILURE_ACTION_* in .cu).
+pub const FAILURE_ACTION_RETRY: i32 = 0;
+pub const FAILURE_ACTION_BLOCK: i32 = 1;
+pub const FAILURE_ACTION_ROLLBACK: i32 = 2;
+pub const FAILURE_ACTION_HALT: i32 = 3;
+pub const FAILURE_ACTION_EXTERNAL_REPAIR: i32 = 4;
+
+// Phase-5 repair dispatch kind (extends DISPATCH_KIND_* in .cu).
+pub const DISPATCH_KIND_REPAIR: i32 = 8;
+
+// Phase-6 learned-delta ring capacity (mirrors LEARNED_DELTA_RING_SIZE in .cu).
+pub const LEARNED_DELTA_RING_SIZE: usize = 256;
+
+// Phase-8 trace ring capacity and event kind codes (mirror ORCH_TRACE_RING_SIZE
+// and ORCH_EVENT_* defines in .cu).
+pub const ORCH_TRACE_RING_SIZE: usize = 512;
+pub const ORCH_EVENT_STEP_COMMITTED:  i32 = 0;
+pub const ORCH_EVENT_WAIT_EXTERNAL:   i32 = 1;
+pub const ORCH_EVENT_HALTED:          i32 = 2;
+pub const ORCH_EVENT_BLOCKED:         i32 = 3;
+pub const ORCH_EVENT_RECEIPT_DRAINED: i32 = 4;
 
 pub const MAX_PAR_GROUP_SIZE: usize = 8;
 
 pub const DEVICE_RECEIPT_RING_SIZE: usize = 256;
+pub const DEVICE_COMMAND_RING_SIZE: usize = 64;
+pub const DEVICE_RECEIPT_EXT_RING_SIZE: usize = 256;
 pub const GPU_HOT_REGION_COUNT: i32 = 8;
 pub const PAR_DISPATCH_NONE: i32 = 0;
 pub const PAR_DISPATCH_HF_DEVICE: i32 = 1;
@@ -100,6 +179,333 @@ pub fn gpu_region_slots(region_id: i32) -> Option<&'static [&'static str]> {
         6 => Some(REGION_COMMIT_RECEIPT_SLOTS),
         7 => Some(REGION_ANALYSIS_FUSED_SIGNAL_SCORE_SLOTS),
         _ => None,
+    }
+}
+
+/// Static fusion-region lowering table for fusion batches that already have an
+/// in-kernel H_f handler in `cuda/quantale_world.cu`.
+///
+/// This table is intentionally keyed by the generated fusion region name rather
+/// than by hot-region metadata.  It lets the par tier lower known fusion batches
+/// directly into `tensor_quantale_par_group_step` even when a matching fused
+/// entry is absent from `regions.hot.json`; metadata signature matching remains
+/// a compatibility fallback in `runtime_epoch.rs`.
+pub fn fusion_hf_region_id(region_name: &str) -> Option<i32> {
+    match region_name {
+        "Execution::VectorAdd__Execution::VectorScale" => Some(2),
+        "Analysis::Return1__Analysis::Volatility__Analysis::SignalScore" => Some(7),
+        _ => None,
+    }
+}
+
+pub fn static_hf_symbol(region_id: i32) -> Option<&'static str> {
+    match region_id {
+        0 => Some("region_vector_add"),
+        1 => Some("region_vector_scale"),
+        2 => Some("region_fused_add_scale"),
+        3 => Some("region_analysis_return1"),
+        4 => Some("region_analysis_volatility"),
+        5 => Some("region_analysis_signal_score"),
+        6 => Some("region_commit_receipt"),
+        7 => Some("region_analysis_fused_signal_score"),
+        _ => None,
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FusionHfCoverage {
+    entries: std::collections::BTreeMap<String, FusionHfCoverageEntry>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FusionHfCoverageEntry {
+    pub region: String,
+    pub entry: String,
+    pub nodes: Vec<String>,
+    pub hf_region_id: Option<i32>,
+    pub covered: bool,
+    pub reason: String,
+    pub symbol: String,
+    pub slots: Vec<String>,
+}
+
+impl FusionHfCoverage {
+    pub fn load(path: impl AsRef<std::path::Path>) -> Result<Self, CudaError> {
+        let path = path.as_ref();
+        if !path.exists() {
+            return Ok(Self::from_static_table());
+        }
+        let content = std::fs::read_to_string(path).map_err(|e| {
+            CudaError::invalid_input(format!(
+                "read fusion H_f coverage '{}': {e}",
+                path.display()
+            ))
+        })?;
+        Self::from_json_str(&content)
+    }
+
+    pub fn from_static_table() -> Self {
+        let mut entries = std::collections::BTreeMap::new();
+        for (region, hf_region_id) in [
+            ("Execution::VectorAdd__Execution::VectorScale", 2),
+            (
+                "Analysis::Return1__Analysis::Volatility__Analysis::SignalScore",
+                7,
+            ),
+        ] {
+            entries.insert(
+                region.to_string(),
+                FusionHfCoverageEntry {
+                    region: region.to_string(),
+                    entry: String::new(),
+                    nodes: Vec::new(),
+                    hf_region_id: Some(hf_region_id),
+                    covered: true,
+                    reason: "static_hf_handler".to_string(),
+                    symbol: static_hf_symbol(hf_region_id)
+                        .unwrap_or_default()
+                        .to_string(),
+                    slots: gpu_region_slots(hf_region_id)
+                        .unwrap_or(&[])
+                        .iter()
+                        .map(|slot| (*slot).to_string())
+                        .collect(),
+                },
+            );
+        }
+        Self { entries }
+    }
+
+    pub fn from_json_str(input: &str) -> Result<Self, CudaError> {
+        let value: serde_json::Value = serde_json::from_str(input)
+            .map_err(|e| CudaError::invalid_input(format!("parse fusion H_f coverage: {e}")))?;
+        let regions = value
+            .get("regions")
+            .and_then(serde_json::Value::as_array)
+            .ok_or_else(|| {
+                CudaError::invalid_input("fusion H_f coverage missing 'regions' array")
+            })?;
+        let mut entries = std::collections::BTreeMap::new();
+        for (idx, item) in regions.iter().enumerate() {
+            let region = item
+                .get("region")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| {
+                    CudaError::invalid_input(format!(
+                        "fusion H_f coverage region {idx}: missing region"
+                    ))
+                })?
+                .to_string();
+            let entry = item
+                .get("entry")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            let nodes = item
+                .get("nodes")
+                .and_then(serde_json::Value::as_array)
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(serde_json::Value::as_str)
+                        .map(str::to_string)
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            let hf_region_id = match item.get("hf_region_id") {
+                Some(v) if v.is_null() => None,
+                Some(v) => Some(v.as_i64().ok_or_else(|| {
+                    CudaError::invalid_input(format!(
+                        "fusion H_f coverage region '{region}': hf_region_id must be integer or null"
+                    ))
+                })? as i32),
+                None => None,
+            };
+            let covered = item
+                .get("covered")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(hf_region_id.is_some());
+            let reason = item
+                .get("reason")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            let symbol = item
+                .get("symbol")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            let slots = item
+                .get("slots")
+                .and_then(serde_json::Value::as_array)
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(serde_json::Value::as_str)
+                        .map(str::to_string)
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            if covered && hf_region_id.is_none() {
+                return Err(CudaError::invalid_input(format!(
+                    "fusion H_f coverage region '{region}' is covered but has no hf_region_id"
+                )));
+            }
+            if let Some(region_id) = hf_region_id {
+                if region_id < GPU_HOT_REGION_COUNT {
+                    if fusion_hf_region_id(&region) != Some(region_id) {
+                        return Err(CudaError::invalid_input(format!(
+                            "fusion H_f coverage region '{region}' maps to static handler {region_id}, but compiled static table has {:?}",
+                            fusion_hf_region_id(&region)
+                        )));
+                    }
+                } else if covered && symbol.is_empty() {
+                    return Err(CudaError::invalid_input(format!(
+                        "generated fusion H_f coverage region '{region}' is covered but has no symbol"
+                    )));
+                }
+            }
+            entries.insert(
+                region.clone(),
+                FusionHfCoverageEntry {
+                    region,
+                    entry,
+                    nodes,
+                    hf_region_id,
+                    covered,
+                    reason,
+                    symbol,
+                    slots,
+                },
+            );
+        }
+        Ok(Self { entries })
+    }
+
+    pub fn region_id(&self, region_name: &str) -> Option<i32> {
+        self.entries
+            .get(region_name)
+            .filter(|entry| entry.covered)
+            .and_then(|entry| entry.hf_region_id)
+    }
+
+    pub fn slots_for_region_id(&self, region_id: i32) -> Option<&[String]> {
+        self.entries
+            .values()
+            .find(|entry| entry.covered && entry.hf_region_id == Some(region_id))
+            .map(|entry| entry.slots.as_slice())
+    }
+
+    pub fn has_handler_for_region_id(&self, region_id: i32) -> bool {
+        if region_id >= 0 && region_id < GPU_HOT_REGION_COUNT {
+            return gpu_region_slots(region_id).is_some();
+        }
+        self.entries.values().any(|entry| {
+            entry.covered
+                && entry.hf_region_id == Some(region_id)
+                && !entry.symbol.is_empty()
+                && !entry.slots.is_empty()
+        })
+    }
+
+    pub fn region_count(&self) -> i32 {
+        self.entries
+            .values()
+            .filter_map(|entry| entry.hf_region_id)
+            .max()
+            .map(|max_id| (max_id + 1).max(GPU_HOT_REGION_COUNT))
+            .unwrap_or(GPU_HOT_REGION_COUNT)
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AbstractDeviceCoverage {
+    nodes: std::collections::BTreeMap<String, AbstractDeviceCoverageEntry>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AbstractDeviceCoverageEntry {
+    pub node: String,
+    pub covered: bool,
+    pub reason: String,
+}
+
+impl AbstractDeviceCoverage {
+    pub fn load(path: impl AsRef<std::path::Path>) -> Result<Self, CudaError> {
+        let path = path.as_ref();
+        if !path.exists() {
+            return Ok(Self::default());
+        }
+        let content = std::fs::read_to_string(path).map_err(|e| {
+            CudaError::invalid_input(format!(
+                "read abstract-device coverage '{}': {e}",
+                path.display()
+            ))
+        })?;
+        Self::from_json_str(&content)
+    }
+
+    pub fn from_json_str(input: &str) -> Result<Self, CudaError> {
+        let value: serde_json::Value = serde_json::from_str(input).map_err(|e| {
+            CudaError::invalid_input(format!("parse abstract-device coverage: {e}"))
+        })?;
+        let nodes = value
+            .get("nodes")
+            .and_then(serde_json::Value::as_array)
+            .ok_or_else(|| {
+                CudaError::invalid_input("abstract-device coverage missing 'nodes' array")
+            })?;
+        let mut entries = std::collections::BTreeMap::new();
+        for (idx, item) in nodes.iter().enumerate() {
+            let node = item
+                .get("node")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| {
+                    CudaError::invalid_input(format!(
+                        "abstract-device coverage node {idx}: missing node"
+                    ))
+                })?
+                .to_string();
+            let covered = item
+                .get("covered")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false);
+            let reason = item
+                .get("reason")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            entries.insert(
+                node.clone(),
+                AbstractDeviceCoverageEntry {
+                    node,
+                    covered,
+                    reason,
+                },
+            );
+        }
+        Ok(Self { nodes: entries })
+    }
+
+    pub fn is_covered(&self, node_name: &str) -> bool {
+        self.nodes
+            .get(node_name)
+            .map(|entry| entry.covered)
+            .unwrap_or(false)
+    }
+
+    pub fn len(&self) -> usize {
+        self.nodes.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.nodes.is_empty()
     }
 }
 
@@ -210,12 +616,274 @@ pub struct GpuDispatchMailboxHost {
 
 unsafe impl DeviceRepr for GpuDispatchMailboxHost {}
 
+// ── Phase-1 device structs ────────────────────────────────────────────────────
+
+/// Persistent GPU-resident orchestration step state.
+/// Mirrors `OrchestrationState` in `cuda/quantale_world.cu`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct OrchestrationState {
+    pub step: i32,
+    pub halted: i32,
+    pub blocked: i32,
+    pub current_frontier_epoch: i32,
+    pub selected_group: i32,
+    pub selected_node: i32,
+    pub pending_external_count: i32,
+    pub pending_receipt_count: i32,
+    pub failure_count: i32,
+    pub rollback_requested: i32,
+    pub star_counter: i32,  // Phase 4: bounded-star iteration count
+    pub star_bound: i32,    // Phase 4: current star bound (0 = no star active)
+    pub consecutive_blocks: i32,    // Phase 5: count of consecutive blocked steps
+    pub block_threshold: i32,       // Phase 5: hard-reset threshold (0 = disabled)
+    pub hard_reset_requested: i32,  // Phase 5: set to 1 when HALT action fires
+    pub rollback_available: i32,    // Phase 5: 1 when rollback marker is saved
+    pub failure_action: i32,        // Phase 5: last FAILURE_ACTION_* decision
+    pub selected_src: i32,          // Phase 8: src of last committed edge
+    pub selected_dst: i32,          // Phase 8: dst of last committed edge
+}
+
+unsafe impl DeviceRepr for OrchestrationState {}
+
+/// GPU → CPU/IO service command (Phase-3 protocol).
+/// Mirrors `DeviceCommand` in `cuda/quantale_world.cu`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct DeviceCommand {
+    pub valid: i32,
+    pub command_id: i32,
+    pub node_id: i32,
+    pub src: i32,
+    pub dst: i32,
+    pub dispatch_kind: i32,
+    /// Index into the host operator name table; host resolves to executable path.
+    pub operator_name_id: i32,
+    /// Deadline in scheduler ticks; 0 = no timeout.
+    pub timeout_ticks: i32,
+    /// Remaining retries; 0 = no retry.
+    pub retry_budget: i32,
+    pub payload_offset: i32,
+    pub payload_len: i32,
+}
+
+unsafe impl DeviceRepr for DeviceCommand {}
+
+/// Extended receipt returned from CPU/IO services (Phase-3 protocol).
+/// Mirrors `DeviceReceiptExt` in `cuda/quantale_world.cu`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct DeviceReceiptExt {
+    pub valid: i32,
+    pub consumed: i32,
+    pub command_id: i32,
+    pub node_id: i32,
+    pub src: i32,
+    pub dst: i32,
+    pub outcome: i32,
+    pub receipt_kind: i32,
+    pub output_flags: i32,
+    pub latency: f32,
+}
+
+unsafe impl DeviceRepr for DeviceReceiptExt {}
+
+// ── Phase-4 device structs ────────────────────────────────────────────────────
+
+/// One edge in a lowered pattern control-flow table.
+/// Mirrors `ControlEdge` in `cuda/quantale_world.cu`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ControlEdge {
+    pub op: i32,
+    pub lhs: i32,
+    pub rhs: i32,
+    pub guard: i32,
+    pub order: i32,
+    pub bound: i32,
+}
+
+unsafe impl DeviceRepr for ControlEdge {}
+
+/// Per-node effect entry for par-eligibility checks.
+/// Mirrors `EffectTable` in `cuda/quantale_world.cu`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct EffectTable {
+    pub reads: i32,
+    pub writes: i32,
+    pub locks: i32,
+    pub safety_class: i32,
+}
+
+unsafe impl DeviceRepr for EffectTable {}
+
+// ── Phase-5 device struct ─────────────────────────────────────────────────────
+
+/// Per-node failure policy stored on GPU.
+/// Mirrors `FailurePolicy` in `cuda/quantale_world.cu`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FailurePolicy {
+    /// Remaining retries; -1 = unlimited; 0 = exhausted → BLOCK/REPAIR.
+    pub retry_budget: i32,
+    /// Consecutive failures before scheduler-level BLOCK; -1 = disabled.
+    pub block_threshold: i32,
+    /// 1 = save rollback marker on any failure.
+    pub rollback_on_failure: i32,
+    /// 1 = emit repair DeviceCommand when budget exhausted.
+    pub repair_on_block: i32,
+}
+
+unsafe impl DeviceRepr for FailurePolicy {}
+
+/// Packed classification target passed to `failure_policy_classify_and_emit`.
+/// Using a struct keeps the kernel within cudarc's LaunchAsync arity limit.
+/// Mirrors `FailureClassifyRequest` in `cuda/quantale_world.cu`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct FailureClassifyRequest {
+    pub outcome: i32,
+    pub node_id: i32,
+    pub src: i32,
+    pub dst: i32,
+    pub command_id: i32,
+}
+
+unsafe impl DeviceRepr for FailureClassifyRequest {}
+
+// ── Phase-6 device struct ─────────────────────────────────────────────────────
+
+/// One entry in the learned-delta ring, recording what was learned from a
+/// receipt.  Emitted on-device; drained by the CPU service for persistence.
+/// Mirrors `LearnedDelta` in `cuda/quantale_world.cu`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct LearnedDelta {
+    pub src: i32,
+    pub dst: i32,
+    pub confidence_delta: f32,
+    pub cost_delta: f32,
+    pub safety_delta: f32,
+}
+
+unsafe impl DeviceRepr for LearnedDelta {}
+
+// ── Phase-8 device structs ────────────────────────────────────────────────────
+
+/// One entry in the GPU-resident orchestration event trace ring.
+/// Mirrors `OrchestrationEvent` in `cuda/quantale_world.cu`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct OrchestrationEvent {
+    pub step: i32,
+    pub event_kind: i32,
+    pub selected_node: i32,
+    pub selected_group: i32,
+    pub src: i32,
+    pub dst: i32,
+    pub outcome: i32,
+}
+
+unsafe impl DeviceRepr for OrchestrationEvent {}
+
+/// Decoded result of a `tensor_quantale_orchestrate_step` launch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OrchStepStatus {
+    Continue,
+    WaitExternal,
+    Halted,
+    Error,
+}
+
+impl OrchStepStatus {
+    pub fn from_code(code: i32) -> Self {
+        match code {
+            ORCH_CONTINUE      => Self::Continue,
+            ORCH_WAIT_EXTERNAL => Self::WaitExternal,
+            ORCH_HALTED        => Self::Halted,
+            _                  => Self::Error,
+        }
+    }
+}
+
+/// Device-resident ring buffers for the Phase-1 orchestration state block,
+/// plus the Phase-2 dispatch-kind table and step-status scratch buffer.
+pub struct OrchestrationBuffers {
+    pub state: CudaSlice<OrchestrationState>,
+    pub command_ring: CudaSlice<DeviceCommand>,
+    pub command_head: CudaSlice<i32>,
+    pub command_tail: CudaSlice<i32>,
+    pub receipt_ext_ring: CudaSlice<DeviceReceiptExt>,
+    pub receipt_ext_head: CudaSlice<i32>,
+    pub receipt_ext_tail: CudaSlice<i32>,
+    /// Phase-2: per-node dispatch kind table (length N). Defaults to
+    /// `DISPATCH_KIND_HF_DEVICE` for all nodes; callers can overwrite entries
+    /// for EXTERNAL_PROCESS / EXTERNAL_IO nodes via `set_dispatch_kinds`.
+    pub dispatch_kinds: CudaSlice<i32>,
+    /// Phase-2: single-element scratch buffer for the ORCH_* step status.
+    pub step_status: CudaSlice<i32>,
+    /// Phase-2: device copy of the default `ProjectionBias` used by the
+    /// scheduler kernel.  Avoids per-call host allocations.
+    pub default_bias: CudaSlice<ProjectionBias>,
+    /// Phase-4: lowered pattern control-flow edge table.
+    /// Starts with a single sentinel entry (lhs=-1, rhs=-1); replaced by
+    /// `load_control_table` after patterns are compiled.
+    pub control_edges: CudaSlice<ControlEdge>,
+    /// Phase-4: per-node effect table indexed by node id.
+    pub effect_table: CudaSlice<EffectTable>,
+    /// Phase-4: single-element scratch buffer for `control_flow_advance` output.
+    pub control_op_out: CudaSlice<i32>,
+    /// Phase-5: per-node failure policy table (length N).
+    /// Defaults to all-zero (budget=0 → immediate BLOCK); callers invoke
+    /// `failure_policy_init` to set non-zero retry budgets.
+    pub failure_policies: CudaSlice<FailurePolicy>,
+    /// Phase-5: rollback snapshot of `consumed[]` (length MATRIX_LEN).
+    pub rollback_consumed: CudaSlice<i32>,
+    /// Phase-5: rollback snapshot of `active[]` (length N).
+    pub rollback_active: CudaSlice<i32>,
+    /// Phase-5: single-element scratch buffer for `failure_policy_classify_and_emit` output.
+    pub failure_action_out: CudaSlice<i32>,
+    /// Phase-6: per-node receipt prior table (float, length N).
+    /// Updated on-device by `learned_delta_fold_receipt`; read by exploration
+    /// seeding without a CPU round-trip.
+    pub receipt_priors: CudaSlice<f32>,
+    /// Phase-6: learned-edge delta ring (length LEARNED_DELTA_RING_SIZE).
+    /// Produced on-device; drained by the CPU service for durable persistence.
+    pub learned_delta_ring: CudaSlice<LearnedDelta>,
+    pub learned_delta_head: CudaSlice<i32>,
+    pub learned_delta_tail: CudaSlice<i32>,
+    /// Phase-6: export buffer for `receipt_prior_snapshot` (length N).
+    pub receipt_prior_snapshot_buf: CudaSlice<f32>,
+    /// Phase-8: device event trace ring (length ORCH_TRACE_RING_SIZE).
+    pub trace_ring: CudaSlice<OrchestrationEvent>,
+    pub trace_head: CudaSlice<i32>,
+    pub trace_tail: CudaSlice<i32>,
+    /// Phase-8: host drain buffer for `orch_event_trace_drain` (length ORCH_TRACE_RING_SIZE).
+    pub trace_drain_buf: CudaSlice<OrchestrationEvent>,
+    /// Phase-8: single-element count output from `orch_event_trace_drain`.
+    pub trace_drain_count: CudaSlice<i32>,
+    /// Phase-8: single-element violation output for invariant checker kernels.
+    pub orch_violation_out: CudaSlice<i32>,
+    /// Phase-8: replay snapshot buffers (state + consumed + active).
+    pub replay_state: CudaSlice<OrchestrationState>,
+    pub replay_consumed: CudaSlice<i32>,
+    pub replay_active: CudaSlice<i32>,
+}
+
 /// GPU-resident data for the par-group-step kernel.
 ///
 /// Built once at epoch start from the topology's compiled par groups and the
 /// per-member dispatch metadata. Uploaded to the GPU device at construction.
 pub struct ParGroupGpuData {
     pub(crate) table_buf: CudaSlice<i32>,
+    /// Offset of each packed group record inside `table_buf`.
+    ///
+    /// `table_buf[group_offsets[g]]` is the group size and
+    /// `table_buf[group_offsets[g] + 1]` is the first member tuple.  This lets
+    /// the par-step kernel index groups directly instead of walking the
+    /// variable-length table serially.
+    pub(crate) group_offsets_buf: CudaSlice<i32>,
     pub num_groups: usize,
     /// Per-member slot table pointer array (shape: num_groups × MAX_PAR_GROUP_SIZE).
     /// Each entry is the device address of the `float**` pointer table for that
@@ -223,6 +891,7 @@ pub struct ParGroupGpuData {
     pub(crate) member_slot_table_ptrs: CudaSlice<u64>,
     /// Element count per member slot table (same shape as member_slot_table_ptrs).
     pub(crate) member_element_counts: CudaSlice<i32>,
+    pub(crate) region_count: i32,
     /// Keeps the per-member `float**` device arrays alive for the epoch lifetime.
     #[allow(dead_code)]
     pub(crate) _slot_table_storage: Vec<CudaSlice<u64>>,
@@ -234,8 +903,8 @@ impl ParGroupGpuData {
     /// `region_ids[g][i]` is the hot-region id for member `i` of group `g`, or
     /// `-1` when the member is not a hot-region operator.
     ///
-    /// `is_gpu_dispatchable[g][i]` is `true` when the member is GPU-executable
-    /// (jit_cuda / fusion-entry / hot-region).  The table is packed as
+    /// `is_gpu_dispatchable[g][i]` is `true` when the member has a GPU-native
+    /// dispatch kind (H_f device or abstract-device receipt). The table is packed as
     /// `[g0_size, g0_n0, g0_r0, g0_e0, g0_k0, g0_n1, ...]`
     /// — `(node_id, region_id, is_gpu_dispatchable, dispatch_kind)` tuples.  The kernel computes
     /// eligibility on-device from the `is_gpu_dispatchable` flags rather than from
@@ -252,6 +921,7 @@ impl ParGroupGpuData {
         is_gpu_dispatchable: &[Vec<bool>],
         dispatch_kinds: &[Vec<i32>],
         slot_registry: Option<&DeviceSlotRegistry>,
+        fusion_hf_coverage: Option<&FusionHfCoverage>,
     ) -> Result<Self, CudaError> {
         use cudarc::driver::DevicePtr;
 
@@ -274,13 +944,18 @@ impl ParGroupGpuData {
                     if rid < 0 {
                         continue;
                     }
-                    let Some(slot_names) = gpu_region_slots(rid) else {
-                        continue;
+                    let static_slots = gpu_region_slots(rid);
+                    let generated_slots =
+                        fusion_hf_coverage.and_then(|coverage| coverage.slots_for_region_id(rid));
+                    let slot_refs: Vec<&str> = match (static_slots, generated_slots) {
+                        (Some(slots), _) => slots.to_vec(),
+                        (None, Some(slots)) => slots.iter().map(String::as_str).collect(),
+                        (None, None) => continue,
                     };
-                    if slot_names.is_empty() {
+                    if slot_refs.is_empty() {
                         continue;
                     }
-                    match registry.device_slot_ptr_table(dev, slot_names) {
+                    match registry.device_slot_ptr_table(dev, &slot_refs) {
                         Ok((ptr_table, elem_count)) => {
                             let device_addr = *ptr_table.device_ptr();
                             slot_ptrs_host[g * MAX_PAR_GROUP_SIZE + i] = device_addr;
@@ -308,23 +983,32 @@ impl ParGroupGpuData {
             let table_buf = dev
                 .htod_copy(vec![0_i32])
                 .map_err(|e| CudaError::new("htod par_group table empty", e))?;
+            let group_offsets_buf = dev
+                .htod_copy(vec![0_i32])
+                .map_err(|e| CudaError::new("htod par_group offsets empty", e))?;
             return Ok(Self {
                 table_buf,
+                group_offsets_buf,
                 num_groups: 0,
                 member_slot_table_ptrs,
                 member_element_counts,
+                region_count: fusion_hf_coverage
+                    .map(FusionHfCoverage::region_count)
+                    .unwrap_or(GPU_HOT_REGION_COUNT),
                 _slot_table_storage: slot_table_storage,
             });
         }
 
         // Packed table: [g0_size, g0_n0, g0_r0, g0_e0, g0_k0, g0_n1, ...]
         let mut table: Vec<i32> = Vec::new();
+        let mut group_offsets: Vec<i32> = Vec::with_capacity(num_groups);
         for (((group, rids), dispatchable), kinds) in groups
             .iter()
             .zip(region_ids.iter())
             .zip(is_gpu_dispatchable.iter())
             .zip(dispatch_kinds.iter())
         {
+            group_offsets.push(table.len() as i32);
             table.push(group.len() as i32);
             for (((&node_id, &rid), &disp), &kind) in group
                 .iter()
@@ -341,11 +1025,18 @@ impl ParGroupGpuData {
         let table_buf = dev
             .htod_copy(table)
             .map_err(|e| CudaError::new("htod par_group table", e))?;
+        let group_offsets_buf = dev
+            .htod_copy(group_offsets)
+            .map_err(|e| CudaError::new("htod par_group offsets", e))?;
         Ok(Self {
             table_buf,
+            group_offsets_buf,
             num_groups,
             member_slot_table_ptrs,
             member_element_counts,
+            region_count: fusion_hf_coverage
+                .map(FusionHfCoverage::region_count)
+                .unwrap_or(GPU_HOT_REGION_COUNT),
             _slot_table_storage: slot_table_storage,
         })
     }
@@ -418,6 +1109,22 @@ pub(crate) struct ParGroupHfParamsHost {
 
 unsafe impl DeviceRepr for ParGroupHfParamsHost {}
 
+/// Phase-2: host-side mirror of the CUDA `TensorWorldBundle` struct.
+/// All fields are raw device addresses (u64 = CUdeviceptr).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct TensorWorldBundleHost {
+    pub tensor_dev:     u64,
+    pub witness_dev:    u64,
+    pub consumed_dev:   u64,
+    pub active_dev:     u64,
+    pub next_active_dev: u64,
+    pub bias_dev:       u64,
+    pub decision_dev:   u64,
+}
+
+unsafe impl DeviceRepr for TensorWorldBundleHost {}
+
 /// Device-resident ring buffer for `DeviceReceipt`s.
 ///
 /// `ring` holds `DEVICE_RECEIPT_RING_SIZE` slots on the GPU.
@@ -465,12 +1172,72 @@ pub struct TensorQuantaleWorld {
     event_queue: Vec<ExecutionReceipt>,
     /// Device-resident receipt ring for the GPU hot-dispatch path.
     device_receipt_buffer: DeviceReceiptBuffer,
+    /// Phase-1 orchestration state block: persistent scheduler state, command
+    /// ring, and extended receipt ring.  Zeroed at world creation; written by
+    /// Phase-2+ orchestration kernels.
+    orch_buffers: OrchestrationBuffers,
+}
+
+const FUSION_HF_GENERATED_FUNCTIONS_MARKER: &str = "// @@FUSION_HF_GENERATED_FUNCTIONS@@";
+const FUSION_HF_GENERATED_GPU_DISPATCH_CASES_MARKER: &str =
+    "// @@FUSION_HF_GENERATED_GPU_DISPATCH_CASES@@";
+const FUSION_HF_GENERATED_PAR_CASES_MARKER: &str = "// @@FUSION_HF_GENERATED_PAR_CASES@@";
+const GENERATED_FUSION_HF_STUBS_PATH: &str = "assets/fusion_hf.stubs.cu";
+
+fn assemble_kernel_source() -> String {
+    let generated_functions = std::fs::read_to_string(GENERATED_FUSION_HF_STUBS_PATH)
+        .unwrap_or_else(|_| "// No generated fusion H_f fragments available.\n".to_string());
+    assemble_kernel_source_with_generated(&generated_functions)
+}
+
+fn assemble_kernel_source_with_generated(generated_functions: &str) -> String {
+    let mut source = format!("{CUDA_TENSOR_NODE_COUNT_DEFINE}{KERNEL_SOURCE_TEMPLATE}");
+    let generated_gpu_cases =
+        generated_fusion_hf_switch_cases(generated_functions, "element_count");
+    let generated_par_cases = generated_fusion_hf_switch_cases(generated_functions, "elem_count");
+
+    source = source.replace(FUSION_HF_GENERATED_FUNCTIONS_MARKER, generated_functions);
+    source = source.replace(
+        FUSION_HF_GENERATED_GPU_DISPATCH_CASES_MARKER,
+        &generated_gpu_cases,
+    );
+    source = source.replace(FUSION_HF_GENERATED_PAR_CASES_MARKER, &generated_par_cases);
+    source
+}
+
+fn generated_fusion_hf_switch_cases(generated_functions: &str, element_count_name: &str) -> String {
+    generated_functions
+        .lines()
+        .filter_map(|line| parse_generated_fusion_hf_case(line, element_count_name))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn parse_generated_fusion_hf_case(line: &str, element_count_name: &str) -> Option<String> {
+    let line = line.trim();
+    let rest = line.strip_prefix("// hf_case:")?.trim();
+    let mut parts = rest.split_whitespace();
+    let region_id = parts.next()?;
+    let symbol = parts.next()?;
+    Some(format!(
+        "        case {region_id}: {symbol}(slot_ptrs, {element_count_name}, &r); break;"
+    ))
 }
 
 impl TensorQuantaleWorld {
     pub fn empty() -> Result<Self, CudaError> {
+        Self::empty_with_kernel_source(assemble_kernel_source())
+    }
+
+    #[doc(hidden)]
+    pub fn empty_with_generated_fusion_hf_fragments(
+        generated_functions: &str,
+    ) -> Result<Self, CudaError> {
+        Self::empty_with_kernel_source(assemble_kernel_source_with_generated(generated_functions))
+    }
+
+    fn empty_with_kernel_source(kernel_source: String) -> Result<Self, CudaError> {
         let dev = CudaDevice::new(0).map_err(|error| CudaError::new("CudaDevice::new", error))?;
-        let kernel_source = format!("{CUDA_TENSOR_NODE_COUNT_DEFINE}{KERNEL_SOURCE_TEMPLATE}");
         let ptx =
             compile_ptx(kernel_source).map_err(|error| CudaError::new("compile_ptx", error))?;
         dev.load_ptx(
@@ -501,6 +1268,29 @@ impl TensorQuantaleWorld {
                 PARALLEL_REDUCE_KERNEL,
                 TOPK_BITONIC_KERNEL,
                 PAR_GROUP_STEP_KERNEL,
+                ORCH_STATE_INIT_KERNEL,
+                ORCH_STATE_SNAPSHOT_KERNEL,
+                DEVICE_CMD_RING_PUSH_KERNEL,
+                DEVICE_RECEIPT_EXT_PUSH_KERNEL,
+                DEVICE_RECEIPT_EXT_DRAIN_KERNEL,
+                ORCHESTRATE_STEP_KERNEL,
+                CONTROL_FLOW_ADVANCE_KERNEL,
+                CHECK_EFFECTS_INDEPENDENT_KERNEL,
+                FAILURE_POLICY_INIT_KERNEL,
+                FAILURE_POLICY_CLASSIFY_KERNEL,
+                FAILURE_POLICY_SET_ROLLBACK_KERNEL,
+                FAILURE_POLICY_APPLY_ROLLBACK_KERNEL,
+                LEARNED_DELTA_INIT_KERNEL,
+                LEARNED_DELTA_FOLD_KERNEL,
+                LEARNED_DELTA_APPLY_KERNEL,
+                RECEIPT_PRIOR_SNAPSHOT_KERNEL,
+                ORCH_TRACE_PUSH_KERNEL,
+                ORCH_TRACE_DRAIN_KERNEL,
+                ORCH_CHECK_DUPLICATE_RECEIPTS_KERNEL,
+                ORCH_CHECK_FRONTIER_VALID_KERNEL,
+                ORCH_CHECK_NO_CMD_WITHOUT_RECEIPT_KERNEL,
+                ORCH_REPLAY_SNAPSHOT_KERNEL,
+                ORCH_REPLAY_RESTORE_KERNEL,
             ],
         )
         .map_err(|error| CudaError::new("load_ptx tensor", error))?;
@@ -561,6 +1351,120 @@ impl TensorQuantaleWorld {
             .htod_copy(vec![0_i32])
             .map_err(|error| CudaError::new("htod_copy device_receipt_tail", error))?;
 
+        // Phase-1: orchestration state block + command ring + extended receipt ring.
+        let orch_state = dev
+            .htod_copy(vec![OrchestrationState::default()])
+            .map_err(|error| CudaError::new("htod_copy orch_state", error))?;
+        let command_ring = dev
+            .htod_copy(vec![DeviceCommand::default(); DEVICE_COMMAND_RING_SIZE])
+            .map_err(|error| CudaError::new("htod_copy command_ring", error))?;
+        let command_head = dev
+            .htod_copy(vec![0_i32])
+            .map_err(|error| CudaError::new("htod_copy command_head", error))?;
+        let command_tail = dev
+            .htod_copy(vec![0_i32])
+            .map_err(|error| CudaError::new("htod_copy command_tail", error))?;
+        let receipt_ext_ring = dev
+            .htod_copy(vec![DeviceReceiptExt::default(); DEVICE_RECEIPT_EXT_RING_SIZE])
+            .map_err(|error| CudaError::new("htod_copy receipt_ext_ring", error))?;
+        let receipt_ext_head = dev
+            .htod_copy(vec![0_i32])
+            .map_err(|error| CudaError::new("htod_copy receipt_ext_head", error))?;
+        let receipt_ext_tail = dev
+            .htod_copy(vec![0_i32])
+            .map_err(|error| CudaError::new("htod_copy receipt_ext_tail", error))?;
+
+        // Phase-2: dispatch kind table (default HF_DEVICE for all nodes) + step status.
+        let dispatch_kinds = dev
+            .htod_copy(vec![DISPATCH_KIND_HF_DEVICE; TENSOR_NODE_COUNT])
+            .map_err(|error| CudaError::new("htod_copy dispatch_kinds", error))?;
+        let step_status = dev
+            .htod_copy(vec![ORCH_CONTINUE])
+            .map_err(|error| CudaError::new("htod_copy step_status", error))?;
+        let default_bias = dev
+            .htod_copy(vec![ProjectionBias::default()])
+            .map_err(|error| CudaError::new("htod_copy default_bias", error))?;
+
+        // Phase-4: control-flow tables. Sentinel edge (lhs=-1, rhs=-1) ensures
+        // find_matching_control_edge returns -1 until real patterns are loaded.
+        let ctrl_sentinel = ControlEdge {
+            op: CONTROL_OP_HALT_OP,
+            lhs: -1,
+            rhs: -1,
+            guard: 0,
+            order: 0,
+            bound: 0,
+        };
+        let control_edges = dev
+            .htod_copy(vec![ctrl_sentinel])
+            .map_err(|error| CudaError::new("htod_copy control_edges", error))?;
+        let effect_table = dev
+            .htod_copy(vec![EffectTable::default()])
+            .map_err(|error| CudaError::new("htod_copy effect_table", error))?;
+        let control_op_out = dev
+            .htod_copy(vec![-1_i32])
+            .map_err(|error| CudaError::new("htod_copy control_op_out", error))?;
+
+        // Phase-5: failure policy table, rollback snapshot buffers, action scratch.
+        let failure_policies = dev
+            .htod_copy(vec![FailurePolicy::default(); TENSOR_NODE_COUNT])
+            .map_err(|error| CudaError::new("htod_copy failure_policies", error))?;
+        let rollback_consumed = dev
+            .htod_copy(vec![0_i32; MATRIX_LEN])
+            .map_err(|error| CudaError::new("htod_copy rollback_consumed", error))?;
+        let rollback_active = dev
+            .htod_copy(vec![0_i32; TENSOR_NODE_COUNT])
+            .map_err(|error| CudaError::new("htod_copy rollback_active", error))?;
+        let failure_action_out = dev
+            .htod_copy(vec![FAILURE_ACTION_BLOCK])
+            .map_err(|error| CudaError::new("htod_copy failure_action_out", error))?;
+
+        // Phase-6: receipt prior table, learned-delta ring, export snapshot.
+        let receipt_priors = dev
+            .htod_copy(vec![0.0_f32; TENSOR_NODE_COUNT])
+            .map_err(|error| CudaError::new("htod_copy receipt_priors", error))?;
+        let learned_delta_ring = dev
+            .htod_copy(vec![LearnedDelta::default(); LEARNED_DELTA_RING_SIZE])
+            .map_err(|error| CudaError::new("htod_copy learned_delta_ring", error))?;
+        let learned_delta_head = dev
+            .htod_copy(vec![0_i32])
+            .map_err(|error| CudaError::new("htod_copy learned_delta_head", error))?;
+        let learned_delta_tail = dev
+            .htod_copy(vec![0_i32])
+            .map_err(|error| CudaError::new("htod_copy learned_delta_tail", error))?;
+        let receipt_prior_snapshot_buf = dev
+            .htod_copy(vec![0.0_f32; TENSOR_NODE_COUNT])
+            .map_err(|error| CudaError::new("htod_copy receipt_prior_snapshot_buf", error))?;
+
+        // Phase-8 allocations.
+        let trace_ring = dev
+            .htod_copy(vec![OrchestrationEvent::default(); ORCH_TRACE_RING_SIZE])
+            .map_err(|error| CudaError::new("htod_copy trace_ring", error))?;
+        let trace_head = dev
+            .htod_copy(vec![0_i32])
+            .map_err(|error| CudaError::new("htod_copy trace_head", error))?;
+        let trace_tail = dev
+            .htod_copy(vec![0_i32])
+            .map_err(|error| CudaError::new("htod_copy trace_tail", error))?;
+        let trace_drain_buf = dev
+            .htod_copy(vec![OrchestrationEvent::default(); ORCH_TRACE_RING_SIZE])
+            .map_err(|error| CudaError::new("htod_copy trace_drain_buf", error))?;
+        let trace_drain_count = dev
+            .htod_copy(vec![0_i32])
+            .map_err(|error| CudaError::new("htod_copy trace_drain_count", error))?;
+        let orch_violation_out = dev
+            .htod_copy(vec![0_i32])
+            .map_err(|error| CudaError::new("htod_copy orch_violation_out", error))?;
+        let replay_state = dev
+            .htod_copy(vec![OrchestrationState::default()])
+            .map_err(|error| CudaError::new("htod_copy replay_state", error))?;
+        let replay_consumed = dev
+            .htod_copy(vec![0_i32; MATRIX_LEN])
+            .map_err(|error| CudaError::new("htod_copy replay_consumed", error))?;
+        let replay_active = dev
+            .htod_copy(vec![0_i32; TENSOR_NODE_COUNT])
+            .map_err(|error| CudaError::new("htod_copy replay_active", error))?;
+
         let mut world = Self {
             dev,
             tensor,
@@ -584,7 +1488,41 @@ impl TensorQuantaleWorld {
                 head: device_receipt_head,
                 tail: device_receipt_tail,
             },
+            orch_buffers: OrchestrationBuffers {
+                state: orch_state,
+                command_ring,
+                command_head,
+                command_tail,
+                receipt_ext_ring,
+                receipt_ext_head,
+                receipt_ext_tail,
+                dispatch_kinds,
+                step_status,
+                default_bias,
+                control_edges,
+                effect_table,
+                control_op_out,
+                failure_policies,
+                rollback_consumed,
+                rollback_active,
+                failure_action_out,
+                receipt_priors,
+                learned_delta_ring,
+                learned_delta_head,
+                learned_delta_tail,
+                receipt_prior_snapshot_buf,
+                trace_ring,
+                trace_head,
+                trace_tail,
+                trace_drain_buf,
+                trace_drain_count,
+                orch_violation_out,
+                replay_state,
+                replay_consumed,
+                replay_active,
+            },
         };
+        world.orch_state_init()?;
         world.reset()?;
         Ok(world)
     }
@@ -836,7 +1774,7 @@ impl TensorQuantaleWorld {
     ///
     /// `groups` are the compiled par groups (node ID lists).
     /// `region_ids[g][i]` is the hot-region id for member `i` (-1 if not hot).
-    /// `is_gpu_dispatchable[g][i]` is `true` for hot-region / fusion-entry members.
+    /// `is_gpu_dispatchable[g][i]` is `true` for GPU-native dispatch members.
     /// `dispatch_kinds[g][i]` is the initial descriptor kind the kernel should
     /// emit for each committed member; H_f dispatch may upgrade it in-kernel.
     /// Eligibility is encoded per-member in the table and validated by the kernel.
@@ -851,6 +1789,7 @@ impl TensorQuantaleWorld {
         is_gpu_dispatchable: &[Vec<bool>],
         dispatch_kinds: &[Vec<i32>],
         slot_registry: Option<&DeviceSlotRegistry>,
+        fusion_hf_coverage: Option<&FusionHfCoverage>,
     ) -> Result<ParGroupGpuData, CudaError> {
         ParGroupGpuData::build(
             &self.dev,
@@ -859,6 +1798,7 @@ impl TensorQuantaleWorld {
             is_gpu_dispatchable,
             dispatch_kinds,
             slot_registry,
+            fusion_hf_coverage,
         )
     }
 
@@ -908,7 +1848,7 @@ impl TensorQuantaleWorld {
             receipt_ring_dev: *self.device_receipt_buffer.ring.device_ptr(),
             ring_tail_dev: *self.device_receipt_buffer.tail.device_ptr(),
             ring_size: DEVICE_RECEIPT_RING_SIZE as i32,
-            region_count: GPU_HOT_REGION_COUNT,
+            region_count: data.region_count,
         };
         let hf_buf = self
             .dev
@@ -925,6 +1865,7 @@ impl TensorQuantaleWorld {
                     &mut self.next_active,
                     &bias_buf,
                     &mut self.decision,
+                    &data.group_offsets_buf,
                     &data.table_buf,
                     data.num_groups as i32,
                     &mut out_buf,
@@ -1106,6 +2047,835 @@ impl TensorQuantaleWorld {
             )
         }
         .map_err(|error| CudaError::new("tensor_quantale_push_device_receipt", error))
+    }
+
+    // ── Phase-1 orchestration state wrappers ─────────────────────────────────
+
+    /// Launch `orchestration_state_init` to zero the device-resident state block.
+    /// Called once at world construction.
+    pub fn orch_state_init(&mut self) -> Result<(), CudaError> {
+        let kernel = self
+            .dev
+            .get_func(MODULE_NAME, ORCH_STATE_INIT_KERNEL)
+            .ok_or(CudaError::missing_function(ORCH_STATE_INIT_KERNEL))?;
+        unsafe { kernel.launch(kernel_config(), (&mut self.orch_buffers.state,)) }
+            .map_err(|error| CudaError::new(ORCH_STATE_INIT_KERNEL, error))
+    }
+
+    /// Copy the live device orchestration state into a snapshot and return it.
+    pub fn orch_state_snapshot(&mut self) -> Result<OrchestrationState, CudaError> {
+        let mut snapshot = self
+            .dev
+            .htod_copy(vec![OrchestrationState::default()])
+            .map_err(|error| CudaError::new("htod_copy orch_snapshot", error))?;
+        let kernel = self
+            .dev
+            .get_func(MODULE_NAME, ORCH_STATE_SNAPSHOT_KERNEL)
+            .ok_or(CudaError::missing_function(ORCH_STATE_SNAPSHOT_KERNEL))?;
+        unsafe {
+            kernel.launch(kernel_config(), (&self.orch_buffers.state, &mut snapshot))
+        }
+        .map_err(|error| CudaError::new(ORCH_STATE_SNAPSHOT_KERNEL, error))?;
+        let result = self
+            .dev
+            .dtoh_sync_copy(&snapshot)
+            .map_err(|error| CudaError::new("dtoh_sync_copy orch_snapshot", error))?;
+        Ok(result[0])
+    }
+
+    /// Push one `DeviceCommand` into the device command ring.
+    /// Returns `Err` if the ring is full (capacity = `DEVICE_COMMAND_RING_SIZE`).
+    pub fn push_device_command(&mut self, cmd: DeviceCommand) -> Result<(), CudaError> {
+        let ring_size = DEVICE_COMMAND_RING_SIZE as i32;
+        let kernel = self
+            .dev
+            .get_func(MODULE_NAME, DEVICE_CMD_RING_PUSH_KERNEL)
+            .ok_or(CudaError::missing_function(DEVICE_CMD_RING_PUSH_KERNEL))?;
+        unsafe {
+            kernel.launch(
+                kernel_config(),
+                (
+                    &mut self.orch_buffers.command_ring,
+                    &mut self.orch_buffers.command_tail,
+                    &self.orch_buffers.command_head,
+                    ring_size,
+                    cmd,
+                ),
+            )
+        }
+        .map_err(|error| CudaError::new(DEVICE_CMD_RING_PUSH_KERNEL, error))
+    }
+
+    /// Drain the device command ring to the host and return all valid commands.
+    pub fn drain_device_commands(&mut self) -> Result<Vec<DeviceCommand>, CudaError> {
+        let head = self
+            .dev
+            .dtoh_sync_copy(&self.orch_buffers.command_head)
+            .map_err(|error| CudaError::new("dtoh command_head", error))?[0];
+        let tail = self
+            .dev
+            .dtoh_sync_copy(&self.orch_buffers.command_tail)
+            .map_err(|error| CudaError::new("dtoh command_tail", error))?[0];
+        if head == tail {
+            return Ok(Vec::new());
+        }
+        let ring = self
+            .dev
+            .dtoh_sync_copy(&self.orch_buffers.command_ring)
+            .map_err(|error| CudaError::new("dtoh command_ring", error))?;
+        let ring_size = DEVICE_COMMAND_RING_SIZE as i32;
+        let mut out = Vec::new();
+        let mut h = head;
+        while h != tail {
+            let cmd = ring[(h % ring_size) as usize];
+            if cmd.valid != 0 {
+                out.push(cmd);
+            }
+            h += 1;
+        }
+        // Advance head to match tail on the device.
+        self.orch_buffers.command_head = self
+            .dev
+            .htod_copy(vec![tail])
+            .map_err(|error| CudaError::new("htod command_head advance", error))?;
+        Ok(out)
+    }
+
+    /// Push one `DeviceReceiptExt` into the extended receipt ring.
+    pub fn push_device_receipt_ext(&mut self, receipt: DeviceReceiptExt) -> Result<(), CudaError> {
+        let ring_size = DEVICE_RECEIPT_EXT_RING_SIZE as i32;
+        let kernel = self
+            .dev
+            .get_func(MODULE_NAME, DEVICE_RECEIPT_EXT_PUSH_KERNEL)
+            .ok_or(CudaError::missing_function(DEVICE_RECEIPT_EXT_PUSH_KERNEL))?;
+        unsafe {
+            kernel.launch(
+                kernel_config(),
+                (
+                    &mut self.orch_buffers.receipt_ext_ring,
+                    &mut self.orch_buffers.receipt_ext_tail,
+                    &self.orch_buffers.receipt_ext_head,
+                    ring_size,
+                    receipt,
+                ),
+            )
+        }
+        .map_err(|error| CudaError::new(DEVICE_RECEIPT_EXT_PUSH_KERNEL, error))
+    }
+
+    /// Drain the extended receipt ring on-device, applying tensor updates.
+    pub fn drain_device_receipt_ext(&mut self) -> Result<(), CudaError> {
+        let ring_size = DEVICE_RECEIPT_EXT_RING_SIZE as i32;
+        let kernel = self
+            .dev
+            .get_func(MODULE_NAME, DEVICE_RECEIPT_EXT_DRAIN_KERNEL)
+            .ok_or(CudaError::missing_function(DEVICE_RECEIPT_EXT_DRAIN_KERNEL))?;
+        unsafe {
+            kernel.launch(
+                kernel_config(),
+                (
+                    &mut self.tensor,
+                    &mut self.orch_buffers.receipt_ext_ring,
+                    ring_size,
+                    &mut self.orch_buffers.receipt_ext_head,
+                    &self.orch_buffers.receipt_ext_tail,
+                    &mut self.orch_buffers.state,
+                ),
+            )
+        }
+        .map_err(|error| CudaError::new(DEVICE_RECEIPT_EXT_DRAIN_KERNEL, error))
+    }
+
+    // ── Phase-2 orchestration step wrappers ──────────────────────────────────
+
+    /// Upload a dispatch-kind table to the device.
+    /// `kinds` must have length `TENSOR_NODE_COUNT`; each entry is one of the
+    /// `DISPATCH_KIND_*` constants.
+    pub fn set_dispatch_kinds(&mut self, kinds: &[i32]) -> Result<(), CudaError> {
+        if kinds.len() != TENSOR_NODE_COUNT {
+            return Err(CudaError::invalid_input(format!(
+                "set_dispatch_kinds: expected {TENSOR_NODE_COUNT} entries, got {}",
+                kinds.len()
+            )));
+        }
+        self.orch_buffers.dispatch_kinds = self
+            .dev
+            .htod_copy(kinds.to_vec())
+            .map_err(|error| CudaError::new("htod_copy dispatch_kinds update", error))?;
+        Ok(())
+    }
+
+    /// Launch one `tensor_quantale_orchestrate_step` and return the status.
+    ///
+    /// The kernel:
+    ///   1. Drains the extended receipt ring.
+    ///   2. Selects the next ready node (singleton path).
+    ///   3. Commits consumed/active state for GPU-native nodes.
+    ///   4. Emits a `DeviceCommand` for external-dispatch nodes.
+    ///   5. Returns `OrchStepStatus` to the host.
+    pub fn orchestrate_step(&mut self) -> Result<OrchStepStatus, CudaError> {
+        use cudarc::driver::DevicePtr;
+
+        let bundle = TensorWorldBundleHost {
+            tensor_dev:      *self.tensor.device_ptr() as u64,
+            witness_dev:     *self.witness.device_ptr() as u64,
+            consumed_dev:    *self.consumed.device_ptr() as u64,
+            active_dev:      *self.active.device_ptr() as u64,
+            next_active_dev: *self.next_active.device_ptr() as u64,
+            bias_dev:        *self.orch_buffers.default_bias.device_ptr() as u64,
+            decision_dev:    *self.decision.device_ptr() as u64,
+        };
+
+        let bundle_dev = self
+            .dev
+            .htod_copy(vec![bundle])
+            .map_err(|error| CudaError::new("htod_copy TensorWorldBundle", error))?;
+
+        let cmd_ring_size = DEVICE_COMMAND_RING_SIZE as i32;
+        let ext_ring_size = DEVICE_RECEIPT_EXT_RING_SIZE as i32;
+
+        let kernel = self
+            .dev
+            .get_func(MODULE_NAME, ORCHESTRATE_STEP_KERNEL)
+            .ok_or(CudaError::missing_function(ORCHESTRATE_STEP_KERNEL))?;
+
+        unsafe {
+            kernel.launch(
+                kernel_config(),
+                (
+                    &bundle_dev,
+                    &mut self.orch_buffers.state,
+                    &mut self.orch_buffers.command_ring,
+                    &mut self.orch_buffers.command_tail,
+                    &self.orch_buffers.command_head,
+                    cmd_ring_size,
+                    &mut self.orch_buffers.receipt_ext_ring,
+                    &mut self.orch_buffers.receipt_ext_head,
+                    &self.orch_buffers.receipt_ext_tail,
+                    ext_ring_size,
+                    &self.orch_buffers.dispatch_kinds,
+                    &mut self.orch_buffers.step_status,
+                ),
+            )
+        }
+        .map_err(|error| CudaError::new(ORCHESTRATE_STEP_KERNEL, error))?;
+
+        let status_vec = self
+            .dev
+            .dtoh_sync_copy(&self.orch_buffers.step_status)
+            .map_err(|error| CudaError::new("dtoh step_status", error))?;
+        Ok(OrchStepStatus::from_code(status_vec[0]))
+    }
+
+    // ── Phase-7 supervisor loop ───────────────────────────────────────────────
+
+    /// Run the GPU scheduler for up to `max_steps` iterations without CPU
+    /// involvement in per-step decisions.
+    ///
+    /// Returns as soon as one of the following occurs:
+    /// - `ORCH_WAIT_EXTERNAL`: GPU has emitted an external command and is
+    ///   waiting for the CPU service to respond.
+    /// - `ORCH_HALTED`: the graph reached its halt node or `state.halted` was
+    ///   set by the failure policy.
+    /// - `ORCH_ERROR`: internal kernel error (unrecoverable).
+    /// - `state.blocked == 1`: no ready singleton found; returns `Continue`
+    ///   so the outer supervisor loop can decide on repair or shutdown.
+    ///
+    /// Returns `Continue` after exhausting `max_steps` without hitting a stop
+    /// condition, giving the CPU a chance to service external commands or
+    /// apply learned deltas between bursts.
+    ///
+    /// This is the Phase-7 host-loop demotion entry point:
+    /// ```text
+    /// loop {
+    ///     match world.orchestrate_until_wait_or_halt(max_steps)? {
+    ///         Continue      => continue,
+    ///         WaitExternal  => service_external_commands(&mut world)?,
+    ///         Halted        => break,
+    ///         Error         => { snapshot(); break; }
+    ///     }
+    /// }
+    /// ```
+    pub fn orchestrate_until_wait_or_halt(
+        &mut self,
+        max_steps: u32,
+    ) -> Result<OrchStepStatus, CudaError> {
+        for _ in 0..max_steps {
+            let status = self.orchestrate_step()?;
+            match status {
+                OrchStepStatus::Continue => {
+                    // Blocked check: if the scheduler found no ready node,
+                    // yield back to the CPU rather than spin.
+                    let state = self.orch_state_snapshot()?;
+                    if state.blocked != 0 {
+                        return Ok(OrchStepStatus::Continue);
+                    }
+                }
+                OrchStepStatus::WaitExternal
+                | OrchStepStatus::Halted
+                | OrchStepStatus::Error => return Ok(status),
+            }
+        }
+        Ok(OrchStepStatus::Continue)
+    }
+
+    // ── Phase-4 control-flow methods ─────────────────────────────────────────
+
+    /// Upload a lowered pattern control table to the device.
+    ///
+    /// If `edges` is empty the device control table retains its current content.
+    /// If `effects` is empty the device effect table retains its current content.
+    pub fn load_control_table(
+        &mut self,
+        edges: Vec<ControlEdge>,
+        effects: Vec<EffectTable>,
+    ) -> Result<(), CudaError> {
+        if !edges.is_empty() {
+            self.orch_buffers.control_edges = self
+                .dev
+                .htod_copy(edges)
+                .map_err(|e| CudaError::new("load_control_table edges", e))?;
+        }
+        if !effects.is_empty() {
+            self.orch_buffers.effect_table = self
+                .dev
+                .htod_copy(effects)
+                .map_err(|e| CudaError::new("load_control_table effects", e))?;
+        }
+        Ok(())
+    }
+
+    /// Look up the control-flow op for a selected (src, dst) edge.
+    ///
+    /// Returns the matched `CONTROL_OP_*` code, or `-1` if no matching edge is
+    /// found in the current control table.  Advances the bounded-star counter
+    /// in `OrchestrationState` when the matching edge is `CONTROL_OP_STAR_BOUNDED`.
+    pub fn control_flow_advance(&mut self, src: i32, dst: i32) -> Result<i32, CudaError> {
+        let f = self
+            .dev
+            .get_func(MODULE_NAME, CONTROL_FLOW_ADVANCE_KERNEL)
+            .ok_or(CudaError::missing_function(CONTROL_FLOW_ADVANCE_KERNEL))?;
+        self.orch_buffers.control_op_out = self
+            .dev
+            .htod_copy(vec![-1_i32])
+            .map_err(|e| CudaError::new("reset control_op_out", e))?;
+        let edge_count = self.orch_buffers.control_edges.len() as i32;
+        let effect_count = self.orch_buffers.effect_table.len() as i32;
+        unsafe {
+            f.launch(
+                kernel_config(),
+                (
+                    &self.orch_buffers.control_edges,
+                    edge_count,
+                    &self.orch_buffers.effect_table,
+                    effect_count,
+                    &mut self.orch_buffers.state,
+                    src,
+                    dst,
+                    &mut self.orch_buffers.control_op_out,
+                ),
+            )
+        }
+        .map_err(|e| CudaError::new(CONTROL_FLOW_ADVANCE_KERNEL, e))?;
+        let out = self
+            .dev
+            .dtoh_sync_copy(&self.orch_buffers.control_op_out)
+            .map_err(|e| CudaError::new("dtoh control_op_out", e))?;
+        Ok(out[0])
+    }
+
+    /// Check whether nodes `a` and `b` are par-eligible (effect-independent)
+    /// according to the current device effect table.
+    pub fn check_effects_independent(&mut self, a: i32, b: i32) -> Result<bool, CudaError> {
+        let f = self
+            .dev
+            .get_func(MODULE_NAME, CHECK_EFFECTS_INDEPENDENT_KERNEL)
+            .ok_or(CudaError::missing_function(CHECK_EFFECTS_INDEPENDENT_KERNEL))?;
+        let mut out = self
+            .dev
+            .htod_copy(vec![0_i32])
+            .map_err(|e| CudaError::new("htod_copy effects_out", e))?;
+        let n_effects = self.orch_buffers.effect_table.len() as i32;
+        unsafe {
+            f.launch(
+                kernel_config(),
+                (
+                    &self.orch_buffers.effect_table,
+                    n_effects,
+                    a,
+                    b,
+                    &mut out,
+                ),
+            )
+        }
+        .map_err(|e| CudaError::new(CHECK_EFFECTS_INDEPENDENT_KERNEL, e))?;
+        let result = self
+            .dev
+            .dtoh_sync_copy(&out)
+            .map_err(|e| CudaError::new("dtoh effects_out", e))?;
+        Ok(result[0] != 0)
+    }
+
+    // ── Phase-5 failure policy wrappers ──────────────────────────────────────
+
+    /// Initialise the per-node failure policy table on the GPU.
+    ///
+    /// Every node receives `default_budget` retries.  -1 = unlimited.
+    /// `default_block_threshold` sets consecutive-block limit; -1 = disabled.
+    /// Call this once after world construction to arm retry budgets.
+    pub fn failure_policy_init(
+        &mut self,
+        default_budget: i32,
+        default_block_threshold: i32,
+    ) -> Result<(), CudaError> {
+        let n_nodes = TENSOR_NODE_COUNT as i32;
+        let f = self
+            .dev
+            .get_func(MODULE_NAME, FAILURE_POLICY_INIT_KERNEL)
+            .ok_or(CudaError::missing_function(FAILURE_POLICY_INIT_KERNEL))?;
+        let cfg = LaunchConfig {
+            grid_dim: ((TENSOR_NODE_COUNT as u32 + 255) / 256, 1, 1),
+            block_dim: (256, 1, 1),
+            shared_mem_bytes: 0,
+        };
+        unsafe {
+            f.launch(
+                cfg,
+                (
+                    &mut self.orch_buffers.failure_policies,
+                    n_nodes,
+                    default_budget,
+                    default_block_threshold,
+                ),
+            )
+        }
+        .map_err(|e| CudaError::new(FAILURE_POLICY_INIT_KERNEL, e))
+    }
+
+    /// Classify a receipt failure, update the per-node retry budget, and choose
+    /// the corrective action on-device.
+    ///
+    /// Returns the `FAILURE_ACTION_*` code written by the kernel.  When the
+    /// action is `FAILURE_ACTION_EXTERNAL_REPAIR` a repair `DeviceCommand` is
+    /// also pushed into the device command ring.
+    pub fn failure_policy_classify_and_emit(
+        &mut self,
+        outcome: i32,
+        node_id: i32,
+        src: i32,
+        dst: i32,
+        command_id: i32,
+    ) -> Result<i32, CudaError> {
+        self.orch_buffers.failure_action_out = self
+            .dev
+            .htod_copy(vec![FAILURE_ACTION_BLOCK])
+            .map_err(|e| CudaError::new("reset failure_action_out", e))?;
+        let req = FailureClassifyRequest { outcome, node_id, src, dst, command_id };
+        let req_buf = self
+            .dev
+            .htod_copy(vec![req])
+            .map_err(|e| CudaError::new("htod failure_classify_req", e))?;
+        let n_policies = self.orch_buffers.failure_policies.len() as i32;
+        let cmd_ring_size = DEVICE_COMMAND_RING_SIZE as i32;
+        let f = self
+            .dev
+            .get_func(MODULE_NAME, FAILURE_POLICY_CLASSIFY_KERNEL)
+            .ok_or(CudaError::missing_function(FAILURE_POLICY_CLASSIFY_KERNEL))?;
+        unsafe {
+            f.launch(
+                kernel_config(),
+                (
+                    &req_buf,
+                    &mut self.orch_buffers.failure_policies,
+                    n_policies,
+                    &mut self.orch_buffers.state,
+                    &mut self.orch_buffers.command_ring,
+                    &mut self.orch_buffers.command_tail,
+                    &self.orch_buffers.command_head,
+                    cmd_ring_size,
+                    &mut self.orch_buffers.failure_action_out,
+                ),
+            )
+        }
+        .map_err(|e| CudaError::new(FAILURE_POLICY_CLASSIFY_KERNEL, e))?;
+        let result = self
+            .dev
+            .dtoh_sync_copy(&self.orch_buffers.failure_action_out)
+            .map_err(|e| CudaError::new("dtoh failure_action_out", e))?;
+        Ok(result[0])
+    }
+
+    /// Snapshot the current `consumed[]` and `active[]` arrays as a rollback marker.
+    ///
+    /// Sets `OrchestrationState::rollback_available = 1`.  The snapshot can be
+    /// restored by calling `apply_rollback`.
+    pub fn set_rollback_marker(&mut self) -> Result<(), CudaError> {
+        let f = self
+            .dev
+            .get_func(MODULE_NAME, FAILURE_POLICY_SET_ROLLBACK_KERNEL)
+            .ok_or(CudaError::missing_function(FAILURE_POLICY_SET_ROLLBACK_KERNEL))?;
+        unsafe {
+            f.launch(
+                kernel_config(),
+                (
+                    &self.consumed,
+                    &self.active,
+                    &mut self.orch_buffers.rollback_consumed,
+                    &mut self.orch_buffers.rollback_active,
+                    &mut self.orch_buffers.state,
+                ),
+            )
+        }
+        .map_err(|e| CudaError::new(FAILURE_POLICY_SET_ROLLBACK_KERNEL, e))
+    }
+
+    /// Restore `consumed[]` and `active[]` from the saved rollback marker.
+    ///
+    /// No-op if `OrchestrationState::rollback_available == 0`.
+    /// Clears `rollback_available` and `consecutive_blocks` on success.
+    pub fn apply_rollback(&mut self) -> Result<(), CudaError> {
+        let f = self
+            .dev
+            .get_func(MODULE_NAME, FAILURE_POLICY_APPLY_ROLLBACK_KERNEL)
+            .ok_or(CudaError::missing_function(FAILURE_POLICY_APPLY_ROLLBACK_KERNEL))?;
+        unsafe {
+            f.launch(
+                kernel_config(),
+                (
+                    &mut self.consumed,
+                    &mut self.active,
+                    &self.orch_buffers.rollback_consumed,
+                    &self.orch_buffers.rollback_active,
+                    &mut self.orch_buffers.state,
+                ),
+            )
+        }
+        .map_err(|e| CudaError::new(FAILURE_POLICY_APPLY_ROLLBACK_KERNEL, e))
+    }
+
+    // ── Phase-6 wrappers ──────────────────────────────────────────────────────
+
+    /// Zero-initialise the per-node receipt prior table on device.
+    pub fn learned_delta_init(&mut self) -> Result<(), CudaError> {
+        let n = TENSOR_NODE_COUNT as i32;
+        let f = self
+            .dev
+            .get_func(MODULE_NAME, LEARNED_DELTA_INIT_KERNEL)
+            .ok_or(CudaError::missing_function(LEARNED_DELTA_INIT_KERNEL))?;
+        let cfg = LaunchConfig {
+            grid_dim: ((TENSOR_NODE_COUNT as u32 + 255) / 256, 1, 1),
+            block_dim: (256, 1, 1),
+            shared_mem_bytes: 0,
+        };
+        unsafe { f.launch(cfg, (&mut self.orch_buffers.receipt_priors, n)) }
+            .map_err(|e| CudaError::new(LEARNED_DELTA_INIT_KERNEL, e))
+    }
+
+    /// Fold one receipt into the per-node prior table and push a `LearnedDelta`
+    /// entry to the on-device ring.  `outcome` uses the same codes as
+    /// `DeviceReceiptExt::outcome` (0 = success, 1 = failure, 2 = timeout,
+    /// 3 = safety violation).
+    pub fn learned_delta_fold_receipt(
+        &mut self,
+        src: i32,
+        dst: i32,
+        node_id: i32,
+        outcome: i32,
+    ) -> Result<(), CudaError> {
+        let n_nodes = TENSOR_NODE_COUNT as i32;
+        let ring_size = LEARNED_DELTA_RING_SIZE as i32;
+        let f = self
+            .dev
+            .get_func(MODULE_NAME, LEARNED_DELTA_FOLD_KERNEL)
+            .ok_or(CudaError::missing_function(LEARNED_DELTA_FOLD_KERNEL))?;
+        unsafe {
+            f.launch(
+                kernel_config(),
+                (
+                    src,
+                    dst,
+                    node_id,
+                    outcome,
+                    &mut self.orch_buffers.receipt_priors,
+                    n_nodes,
+                    &mut self.orch_buffers.learned_delta_ring,
+                    &mut self.orch_buffers.learned_delta_tail,
+                    &self.orch_buffers.learned_delta_head,
+                    ring_size,
+                ),
+            )
+        }
+        .map_err(|e| CudaError::new(LEARNED_DELTA_FOLD_KERNEL, e))
+    }
+
+    /// Drain the on-device learned-delta ring and apply soft tensor updates.
+    /// Each pending `LearnedDelta` entry increments or decrements the
+    /// corresponding confidence/cost/safety cell in the live tensor.
+    pub fn learned_delta_apply(&mut self) -> Result<(), CudaError> {
+        let ring_size = LEARNED_DELTA_RING_SIZE as i32;
+        let f = self
+            .dev
+            .get_func(MODULE_NAME, LEARNED_DELTA_APPLY_KERNEL)
+            .ok_or(CudaError::missing_function(LEARNED_DELTA_APPLY_KERNEL))?;
+        unsafe {
+            f.launch(
+                kernel_config(),
+                (
+                    &mut self.tensor,
+                    &mut self.orch_buffers.learned_delta_ring,
+                    &mut self.orch_buffers.learned_delta_head,
+                    &self.orch_buffers.learned_delta_tail,
+                    ring_size,
+                ),
+            )
+        }
+        .map_err(|e| CudaError::new(LEARNED_DELTA_APPLY_KERNEL, e))
+    }
+
+    /// Copy the GPU-resident receipt prior table to host and return it.
+    /// Also writes the snapshot into the on-device export buffer for
+    /// subsequent CPU persistence without a second kernel launch.
+    pub fn export_receipt_priors(&mut self) -> Result<Vec<f32>, CudaError> {
+        let n = TENSOR_NODE_COUNT as i32;
+        let f = self
+            .dev
+            .get_func(MODULE_NAME, RECEIPT_PRIOR_SNAPSHOT_KERNEL)
+            .ok_or(CudaError::missing_function(RECEIPT_PRIOR_SNAPSHOT_KERNEL))?;
+        let cfg = LaunchConfig {
+            grid_dim: ((TENSOR_NODE_COUNT as u32 + 255) / 256, 1, 1),
+            block_dim: (256, 1, 1),
+            shared_mem_bytes: 0,
+        };
+        unsafe {
+            f.launch(
+                cfg,
+                (
+                    &self.orch_buffers.receipt_priors,
+                    &mut self.orch_buffers.receipt_prior_snapshot_buf,
+                    n,
+                ),
+            )
+        }
+        .map_err(|e| CudaError::new(RECEIPT_PRIOR_SNAPSHOT_KERNEL, e))?;
+        self.dev
+            .dtoh_sync_copy(&self.orch_buffers.receipt_prior_snapshot_buf)
+            .map_err(|e| CudaError::new("dtoh receipt_prior_snapshot_buf", e))
+    }
+
+    // ── Phase-8 wrappers ──────────────────────────────────────────────────────
+
+    /// Push one event onto the device trace ring.
+    /// Single-thread kernel (1 block × 1 thread).
+    pub fn push_trace_event(
+        &mut self,
+        event_kind: i32,
+        outcome: i32,
+    ) -> Result<(), CudaError> {
+        let f = self
+            .dev
+            .get_func(MODULE_NAME, ORCH_TRACE_PUSH_KERNEL)
+            .ok_or(CudaError::missing_function(ORCH_TRACE_PUSH_KERNEL))?;
+        let ring_size = ORCH_TRACE_RING_SIZE as i32;
+        unsafe {
+            f.launch(
+                LaunchConfig { grid_dim: (1, 1, 1), block_dim: (1, 1, 1), shared_mem_bytes: 0 },
+                (
+                    &self.orch_buffers.state,
+                    event_kind,
+                    outcome,
+                    &mut self.orch_buffers.trace_ring,
+                    &mut self.orch_buffers.trace_tail,
+                    &self.orch_buffers.trace_head,
+                    ring_size,
+                ),
+            )
+        }
+        .map_err(|e| CudaError::new(ORCH_TRACE_PUSH_KERNEL, e))
+    }
+
+    /// Drain pending trace events to host.  Returns a `Vec` of drained events.
+    /// Single-thread kernel writes entries to `trace_drain_buf`; host copies.
+    pub fn drain_trace_events(&mut self) -> Result<Vec<OrchestrationEvent>, CudaError> {
+        let f = self
+            .dev
+            .get_func(MODULE_NAME, ORCH_TRACE_DRAIN_KERNEL)
+            .ok_or(CudaError::missing_function(ORCH_TRACE_DRAIN_KERNEL))?;
+        let ring_size = ORCH_TRACE_RING_SIZE as i32;
+        let max_count = ORCH_TRACE_RING_SIZE as i32;
+        unsafe {
+            f.launch(
+                LaunchConfig { grid_dim: (1, 1, 1), block_dim: (1, 1, 1), shared_mem_bytes: 0 },
+                (
+                    &mut self.orch_buffers.trace_ring,
+                    &mut self.orch_buffers.trace_head,
+                    &self.orch_buffers.trace_tail,
+                    ring_size,
+                    &mut self.orch_buffers.trace_drain_buf,
+                    &mut self.orch_buffers.trace_drain_count,
+                    max_count,
+                ),
+            )
+        }
+        .map_err(|e| CudaError::new(ORCH_TRACE_DRAIN_KERNEL, e))?;
+        let count_vec = self
+            .dev
+            .dtoh_sync_copy(&self.orch_buffers.trace_drain_count)
+            .map_err(|e| CudaError::new("dtoh trace_drain_count", e))?;
+        let n = count_vec[0].max(0) as usize;
+        let all = self
+            .dev
+            .dtoh_sync_copy(&self.orch_buffers.trace_drain_buf)
+            .map_err(|e| CudaError::new("dtoh trace_drain_buf", e))?;
+        Ok(all.into_iter().take(n).collect())
+    }
+
+    /// Run the no-duplicate-receipts invariant check.
+    /// Returns `Ok(true)` when the invariant holds (no violation).
+    pub fn check_no_duplicate_receipts(&mut self) -> Result<bool, CudaError> {
+        let f = self
+            .dev
+            .get_func(MODULE_NAME, ORCH_CHECK_DUPLICATE_RECEIPTS_KERNEL)
+            .ok_or(CudaError::missing_function(ORCH_CHECK_DUPLICATE_RECEIPTS_KERNEL))?;
+        self.orch_buffers.orch_violation_out = self
+            .dev
+            .htod_copy(vec![0_i32])
+            .map_err(|e| CudaError::new("htod reset orch_violation_out", e))?;
+        let size = DEVICE_RECEIPT_EXT_RING_SIZE as i32;
+        unsafe {
+            f.launch(
+                kernel_config(),
+                (
+                    &self.orch_buffers.receipt_ext_ring,
+                    size,
+                    &mut self.orch_buffers.orch_violation_out,
+                ),
+            )
+        }
+        .map_err(|e| CudaError::new(ORCH_CHECK_DUPLICATE_RECEIPTS_KERNEL, e))?;
+        let v = self
+            .dev
+            .dtoh_sync_copy(&self.orch_buffers.orch_violation_out)
+            .map_err(|e| CudaError::new("dtoh orch_violation_out", e))?;
+        Ok(v[0] == 0)
+    }
+
+    /// Run the frontier-valid invariant check.
+    /// Returns `Ok(true)` when all `active[i]` ∈ {0, 1}.
+    pub fn check_frontier_valid(&mut self) -> Result<bool, CudaError> {
+        let f = self
+            .dev
+            .get_func(MODULE_NAME, ORCH_CHECK_FRONTIER_VALID_KERNEL)
+            .ok_or(CudaError::missing_function(ORCH_CHECK_FRONTIER_VALID_KERNEL))?;
+        self.orch_buffers.orch_violation_out = self
+            .dev
+            .htod_copy(vec![0_i32])
+            .map_err(|e| CudaError::new("htod reset orch_violation_out", e))?;
+        let n = TENSOR_NODE_COUNT as i32;
+        unsafe {
+            f.launch(
+                kernel_config(),
+                (
+                    &self.active,
+                    n,
+                    &mut self.orch_buffers.orch_violation_out,
+                ),
+            )
+        }
+        .map_err(|e| CudaError::new(ORCH_CHECK_FRONTIER_VALID_KERNEL, e))?;
+        let v = self
+            .dev
+            .dtoh_sync_copy(&self.orch_buffers.orch_violation_out)
+            .map_err(|e| CudaError::new("dtoh orch_violation_out", e))?;
+        Ok(v[0] == 0)
+    }
+
+    /// Run the no-command-without-receipt invariant check.
+    /// Returns `Ok(true)` when the invariant holds.
+    pub fn check_no_command_without_receipt(&mut self) -> Result<bool, CudaError> {
+        let f = self
+            .dev
+            .get_func(MODULE_NAME, ORCH_CHECK_NO_CMD_WITHOUT_RECEIPT_KERNEL)
+            .ok_or(CudaError::missing_function(ORCH_CHECK_NO_CMD_WITHOUT_RECEIPT_KERNEL))?;
+        self.orch_buffers.orch_violation_out = self
+            .dev
+            .htod_copy(vec![0_i32])
+            .map_err(|e| CudaError::new("htod reset orch_violation_out", e))?;
+        let cmd_size = DEVICE_COMMAND_RING_SIZE as i32;
+        let ext_size = DEVICE_RECEIPT_EXT_RING_SIZE as i32;
+        unsafe {
+            f.launch(
+                kernel_config(),
+                (
+                    &self.orch_buffers.command_ring,
+                    cmd_size,
+                    &self.orch_buffers.receipt_ext_ring,
+                    ext_size,
+                    &mut self.orch_buffers.orch_violation_out,
+                ),
+            )
+        }
+        .map_err(|e| CudaError::new(ORCH_CHECK_NO_CMD_WITHOUT_RECEIPT_KERNEL, e))?;
+        let v = self
+            .dev
+            .dtoh_sync_copy(&self.orch_buffers.orch_violation_out)
+            .map_err(|e| CudaError::new("dtoh orch_violation_out", e))?;
+        Ok(v[0] == 0)
+    }
+
+    /// Snapshot current orchestration state (+ consumed + active) into the
+    /// replay buffers.  Block-parallel copy kernel (N threads).
+    pub fn replay_snapshot(&mut self) -> Result<(), CudaError> {
+        let f = self
+            .dev
+            .get_func(MODULE_NAME, ORCH_REPLAY_SNAPSHOT_KERNEL)
+            .ok_or(CudaError::missing_function(ORCH_REPLAY_SNAPSHOT_KERNEL))?;
+        let cfg = LaunchConfig {
+            grid_dim: (1, 1, 1),
+            block_dim: (TENSOR_NODE_COUNT as u32, 1, 1),
+            shared_mem_bytes: 0,
+        };
+        unsafe {
+            f.launch(
+                cfg,
+                (
+                    &self.orch_buffers.state,
+                    &mut self.orch_buffers.replay_state,
+                    &self.consumed,
+                    &mut self.orch_buffers.replay_consumed,
+                    &self.active,
+                    &mut self.orch_buffers.replay_active,
+                ),
+            )
+        }
+        .map_err(|e| CudaError::new(ORCH_REPLAY_SNAPSHOT_KERNEL, e))
+    }
+
+    /// Restore orchestration state from the replay buffers back to live state.
+    /// Block-parallel copy kernel (N threads).
+    pub fn replay_restore(&mut self) -> Result<(), CudaError> {
+        let f = self
+            .dev
+            .get_func(MODULE_NAME, ORCH_REPLAY_RESTORE_KERNEL)
+            .ok_or(CudaError::missing_function(ORCH_REPLAY_RESTORE_KERNEL))?;
+        let cfg = LaunchConfig {
+            grid_dim: (1, 1, 1),
+            block_dim: (TENSOR_NODE_COUNT as u32, 1, 1),
+            shared_mem_bytes: 0,
+        };
+        unsafe {
+            f.launch(
+                cfg,
+                (
+                    &mut self.orch_buffers.state,
+                    &self.orch_buffers.replay_state,
+                    &mut self.consumed,
+                    &self.orch_buffers.replay_consumed,
+                    &mut self.active,
+                    &self.orch_buffers.replay_active,
+                ),
+            )
+        }
+        .map_err(|e| CudaError::new(ORCH_REPLAY_RESTORE_KERNEL, e))
     }
 
     /// Write a region dispatch request to the device mailbox and launch
@@ -1542,4 +3312,72 @@ pub fn tensor_start_node() -> i32 {
 
 fn bundled_registry() -> Result<NodeRegistry, CudaError> {
     Ok(GraphTopology::bundled_registry()?)
+}
+
+#[cfg(test)]
+mod generated_hf_tests {
+    use super::*;
+
+    #[test]
+    fn generated_switch_cases_are_parsed_from_stub_metadata() {
+        let gpu_cases = generated_fusion_hf_switch_cases(
+            "// hf_case: 8 region_fusion_stub_fixture_add_fixture_scale\n",
+            "element_count",
+        );
+        let par_cases = generated_fusion_hf_switch_cases(
+            "// hf_case: 8 region_fusion_stub_fixture_add_fixture_scale\n",
+            "elem_count",
+        );
+        assert!(gpu_cases.contains(
+            "case 8: region_fusion_stub_fixture_add_fixture_scale(slot_ptrs, element_count, &r); break;"
+        ));
+        assert!(par_cases.contains(
+            "case 8: region_fusion_stub_fixture_add_fixture_scale(slot_ptrs, elem_count, &r); break;"
+        ));
+    }
+
+    #[test]
+    fn generated_fusion_hf_coverage_promotes_region_id_eight() {
+        let coverage = FusionHfCoverage::from_json_str(
+            r#"{
+                "schema":"fusion_hf_coverage.v1",
+                "regions":[
+                    {
+                        "region":"Fixture::Add__Fixture::Scale",
+                        "entry":"Fixture::Add",
+                        "nodes":["Fixture::Add", "Fixture::Scale"],
+                        "hf_region_id":8,
+                        "covered":true,
+                        "reason":"generated_hf_handler",
+                        "symbol":"region_fusion_stub_fixture_add_fixture_scale",
+                        "slots":["fixture.a", "fixture.b", "fixture.scale", "fixture.out"]
+                    }
+                ]
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(coverage.region_id("Fixture::Add__Fixture::Scale"), Some(8));
+        assert!(coverage.has_handler_for_region_id(8));
+        assert_eq!(coverage.region_count(), 9);
+        assert_eq!(
+            coverage.slots_for_region_id(8),
+            Some(
+                &[
+                    "fixture.a".to_string(),
+                    "fixture.b".to_string(),
+                    "fixture.scale".to_string(),
+                    "fixture.out".to_string(),
+                ][..]
+            )
+        );
+    }
+
+    #[test]
+    fn kernel_source_assembler_replaces_generated_markers() {
+        let source = assemble_kernel_source();
+        assert!(!source.contains(FUSION_HF_GENERATED_FUNCTIONS_MARKER));
+        assert!(!source.contains(FUSION_HF_GENERATED_GPU_DISPATCH_CASES_MARKER));
+        assert!(!source.contains(FUSION_HF_GENERATED_PAR_CASES_MARKER));
+    }
 }

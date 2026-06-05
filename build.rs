@@ -7,6 +7,9 @@ fn main() {
     println!("cargo:rerun-if-changed=assets/regions.hot.json");
     println!("cargo:rerun-if-changed=assets/topology.hot.json");
     println!("cargo:rerun-if-changed=assets/topology.control.json");
+    println!("cargo:rerun-if-changed=assets/fusion_hf.generated.json");
+    println!("cargo:rerun-if-changed=assets/fusion_hf.stubs.cu");
+    println!("cargo:rerun-if-changed=assets/abstract_device.generated.json");
 
     let topology_path = if Path::new("assets/topology.generated.json").exists() {
         "assets/topology.generated.json"

@@ -15,6 +15,9 @@ resolver = "3"
 [features]
 default = ["cuda"]
 cuda = []
+# Restores the pre-Phase-9 CPU par hot-path dispatch and CPU receipt queue.
+# Not included in `default`; the GPU-native orchestration path is the default.
+legacy-cpu-orchestration = []
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }

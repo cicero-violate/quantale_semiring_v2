@@ -184,6 +184,268 @@ struct DeviceReceipt {
 
 #define DEVICE_RECEIPT_RING_SIZE 256
 
+// ── Phase-1 orchestration state block ────────────────────────────────────────
+//
+// OrchestrationState: persistent GPU-resident step scheduler state.
+// DeviceCommand: GPU → CPU/IO service command (Phase 3 protocol).
+// DeviceReceiptExt: extended receipt returned from CPU/IO services (Phase 3).
+//
+// These structures are allocate-on-device now and remain zeroed/unused until
+// Phase 2+ kernels begin writing to them.  Adding them here locks the ABI so
+// later kernels can be added without changing struct layouts.
+
+#define DEVICE_COMMAND_RING_SIZE     64
+#define DEVICE_RECEIPT_EXT_RING_SIZE 256
+
+struct OrchestrationState {
+    int step;
+    int halted;
+    int blocked;
+    int current_frontier_epoch;
+    int selected_group;
+    int selected_node;
+    int pending_external_count;
+    int pending_receipt_count;
+    int failure_count;
+    int rollback_requested;
+    int star_counter;   // Phase 4: bounded-star iteration count
+    int star_bound;     // Phase 4: current star bound (0 = no star active)
+    int consecutive_blocks;    // Phase 5: count of consecutive blocked scheduler steps
+    int block_threshold;       // Phase 5: hard-reset threshold in consecutive blocks (0=disabled)
+    int hard_reset_requested;  // Phase 5: set to 1 by failure policy when HALT fires
+    int rollback_available;    // Phase 5: 1 when a rollback marker snapshot is saved
+    int failure_action;        // Phase 5: last FAILURE_ACTION_* decision (observability)
+    int selected_src;          // Phase 8: src of the last committed edge (for trace)
+    int selected_dst;          // Phase 8: dst of the last committed edge (for trace)
+};
+
+struct DeviceCommand {
+    int valid;
+    int command_id;
+    int node_id;
+    int src;
+    int dst;
+    int dispatch_kind;
+    int operator_name_id;  // index into host operator name table
+    int timeout_ticks;     // deadline in scheduler ticks; 0 = no timeout
+    int retry_budget;      // remaining retries; 0 = no retry
+    int payload_offset;    // reserved for Phase 5+
+    int payload_len;       // reserved for Phase 5+
+};
+
+struct DeviceReceiptExt {
+    int   valid;
+    int   consumed;
+    int   command_id;
+    int   node_id;
+    int   src;
+    int   dst;
+    int   outcome;
+    int   receipt_kind;
+    int   output_flags;
+    float latency;
+};
+
+// ── Phase-1 orchestration state kernels ───────────────────────────────────────
+
+extern "C" __global__ void orchestration_state_init(OrchestrationState* state) {
+    if (threadIdx.x != 0 || blockIdx.x != 0) return;
+    state->step                  = 0;
+    state->halted                = 0;
+    state->blocked               = 0;
+    state->current_frontier_epoch = 0;
+    state->selected_group        = -1;
+    state->selected_node         = -1;
+    state->pending_external_count = 0;
+    state->pending_receipt_count = 0;
+    state->failure_count         = 0;
+    state->rollback_requested    = 0;
+    state->star_counter          = 0;
+    state->star_bound            = 0;
+    state->consecutive_blocks    = 0;
+    state->block_threshold       = 0;
+    state->hard_reset_requested  = 0;
+    state->rollback_available    = 0;
+    state->failure_action        = 0;
+    state->selected_src          = -1;
+    state->selected_dst          = -1;
+}
+
+// Copies the live device state into a separate snapshot buffer for tests/debug.
+extern "C" __global__ void orchestration_state_snapshot(
+    const OrchestrationState* state,
+    OrchestrationState*       out
+) {
+    if (threadIdx.x != 0 || blockIdx.x != 0) return;
+    *out = *state;
+}
+
+// Push one DeviceCommand into the command ring (single-threaded, thread 0 only).
+// Returns without writing if the ring is full (tail - head >= ring_size).
+extern "C" __global__ void device_command_ring_push(
+    DeviceCommand* ring,
+    int*           tail,
+    const int*     head,
+    int            ring_size,
+    DeviceCommand  cmd
+) {
+    if (threadIdx.x != 0 || blockIdx.x != 0) return;
+    int t = *tail, h = *head;
+    if (t - h >= ring_size) return; // full; caller must retry
+    ring[t % ring_size] = cmd;
+    *tail = t + 1;
+}
+
+// Push one DeviceReceiptExt into the extended receipt ring (thread 0 only).
+// Returns without writing if the ring is full.
+extern "C" __global__ void device_receipt_ext_ring_push(
+    DeviceReceiptExt* ring,
+    int*              tail,
+    const int*        head,
+    int               ring_size,
+    DeviceReceiptExt  receipt
+) {
+    if (threadIdx.x != 0 || blockIdx.x != 0) return;
+    int t = *tail, h = *head;
+    if (t - h >= ring_size) return; // full
+    ring[t % ring_size] = receipt;
+    *tail = t + 1;
+}
+
+// Drain the extended receipt ring, applying tensor updates for each valid entry.
+// Marks each drained receipt as consumed (receipt.consumed = 1) in the ring.
+// Advances *head to *tail when done.
+extern "C" __global__ void device_receipt_ext_drain(
+    float*            tensor,
+    DeviceReceiptExt* ring,
+    int               ring_size,
+    int*              head,
+    const int*        tail,
+    OrchestrationState* state
+) {
+    if (threadIdx.x != 0 || blockIdx.x != 0) return;
+    int h = *head;
+    int t = *tail;
+    while (h != t) {
+        int slot = h % ring_size;
+        DeviceReceiptExt r = ring[slot];
+        if (r.valid && !r.consumed
+                && r.src >= 0 && r.src < N && r.dst >= 0 && r.dst < N && r.src != r.dst) {
+            int cidx = tensor_idx(LAYER_CONFIDENCE, r.src, r.dst);
+            int eidx = tensor_idx(LAYER_COST,       r.src, r.dst);
+            int sidx = tensor_idx(LAYER_SAFETY,     r.src, r.dst);
+            if (r.outcome == 0) {
+                atomicExch(&tensor[cidx], 1.0f);
+                {
+                    int* ptr = (int*)&tensor[eidx];
+                    int ob, nb;
+                    do {
+                        ob = *((volatile int*)ptr);
+                        float v = __int_as_float(ob);
+                        if (v <= 0.01f) break;
+                        nb = __float_as_int(v * 0.5f);
+                    } while (atomicCAS(ptr, ob, nb) != ob);
+                }
+                atomicExch(&tensor[sidx], 1.0f);
+            } else if (r.outcome == 1) {
+                atomic_float_mul(&tensor[cidx], 0.1f);
+                atomic_float_add_capped(&tensor[eidx], 10.0f);
+                atomic_float_mul(&tensor[sidx], 0.5f);
+                if (state) atomicAdd(&state->failure_count, 1);
+            } else if (r.outcome == 2) {
+                atomic_float_mul(&tensor[cidx], 0.5f);
+                atomic_float_add_capped(&tensor[eidx], 100.0f);
+            } else if (r.outcome == 3) {
+                atomic_float_mul(&tensor[cidx], 0.25f);
+                atomic_float_add_capped(&tensor[eidx], 25.0f);
+                atomicExch(&tensor[sidx], 0.0f);
+            }
+            ring[slot].consumed = 1;
+            if (state) atomicAdd(&state->pending_receipt_count, -1);
+        }
+        h++;
+    }
+    *head = h;
+}
+
+// ── Phase-4 control-flow structures and device helpers ───────────────────────
+
+#define CONTROL_OP_SEQ          0
+#define CONTROL_OP_PAR          1
+#define CONTROL_OP_CHOICE       2
+#define CONTROL_OP_STAR_BOUNDED 3
+#define CONTROL_OP_GATE         4
+#define CONTROL_OP_HALT         5
+
+// One edge in a lowered pattern control-flow table.
+struct ControlEdge {
+    int op;     // CONTROL_OP_*
+    int lhs;    // left-hand node id (or -1 = sentinel)
+    int rhs;    // right-hand node id (or -1 = sentinel)
+    int guard;  // guard predicate id (0 = always-true; non-zero reserved for Phase 5)
+    int order;  // sequence position index (for SEQ edges)
+    int bound;  // max iterations (for STAR_BOUNDED; 0 = no limit enforced)
+};
+
+// Per-node effect entry for par-eligibility checks.
+// Bitmasks address up to 32 named resources (e.g. market.price = bit 0).
+struct EffectTable {
+    int reads;        // resources this node reads
+    int writes;       // resources this node writes
+    int locks;        // resources this node locks exclusively
+    int safety_class; // 0=safe, 1=risky, 2=unsafe
+};
+
+// Returns 1 if nodes a and b are effect-independent (par-eligible).
+// Two nodes are independent if:
+//   writes(a) ∩ (reads(b) ∪ writes(b)) = ∅   AND
+//   writes(b) ∩ (reads(a) ∪ writes(a)) = ∅
+__device__ int effects_independent(
+    const EffectTable* effects, int n_effects, int a, int b
+) {
+    if (!effects || a < 0 || a >= n_effects || b < 0 || b >= n_effects) return 1;
+    const EffectTable* ea = &effects[a];
+    const EffectTable* eb = &effects[b];
+    if (ea->writes & (eb->reads | eb->writes)) return 0;
+    if (eb->writes & (ea->reads | ea->writes)) return 0;
+    return 1;
+}
+
+// Returns the CONTROL_OP_* for the first edge where lhs==src and rhs==dst and
+// guard==0 (always-true).  Returns -1 if no matching edge is found.
+__device__ int find_matching_control_edge(
+    const ControlEdge* edges, int edge_count, int src, int dst
+) {
+    for (int i = 0; i < edge_count; ++i) {
+        const ControlEdge* e = &edges[i];
+        if (e->lhs == src && e->rhs == dst && e->guard == 0) return e->op;
+    }
+    return -1;
+}
+
+// Advance the bounded-star counter for the STAR_BOUNDED edge matching (src, dst).
+// Sets state->halted = 1 when star_counter reaches star_bound.
+// No-op if no matching STAR_BOUNDED edge is found.
+__device__ void star_counter_advance(
+    OrchestrationState*  state,
+    const ControlEdge*   edges,
+    int                  edge_count,
+    int                  src,
+    int                  dst
+) {
+    for (int i = 0; i < edge_count; ++i) {
+        const ControlEdge* e = &edges[i];
+        if (e->lhs == src && e->rhs == dst && e->op == CONTROL_OP_STAR_BOUNDED) {
+            if (e->bound > 0) {
+                state->star_bound   = e->bound;
+                state->star_counter = state->star_counter + 1;
+                if (state->star_counter >= e->bound) state->halted = 1;
+            }
+            return;
+        }
+    }
+}
+
 // Mailbox used by the hot dispatch path: the host fills pending_region_id,
 // src_node, dst_node, and outcome (from JIT exit code), then launches
 // tensor_quantale_gpu_dispatch which writes a DeviceReceipt with the correct
@@ -994,6 +1256,794 @@ extern "C" __global__ void tensor_quantale_push_device_receipt(
     *ring_tail = tail + 1;
 }
 
+// ── Phase-2: dispatch kind table and scheduler kernel ─────────────────────────
+//
+// dispatch_kind[node_id] encodes which execution tier owns each node.
+// Values match the PAR_DISPATCH_* constants used by the par-group kernel.
+
+#define DISPATCH_KIND_NONE             0
+#define DISPATCH_KIND_HF_DEVICE        1
+#define DISPATCH_KIND_HOST_FALLBACK    2
+#define DISPATCH_KIND_FUSION_ENTRY     3
+#define DISPATCH_KIND_ABSTRACT_DEVICE  4
+#define DISPATCH_KIND_EXTERNAL_PROCESS 5
+#define DISPATCH_KIND_EXTERNAL_IO      6
+#define DISPATCH_KIND_UNSUPPORTED      7
+
+// Orchestration step status codes returned to the host.
+#define ORCH_CONTINUE       0
+#define ORCH_WAIT_EXTERNAL  1
+#define ORCH_HALTED         2
+#define ORCH_ERROR          3
+
+// TensorWorldBundle: packs the seven tensor/frontier pointers into a single
+// struct so the LaunchAsync tuple stays within the cudarc arity limit.
+struct TensorWorldBundle {
+    float* tensor;
+    int*   witness;
+    int*   consumed;
+    int*   active;
+    int*   next_active;
+    const ProjectionBias* bias;
+    DecisionReport* decision;
+};
+
+// Select the highest-scoring ready singleton node on-device, using the same
+// readiness predicate as tensor_quantale_frontier_step.
+// Writes the selected src/dst/hop/score into *out.  Returns 1 if a node was
+// found, 0 if the frontier is empty or halted.
+__device__ int select_ready_singleton(
+    const TensorWorldBundle* w,
+    const int* dispatch_kinds,
+    int*  out_src, int* out_dst, int* out_hop, float* out_score
+) {
+    float alpha = w->bias[0].confidence, beta = w->bias[0].cost, gamma = w->bias[0].safety;
+    float best_value = -COST_INFINITY;
+    int best_src = -1, best_dst = -1, best_hop = -1, candidates = 0;
+
+    for (int idx = 0; idx < MATRIX_LEN; ++idx) {
+        int src = idx / N, dst = idx % N;
+        if (src == dst || w->active[src] == 0) continue;
+
+        int cidx = tensor_idx(LAYER_CONFIDENCE, src, dst);
+        int eidx = tensor_idx(LAYER_COST,       src, dst);
+        int sidx = tensor_idx(LAYER_SAFETY,     src, dst);
+        float confidence = w->tensor[cidx];
+        float cost       = w->tensor[eidx];
+        float safety     = w->tensor[sidx];
+        if (confidence <= BOTTOM || safety <= BOTTOM || cost >= COST_INFINITY) continue;
+
+        int hop = w->witness[cidx];
+        if (hop < 0 || hop >= N || w->consumed[src * N + hop] != 0) continue;
+        if (dispatch_kinds && dispatch_kinds[hop] == DISPATCH_KIND_UNSUPPORTED) continue;
+
+        float score = alpha * confidence - beta * cost + gamma * safety;
+        candidates++;
+        if (score > best_value) {
+            best_value = score;
+            best_src = src; best_dst = dst; best_hop = hop;
+        }
+    }
+    *out_src = best_src; *out_dst = best_dst; *out_hop = best_hop;
+    *out_score = best_value;
+    return candidates > 0 ? 1 : 0;
+}
+
+// ── tensor_quantale_orchestrate_step ─────────────────────────────────────────
+//
+// Single-block, single-step GPU scheduler kernel.  On each call it:
+//   1. Drains the extended receipt ring (applies tensor updates).
+//   2. Selects the next action: GPU-native singleton > external command > block/halt.
+//      (Par-group selection is delegated to tensor_quantale_par_group_step;
+//       this kernel handles singleton and external dispatch.)
+//   3. Commits consumed/active state for GPU-native selections.
+//   4. Emits a DeviceCommand for external-dispatch nodes.
+//   5. Writes one of ORCH_CONTINUE / ORCH_WAIT_EXTERNAL / ORCH_HALTED / ORCH_ERROR
+//      into *status_out.
+//
+// PatternControlTable is reserved for Phase 4; pass NULL for now.
+
+extern "C" __global__ void tensor_quantale_orchestrate_step(
+    const TensorWorldBundle* world,
+    OrchestrationState*      state,
+    DeviceCommand*          cmd_ring,
+    int*                    cmd_tail,
+    const int*              cmd_head,
+    int                     cmd_ring_size,
+    DeviceReceiptExt*       ext_ring,
+    int*                    ext_head,
+    const int*              ext_tail,
+    int                     ext_ring_size,
+    const int*              dispatch_kinds,   // int[N]: dispatch kind per node id
+    int*                    status_out        // ORCH_* result written by thread 0
+) {
+    if (threadIdx.x != 0 || blockIdx.x != 0) return;
+
+    // ── 1. Drain extended receipt ring ───────────────────────────────────────
+    {
+        int h = *ext_head, t = *ext_tail;
+        while (h != t) {
+            int slot = h % ext_ring_size;
+            DeviceReceiptExt r = ext_ring[slot];
+            if (r.valid && !r.consumed
+                    && r.src >= 0 && r.src < N && r.dst >= 0 && r.dst < N && r.src != r.dst) {
+                int cidx = tensor_idx(LAYER_CONFIDENCE, r.src, r.dst);
+                int eidx = tensor_idx(LAYER_COST,       r.src, r.dst);
+                int sidx = tensor_idx(LAYER_SAFETY,     r.src, r.dst);
+                if (r.outcome == 0) {
+                    atomicExch(&world->tensor[cidx], 1.0f);
+                    { int* ptr = (int*)&world->tensor[eidx]; int ob, nb;
+                      do { ob = *((volatile int*)ptr); float v = __int_as_float(ob);
+                           if (v <= 0.01f) break; nb = __float_as_int(v * 0.5f);
+                      } while (atomicCAS(ptr, ob, nb) != ob); }
+                    atomicExch(&world->tensor[sidx], 1.0f);
+                } else if (r.outcome == 1) {
+                    atomic_float_mul(&world->tensor[cidx], 0.1f);
+                    atomic_float_add_capped(&world->tensor[eidx], 10.0f);
+                    atomic_float_mul(&world->tensor[sidx], 0.5f);
+                    if (state) atomicAdd(&state->failure_count, 1);
+                } else if (r.outcome == 2) {
+                    atomic_float_mul(&world->tensor[cidx], 0.5f);
+                    atomic_float_add_capped(&world->tensor[eidx], 100.0f);
+                } else if (r.outcome == 3) {
+                    atomic_float_mul(&world->tensor[cidx], 0.25f);
+                    atomic_float_add_capped(&world->tensor[eidx], 25.0f);
+                    atomicExch(&world->tensor[sidx], 0.0f);
+                }
+                ext_ring[slot].consumed = 1;
+                if (state) atomicAdd(&state->pending_receipt_count, -1);
+            }
+            h++;
+        }
+        *ext_head = h;
+    }
+
+    // ── 2. Check halt ─────────────────────────────────────────────────────────
+    if (state && state->halted) {
+        *status_out = ORCH_HALTED;
+        return;
+    }
+
+    // ── 3. Select next action ─────────────────────────────────────────────────
+    int sel_src = -1, sel_dst = -1, sel_hop = -1;
+    float sel_score = -COST_INFINITY;
+    int found = select_ready_singleton(world, dispatch_kinds, &sel_src, &sel_dst, &sel_hop, &sel_score);
+
+    if (!found) {
+        if (state) state->blocked = 1;
+        *status_out = ORCH_CONTINUE; // blocked; caller decides on reset/retry
+        return;
+    }
+
+    // ── 4. Classify selected hop ─────────────────────────────────────────────
+    int dkind = (dispatch_kinds && sel_hop >= 0 && sel_hop < N)
+                ? dispatch_kinds[sel_hop] : DISPATCH_KIND_HF_DEVICE;
+
+    bool gpu_native = (dkind == DISPATCH_KIND_HF_DEVICE
+                    || dkind == DISPATCH_KIND_FUSION_ENTRY
+                    || dkind == DISPATCH_KIND_ABSTRACT_DEVICE);
+    bool external   = (dkind == DISPATCH_KIND_EXTERNAL_PROCESS
+                    || dkind == DISPATCH_KIND_EXTERNAL_IO);
+
+    if (!gpu_native && !external) {
+        // Unsupported or NONE — treat as blocked.
+        *status_out = ORCH_CONTINUE;
+        return;
+    }
+
+    // ── 5. Commit consumed/active state ──────────────────────────────────────
+    if (sel_src >= 0 && sel_src < N && sel_hop >= 0 && sel_hop < N) {
+        atomicExch(&world->consumed[sel_src * N + sel_hop], 1);
+        for (int i = 0; i < N; ++i) world->next_active[i] = 0;
+        world->next_active[sel_hop] = 1;
+        for (int i = 0; i < N; ++i) world->active[i] = world->next_active[i];
+    }
+
+    // Update orchestration state.
+    if (state) {
+        state->step         += 1;
+        state->selected_node = sel_hop;
+        state->selected_src  = sel_src;
+        state->selected_dst  = sel_dst;
+        state->blocked       = 0;
+        state->halted        = (sel_hop == HALT_NODE) ? 1 : 0;
+    }
+    if (world->decision) {
+        world->decision->step          += 1;
+        world->decision->selected_src   = sel_src;
+        world->decision->selected_dst   = sel_dst;
+        world->decision->first_hop      = sel_hop;
+        world->decision->selected_value = sel_score;
+        world->decision->halted         = (sel_hop == HALT_NODE) ? 1 : 0;
+        world->decision->blocked        = 0;
+    }
+
+    if (sel_hop == HALT_NODE) {
+        *status_out = ORCH_HALTED;
+        return;
+    }
+
+    // ── 6. Emit command for external work ─────────────────────────────────────
+    if (external) {
+        // Guard: if pending_external_count is too high, wait for receipts first.
+        if (state && state->pending_external_count >= cmd_ring_size) {
+            *status_out = ORCH_WAIT_EXTERNAL;
+            return;
+        }
+        int t = *cmd_tail, h = *cmd_head;
+        if (t - h < cmd_ring_size) {
+            DeviceCommand cmd;
+            cmd.valid            = 1;
+            cmd.command_id       = state ? state->step : 0;
+            cmd.node_id          = sel_hop;
+            cmd.src              = sel_src;
+            cmd.dst              = sel_dst;
+            cmd.dispatch_kind    = dkind;
+            cmd.operator_name_id = sel_hop; // host resolves node_id → operator name
+            cmd.timeout_ticks    = 0;       // no timeout by default
+            cmd.retry_budget     = 1;       // one retry by default
+            cmd.payload_offset   = 0;
+            cmd.payload_len      = 0;
+            cmd_ring[t % cmd_ring_size] = cmd;
+            *cmd_tail = t + 1;
+            if (state) atomicAdd(&state->pending_external_count, 1);
+        }
+        *status_out = ORCH_WAIT_EXTERNAL;
+        return;
+    }
+
+    *status_out = ORCH_CONTINUE;
+}
+
+// ── Phase-4 kernels: control-flow advance and par-eligibility check ───────────
+
+// Look up the matching CONTROL_OP_* for a selected (src, dst) edge.
+// Advances the bounded-star counter if the edge is STAR_BOUNDED.
+// Writes the matched op (or -1 if no match) into *out_op.
+extern "C" __global__ void control_flow_advance(
+    const ControlEdge*   edges,
+    int                  edge_count,
+    const EffectTable*   effects,
+    int                  effect_count,
+    OrchestrationState*  state,
+    int                  src,
+    int                  dst,
+    int*                 out_op
+) {
+    if (threadIdx.x != 0 || blockIdx.x != 0) return;
+    int op = find_matching_control_edge(edges, edge_count, src, dst);
+    if (op == CONTROL_OP_STAR_BOUNDED && state) {
+        star_counter_advance(state, edges, edge_count, src, dst);
+    }
+    *out_op = op;
+    (void)effects; (void)effect_count; // reserved for Phase-5 guard evaluation
+}
+
+// Returns 1 into *out if nodes a and b are effect-independent (par-eligible),
+// 0 otherwise.  Single-thread; used by smoke tests and the par tier.
+extern "C" __global__ void check_effects_independent(
+    const EffectTable* effects,
+    int                n_effects,
+    int                a,
+    int                b,
+    int*               out
+) {
+    if (threadIdx.x != 0 || blockIdx.x != 0) return;
+    *out = effects_independent(effects, n_effects, a, b);
+}
+
+// ── Phase-5: device-native failure policy ─────────────────────────────────────
+//
+// FailureClass: why a receipt outcome was non-zero.
+// FailureAction: corrective action chosen on-device.
+// FailurePolicy: per-node retry/repair configuration stored in GPU memory.
+//
+// classify_failure maps a raw outcome code to a FailureClass.
+// failure_policy_classify_and_emit consults the per-node FailurePolicy, updates
+// the retry budget, emits a repair DeviceCommand when needed, and writes the
+// chosen FAILURE_ACTION_* code.
+// failure_policy_set_rollback_marker snapshots consumed/active for later restore.
+// failure_policy_apply_rollback restores that snapshot.
+
+#define FAILURE_CLASS_SPAWN_FAILURE  0
+#define FAILURE_CLASS_TIMEOUT        1
+#define FAILURE_CLASS_SAFETY         2
+#define FAILURE_CLASS_CONTRACT       3
+#define FAILURE_CLASS_GPU_ERROR      4
+#define FAILURE_CLASS_UNKNOWN        5
+
+#define FAILURE_ACTION_RETRY           0
+#define FAILURE_ACTION_BLOCK           1
+#define FAILURE_ACTION_ROLLBACK        2
+#define FAILURE_ACTION_HALT            3
+#define FAILURE_ACTION_EXTERNAL_REPAIR 4
+
+// Extends the Phase-2 DISPATCH_KIND_* table.
+#define DISPATCH_KIND_REPAIR  8
+
+struct FailurePolicy {
+    int retry_budget;         // remaining retries; -1 = unlimited; 0 = exhausted
+    int block_threshold;      // consecutive failures before BLOCK; -1 = disabled
+    int rollback_on_failure;  // 1 = save rollback marker on any failure
+    int repair_on_block;      // 1 = emit repair DeviceCommand when budget exhausted
+};
+
+// Packed classification target: passed as a single struct to stay within the
+// cudarc LaunchAsync arity limit.
+struct FailureClassifyRequest {
+    int outcome;
+    int node_id;
+    int src;
+    int dst;
+    int command_id;
+};
+
+__device__ int classify_failure(int outcome) {
+    if (outcome == 2) return FAILURE_CLASS_TIMEOUT;
+    if (outcome == 3) return FAILURE_CLASS_SAFETY;
+    if (outcome == 1) return FAILURE_CLASS_SPAWN_FAILURE;
+    return FAILURE_CLASS_UNKNOWN;
+}
+
+// Initialise all per-node FailurePolicy entries to the given defaults.
+// Launch with <<<ceil(n_nodes/256), 256>>> for parallel init.
+extern "C" __global__ void failure_policy_init(
+    FailurePolicy* policies,
+    int            n_nodes,
+    int            default_budget,
+    int            default_block_threshold
+) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid >= n_nodes) return;
+    policies[tid].retry_budget        = default_budget;
+    policies[tid].block_threshold     = default_block_threshold;
+    policies[tid].rollback_on_failure = 0;
+    policies[tid].repair_on_block     = 0;
+}
+
+// Classify a receipt failure, update the per-node retry budget, choose the
+// corrective action, and emit a repair DeviceCommand when the action is
+// EXTERNAL_REPAIR.  Writes the chosen FAILURE_ACTION_* code into *action_out.
+// Thread 0, block 0 only.
+extern "C" __global__ void failure_policy_classify_and_emit(
+    const FailureClassifyRequest* req,
+    FailurePolicy*                policies,
+    int                           n_policies,
+    OrchestrationState*           state,
+    DeviceCommand*                cmd_ring,
+    int*                          cmd_tail,
+    const int*                    cmd_head,
+    int                           cmd_ring_size,
+    int*                          action_out
+) {
+    if (threadIdx.x != 0 || blockIdx.x != 0) return;
+
+    int outcome    = req->outcome;
+    int node_id    = req->node_id;
+    int src        = req->src;
+    int dst        = req->dst;
+    int command_id = req->command_id;
+
+    if (!policies || node_id < 0 || node_id >= n_policies) {
+        *action_out = FAILURE_ACTION_BLOCK;
+        return;
+    }
+
+    int failure_class = classify_failure(outcome);
+    FailurePolicy* p = &policies[node_id];
+
+    int action;
+    if (failure_class == FAILURE_CLASS_SAFETY) {
+        // Safety violations escalate to HALT regardless of retry budget.
+        action = FAILURE_ACTION_HALT;
+    } else if (p->retry_budget > 0) {
+        p->retry_budget -= 1;
+        action = FAILURE_ACTION_RETRY;
+    } else if (p->retry_budget == -1) {
+        action = FAILURE_ACTION_RETRY;  // unlimited
+    } else {
+        // Budget == 0: exhausted.
+        action = p->repair_on_block ? FAILURE_ACTION_EXTERNAL_REPAIR : FAILURE_ACTION_BLOCK;
+    }
+
+    if (state) {
+        state->failure_action = action;
+        if (action == FAILURE_ACTION_HALT) {
+            state->hard_reset_requested = 1;
+            state->halted               = 1;
+        } else if (action == FAILURE_ACTION_BLOCK || action == FAILURE_ACTION_EXTERNAL_REPAIR) {
+            state->consecutive_blocks += 1;
+            if (state->block_threshold > 0
+                    && state->consecutive_blocks >= state->block_threshold)
+                state->hard_reset_requested = 1;
+        } else {
+            state->consecutive_blocks = 0;  // retry clears the run of blocks
+        }
+    }
+
+    if (action == FAILURE_ACTION_EXTERNAL_REPAIR && cmd_ring && cmd_tail && cmd_head) {
+        int t = *cmd_tail, h = *cmd_head;
+        if (t - h < cmd_ring_size) {
+            DeviceCommand cmd;
+            cmd.valid            = 1;
+            cmd.command_id       = command_id;
+            cmd.node_id          = node_id;
+            cmd.src              = src;
+            cmd.dst              = dst;
+            cmd.dispatch_kind    = DISPATCH_KIND_REPAIR;
+            cmd.operator_name_id = node_id;
+            cmd.timeout_ticks    = 0;
+            cmd.retry_budget     = 0;
+            cmd.payload_offset   = 0;
+            cmd.payload_len      = 0;
+            cmd_ring[t % cmd_ring_size] = cmd;
+            *cmd_tail = t + 1;
+            if (state) atomicAdd(&state->pending_external_count, 1);
+        }
+    }
+
+    *action_out = action;
+}
+
+// Snapshot consumed[] and active[] as a rollback marker.
+// Sets state->rollback_available = 1.  Block-parallel copy.
+extern "C" __global__ void failure_policy_set_rollback_marker(
+    const int*          consumed,
+    const int*          active,
+    int*                rollback_consumed,
+    int*                rollback_active,
+    OrchestrationState* state
+) {
+    int tid = threadIdx.x;
+    for (int i = tid; i < MATRIX_LEN; i += blockDim.x)
+        rollback_consumed[i] = consumed[i];
+    for (int i = tid; i < N; i += blockDim.x)
+        rollback_active[i] = active[i];
+    __syncthreads();
+    if (tid == 0 && state)
+        state->rollback_available = 1;
+}
+
+// Restore consumed[] and active[] from the rollback marker.
+// No-op if state->rollback_available == 0.  Block-parallel copy.
+extern "C" __global__ void failure_policy_apply_rollback(
+    int*                consumed,
+    int*                active,
+    const int*          rollback_consumed,
+    const int*          rollback_active,
+    OrchestrationState* state
+) {
+    if (!state || !state->rollback_available) return;
+    int tid = threadIdx.x;
+    for (int i = tid; i < MATRIX_LEN; i += blockDim.x)
+        consumed[i] = rollback_consumed[i];
+    for (int i = tid; i < N; i += blockDim.x)
+        active[i] = rollback_active[i];
+    __syncthreads();
+    if (tid == 0) {
+        state->rollback_available = 0;
+        state->rollback_requested = 0;
+        state->consecutive_blocks = 0;
+    }
+}
+
+// ── Phase-6: device-side learning and exploration updates ─────────────────────
+//
+// receipt_priors[N]: per-node float updated on-device when receipts arrive.
+//   Used directly by tensor_quantale_seed_exploration for exploration scoring
+//   without a CPU round-trip.
+// LearnedDelta: compact edge-delta record emitted to a ring for CPU persistence.
+//   The CPU service drains this ring and writes durable JSONL/state files.
+// learned_delta_init:        zero-initializes receipt_priors (block-parallel).
+// learned_delta_fold_receipt: folds one receipt into priors + delta ring.
+// learned_delta_apply:       drains the delta ring, applying soft updates to tensor.
+// receipt_prior_snapshot:    block-parallel copy of priors to an export buffer.
+
+#define LEARNED_DELTA_RING_SIZE 256
+
+struct LearnedDelta {
+    int   src;
+    int   dst;
+    float confidence_delta;
+    float cost_delta;
+    float safety_delta;
+};
+
+// Zero-initialise the per-node receipt_priors table.
+// Launch with <<<ceil(n/256), 256>>>.
+extern "C" __global__ void learned_delta_init(
+    float* receipt_priors,
+    int    n
+) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid < n) receipt_priors[tid] = 0.0f;
+}
+
+// Fold one receipt into the per-node prior table and push a LearnedDelta entry.
+// Updates receipt_priors[node_id] on success only.  Thread 0, block 0 only.
+extern "C" __global__ void learned_delta_fold_receipt(
+    int           src,
+    int           dst,
+    int           node_id,
+    int           outcome,
+    float*        receipt_priors,
+    int           n_nodes,
+    LearnedDelta* delta_ring,
+    int*          delta_tail,
+    const int*    delta_head,
+    int           ring_size
+) {
+    if (threadIdx.x != 0 || blockIdx.x != 0) return;
+
+    LearnedDelta d;
+    d.src = src;
+    d.dst = dst;
+
+    if (outcome == 0) { // success
+        if (receipt_priors && node_id >= 0 && node_id < n_nodes)
+            receipt_priors[node_id] = fminf(receipt_priors[node_id] + 0.1f, 1.0f);
+        d.confidence_delta =  0.1f;
+        d.cost_delta       = -0.05f;
+        d.safety_delta     =  0.1f;
+    } else if (outcome == 1) { // failure
+        d.confidence_delta = -0.05f;
+        d.cost_delta       =  0.1f;
+        d.safety_delta     = -0.05f;
+    } else if (outcome == 2) { // timeout
+        d.confidence_delta = -0.025f;
+        d.cost_delta       =  0.05f;
+        d.safety_delta     =  0.0f;
+    } else if (outcome == 3) { // safety violation
+        d.confidence_delta = -0.1f;
+        d.cost_delta       =  0.0f;
+        d.safety_delta     = -0.2f;
+    } else {
+        d.confidence_delta = 0.0f;
+        d.cost_delta       = 0.0f;
+        d.safety_delta     = 0.0f;
+    }
+
+    if (delta_ring && delta_tail && delta_head && ring_size > 0) {
+        int t = *delta_tail, h = *delta_head;
+        if (t - h < ring_size) {
+            delta_ring[t % ring_size] = d;
+            *delta_tail = t + 1;
+        }
+    }
+}
+
+// Drain all pending learned deltas from the ring and apply soft updates to the
+// live tensor (clamped to [0,1] for confidence/safety, >= 0 for cost).
+// Advances *delta_head.  Thread 0, block 0 only.
+extern "C" __global__ void learned_delta_apply(
+    float*        tensor,
+    LearnedDelta* delta_ring,
+    int*          delta_head,
+    const int*    delta_tail,
+    int           ring_size
+) {
+    if (threadIdx.x != 0 || blockIdx.x != 0) return;
+    int h = *delta_head;
+    int t = *delta_tail;
+    while (h != t) {
+        LearnedDelta d = delta_ring[h % ring_size];
+        if (d.src >= 0 && d.src < N && d.dst >= 0 && d.dst < N && d.src != d.dst) {
+            int cidx = tensor_idx(LAYER_CONFIDENCE, d.src, d.dst);
+            int eidx = tensor_idx(LAYER_COST,       d.src, d.dst);
+            int sidx = tensor_idx(LAYER_SAFETY,     d.src, d.dst);
+            tensor[cidx] = fmaxf(0.0f, fminf(1.0f, tensor[cidx] + d.confidence_delta));
+            tensor[eidx] = fmaxf(0.0f,              tensor[eidx] + d.cost_delta);
+            tensor[sidx] = fmaxf(0.0f, fminf(1.0f, tensor[sidx] + d.safety_delta));
+        }
+        h++;
+    }
+    *delta_head = h;
+}
+
+// Block-parallel copy of receipt_priors into out_snapshot for CPU export.
+extern "C" __global__ void receipt_prior_snapshot(
+    const float* receipt_priors,
+    float*       out_snapshot,
+    int          n
+) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid < n) out_snapshot[tid] = receipt_priors[tid];
+}
+
+// ── Phase-8: observability, debug, and replay ─────────────────────────────────
+//
+// OrchestrationEvent: one record in the device trace ring.  The scheduler
+//   emits events that explain every decision without CPU reconstruction.
+// orch_event_trace_push: push one event derived from the current state.
+// orch_event_trace_drain: copy all pending events to an output buffer.
+// orch_check_no_duplicate_receipts: scan for consumed receipts sharing a
+//   command_id — a receipt-fold-duplication invariant.
+// orch_check_frontier_valid: all entries in active[] are 0 or 1.
+// orch_check_no_command_without_receipt: every valid command in cmd_ring has
+//   a consumed receipt in ext_ring.
+// orch_replay_snapshot: block-parallel copy of state + consumed + active for
+//   deterministic replay.
+// orch_replay_restore: restore a previously saved replay snapshot.
+
+#define ORCH_EVENT_STEP_COMMITTED  0  // GPU-native node dispatched
+#define ORCH_EVENT_WAIT_EXTERNAL   1  // external command emitted
+#define ORCH_EVENT_HALTED          2  // halt node reached
+#define ORCH_EVENT_BLOCKED         3  // no ready node found
+#define ORCH_EVENT_RECEIPT_DRAINED 4  // receipt folded from ext ring
+
+#define ORCH_TRACE_RING_SIZE 512
+
+struct OrchestrationEvent {
+    int step;
+    int event_kind;      // ORCH_EVENT_* constant
+    int selected_node;
+    int selected_group;
+    int src;
+    int dst;
+    int outcome;
+};
+
+// Push one event built from the current OrchestrationState into the trace ring.
+// Thread 0, block 0 only.
+extern "C" __global__ void orch_event_trace_push(
+    const OrchestrationState* state,
+    int                       event_kind,
+    int                       outcome,
+    OrchestrationEvent*       trace_ring,
+    int*                      trace_tail,
+    const int*                trace_head,
+    int                       ring_size
+) {
+    if (threadIdx.x != 0 || blockIdx.x != 0) return;
+    if (!trace_ring || !trace_tail || !trace_head || ring_size <= 0) return;
+    int t = *trace_tail, h = *trace_head;
+    if (t - h >= ring_size) return; // ring full — drop oldest-first on next push
+    OrchestrationEvent ev;
+    ev.step           = state ? state->step           : 0;
+    ev.event_kind     = event_kind;
+    ev.selected_node  = state ? state->selected_node  : -1;
+    ev.selected_group = state ? state->selected_group : -1;
+    ev.src            = state ? state->selected_src   : -1;
+    ev.dst            = state ? state->selected_dst   : -1;
+    ev.outcome        = outcome;
+    trace_ring[t % ring_size] = ev;
+    *trace_tail = t + 1;
+}
+
+// Drain all pending trace events into out_buf.  Advances *trace_head.
+// Writes the number of events copied to *out_count.  Thread 0, block 0 only.
+extern "C" __global__ void orch_event_trace_drain(
+    OrchestrationEvent*       trace_ring,
+    int*                      trace_head,
+    const int*                trace_tail,
+    int                       ring_size,
+    OrchestrationEvent*       out_buf,
+    int*                      out_count,
+    int                       max_count
+) {
+    if (threadIdx.x != 0 || blockIdx.x != 0) return;
+    int h = *trace_head;
+    int t = *trace_tail;
+    int count = 0;
+    while (h != t && count < max_count) {
+        out_buf[count] = trace_ring[h % ring_size];
+        h++;
+        count++;
+    }
+    *trace_head = h;
+    *out_count  = count;
+}
+
+// Invariant: no two consumed DeviceReceiptExt entries share a (command_id, node_id).
+// Writes 1 to *violation_out if a duplicate is found, 0 otherwise.
+// Thread 0, block 0 only.
+extern "C" __global__ void orch_check_no_duplicate_receipts(
+    const DeviceReceiptExt* ring,
+    int                     size,
+    int*                    violation_out
+) {
+    if (threadIdx.x != 0 || blockIdx.x != 0) return;
+    *violation_out = 0;
+    for (int i = 0; i < size; ++i) {
+        if (!ring[i].valid || !ring[i].consumed) continue;
+        for (int j = i + 1; j < size; ++j) {
+            if (!ring[j].valid || !ring[j].consumed) continue;
+            if (ring[i].command_id == ring[j].command_id
+                    && ring[i].node_id == ring[j].node_id) {
+                *violation_out = 1;
+                return;
+            }
+        }
+    }
+}
+
+// Invariant: every entry in active[] is 0 or 1.
+// Writes 1 to *violation_out if a corrupt value is found.
+// Thread 0, block 0 only.
+extern "C" __global__ void orch_check_frontier_valid(
+    const int* active,
+    int        n,
+    int*       violation_out
+) {
+    if (threadIdx.x != 0 || blockIdx.x != 0) return;
+    *violation_out = 0;
+    for (int i = 0; i < n; ++i) {
+        if (active[i] != 0 && active[i] != 1) {
+            *violation_out = 1;
+            return;
+        }
+    }
+}
+
+// Invariant: every valid DeviceCommand in cmd_ring has a consumed receipt in
+// ext_ring with a matching command_id.
+// Writes 1 to *violation_out if a command without a terminal receipt is found.
+// Thread 0, block 0 only.
+extern "C" __global__ void orch_check_no_command_without_receipt(
+    const DeviceCommand*    cmd_ring,
+    int                     cmd_size,
+    const DeviceReceiptExt* ext_ring,
+    int                     ext_size,
+    int*                    violation_out
+) {
+    if (threadIdx.x != 0 || blockIdx.x != 0) return;
+    *violation_out = 0;
+    for (int j = 0; j < cmd_size; ++j) {
+        if (!cmd_ring[j].valid) continue;
+        int cid = cmd_ring[j].command_id;
+        int found = 0;
+        for (int i = 0; i < ext_size; ++i) {
+            if (ext_ring[i].valid && ext_ring[i].consumed
+                    && ext_ring[i].command_id == cid) {
+                found = 1;
+                break;
+            }
+        }
+        if (!found) {
+            *violation_out = 1;
+            return;
+        }
+    }
+}
+
+// Deterministic replay: block-parallel snapshot of state + consumed + active.
+extern "C" __global__ void orch_replay_snapshot(
+    const OrchestrationState* state,
+    OrchestrationState*       out_state,
+    const int*                consumed,
+    int*                      out_consumed,
+    const int*                active,
+    int*                      out_active
+) {
+    int tid = threadIdx.x;
+    for (int i = tid; i < MATRIX_LEN; i += blockDim.x)
+        out_consumed[i] = consumed[i];
+    for (int i = tid; i < N; i += blockDim.x)
+        out_active[i] = active[i];
+    __syncthreads();
+    if (tid == 0 && state && out_state)
+        *out_state = *state;
+}
+
+// Deterministic replay: restore state + consumed + active from a replay snapshot.
+extern "C" __global__ void orch_replay_restore(
+    OrchestrationState*       state,
+    const OrchestrationState* snap_state,
+    int*                      consumed,
+    const int*                snap_consumed,
+    int*                      active,
+    const int*                snap_active
+) {
+    int tid = threadIdx.x;
+    for (int i = tid; i < MATRIX_LEN; i += blockDim.x)
+        consumed[i] = snap_consumed[i];
+    for (int i = tid; i < N; i += blockDim.x)
+        active[i] = snap_active[i];
+    __syncthreads();
+    if (tid == 0 && state && snap_state)
+        *state = *snap_state;
+}
+
 // ── Device-ring push / pop ────────────────────────────────────────────────────
 
 // Write n floats into the ring from src (single-threaded for head/tail safety).
@@ -1113,6 +2163,11 @@ __device__ void region_commit_receipt(float** slot_ptrs, int n, DeviceReceipt* r
     r->output_flags |= (1 << 6);
 }
 
+// ── Generated fusion H_f handlers ─────────────────────────────────────────────
+// The Rust kernel-source assembler replaces this marker with the contents of
+// assets/fusion_hf.stubs.cu before PTX compilation.
+// @@FUSION_HF_GENERATED_FUNCTIONS@@
+
 // ── GPU-side region dispatch ──────────────────────────────────────────────────
 //
 // Selects the appropriate __device__ region function via a switch table and
@@ -1152,6 +2207,7 @@ extern "C" __global__ void tensor_quantale_gpu_dispatch(
         case 5: region_analysis_signal_score(slot_ptrs, element_count, &r); break;
         case 6: region_commit_receipt       (slot_ptrs, element_count, &r); break;
         case 7: region_analysis_fused_signal_score(slot_ptrs, element_count, &r); break;
+        // @@FUSION_HF_GENERATED_GPU_DISPATCH_CASES@@
         default: break;
     }
 
@@ -1172,13 +2228,13 @@ extern "C" __global__ void tensor_quantale_gpu_dispatch(
 // all-ready CKA par group, commits it on-device, and writes the result without
 // any CPU round-trip for group selection or effect validation.
 //
-// Eligibility (jit_cuda/fusion/hot) is encoded per member at epoch start and
+// Eligibility (GPU-native H_f / abstract-device) is encoded per member at epoch start and
 // checked by the kernel — 0=ineligible, 1=eligible.
 //
 // Table layout: [g0_size, g0_n0, g0_r0, g0_e0, g0_k0, g0_n1, ...]
 // Each member is a (node_id, region_id, is_gpu_dispatchable, dispatch_kind) tuple.
 //   region_id            = -1 for non-hot members (fusion-entry and pure-CPU alike)
-//   is_gpu_dispatchable  = 1 for hot-region or fusion-entry; 0 for pure-CPU
+//   is_gpu_dispatchable  = 1 for GPU-native dispatch kinds; 0 for host fallback
 //   dispatch_kind        = initial descriptor kind; H_f may upgrade to device
 // (num_groups is passed as a separate int)
 //
@@ -1238,9 +2294,11 @@ struct ParGroupHfParams {
 //
 // Three-phase single-block kernel:
 //
-//   Phase 1 (thread 0 only): iterate the par_table, find the first eligible
-//   all-ready group, write the result, and populate shared memory with the
-//   selected group's region_ids, src, dst, and first-hop commit targets.
+//   Phase 1 (all threads): iterate groups deterministically, evaluate each
+//   member's readiness with block-parallel reductions over MATRIX_LEN, and
+//   publish the first eligible all-ready group.  Thread 0 only materializes the
+//   selected result after all lanes have computed readiness; it no longer owns
+//   the readiness scan or group-selection predicate.
 //
 //   Phase 2 (all 512 threads, block 0 only): commit selected member effects by
 //   clearing next_active, atomically marking consumed edges, setting next_active,
@@ -1265,18 +2323,28 @@ extern "C" __global__ void tensor_quantale_par_group_step(
     int*                    next_active,
     const ProjectionBias*   bias,
     DecisionReport*         global_decision,
+    const int*              group_offsets,
     const int*              par_table,
     int                     num_groups,
     ParGroupStepOutput*     result,
     const ParGroupHfParams* hf    // H_f inline dispatch config (slot tables + receipt ring)
 ) {
-    // Shared memory: Phase 1 (thread 0) writes; commit and H_f lanes read.
+    // Shared memory: Phase 1 writes; commit and H_f lanes read.
     __shared__ int sh_selected_g;
     __shared__ int sh_sz;
     __shared__ int sh_region_ids[MAX_PAR_GROUP_SIZE];
     __shared__ int sh_srcs[MAX_PAR_GROUP_SIZE];
     __shared__ int sh_dsts[MAX_PAR_GROUP_SIZE];
     __shared__ int sh_hops[MAX_PAR_GROUP_SIZE];
+    __shared__ int sh_node_ids[MAX_PAR_GROUP_SIZE];
+    __shared__ int sh_dispatch_kinds[MAX_PAR_GROUP_SIZE];
+    __shared__ int sh_member_ready[MAX_PAR_GROUP_SIZE];
+    __shared__ float sh_best_values[MAX_PAR_GROUP_SIZE];
+    __shared__ float warp_values[32];
+    __shared__ int warp_srcs[32];
+    __shared__ int warp_dsts[32];
+    __shared__ int warp_hops[32];
+    __shared__ int warp_candidates[32];
 
     // ── init ──────────────────────────────────────────────────────────────────
     if (threadIdx.x == 0) {
@@ -1289,6 +2357,10 @@ extern "C" __global__ void tensor_quantale_par_group_step(
             sh_srcs[i] = -1;
             sh_dsts[i] = -1;
             sh_hops[i] = -1;
+            sh_node_ids[i] = -1;
+            sh_dispatch_kinds[i] = PAR_DISPATCH_NONE;
+            sh_member_ready[i] = 0;
+            sh_best_values[i] = -COST_INFINITY;
             result->dispatched_on_device[i] = 0;
             result->dispatch_descriptors[i].member_index = -1;
             result->dispatch_descriptors[i].node_id = -1;
@@ -1300,111 +2372,152 @@ extern "C" __global__ void tensor_quantale_par_group_step(
     }
     __syncthreads();
 
-    // ── Phase 1: group selection (thread 0 only) ──────────────────────────────
-    if (threadIdx.x == 0) {
-        float alpha = bias[0].confidence;
-        float beta  = bias[0].cost;
-        float gamma = bias[0].safety;
-        int next_step = global_decision[0].step + 1;
+    // ── Phase 1: group selection with block-parallel readiness ───────────────
+    int tid = threadIdx.x;
+    int lane = tid & 31;
+    int warp_id = tid >> 5;
+    int warp_count = (blockDim.x + 31) >> 5;
+    float alpha = bias[0].confidence;
+    float beta  = bias[0].cost;
+    float gamma = bias[0].safety;
+    int next_step = global_decision[0].step + 1;
 
-        int ptr = 0;
-        for (int g = 0; g < num_groups; g++) {
-            int sz = par_table[ptr++];
-            int group_start = ptr;
-            ptr += sz * 4;
+    for (int g = 0; g < num_groups; g++) {
+        int record_start = group_offsets[g];
+        int sz = par_table[record_start];
+        int group_start = record_start + 1;
 
-            if (sz < 2 || sz > MAX_PAR_GROUP_SIZE) continue;
-
-            // On-device eligibility: all members must be GPU-dispatchable.
-            int all_eligible = 1;
-            for (int i = 0; i < sz; i++) {
-                if (!par_table[group_start + i * 4 + 2]) { all_eligible = 0; break; }
+        if (threadIdx.x == 0) {
+            sh_sz = (sz >= 2 && sz <= MAX_PAR_GROUP_SIZE) ? sz : 0;
+            for (int i = 0; i < MAX_PAR_GROUP_SIZE; i++) {
+                sh_region_ids[i] = -1;
+                sh_srcs[i] = -1;
+                sh_dsts[i] = -1;
+                sh_hops[i] = -1;
+                sh_node_ids[i] = -1;
+                sh_dispatch_kinds[i] = PAR_DISPATCH_NONE;
+                sh_member_ready[i] = 0;
+                sh_best_values[i] = -COST_INFINITY;
             }
-            if (!all_eligible) continue;
-
-            bool all_ready = true;
-            struct DecisionReport decisions[MAX_PAR_GROUP_SIZE];
-            int region_ids[MAX_PAR_GROUP_SIZE];
-            int node_ids[MAX_PAR_GROUP_SIZE];
-            int dispatch_kinds[MAX_PAR_GROUP_SIZE];
-
-            for (int i = 0; i < sz; i++) {
-                int target_hop = par_table[group_start + i * 4];
-                node_ids[i]    = target_hop;
-                region_ids[i]  = par_table[group_start + i * 4 + 1];
-                dispatch_kinds[i] = par_table[group_start + i * 4 + 3];
-                float best_value = -1.0e30f;
-                int best_src = -1, best_dst = -1, best_hop = -1, candidates = 0;
-
-                if (target_hop >= 0 && target_hop < N) {
-                    for (int idx = 0; idx < MATRIX_LEN; idx++) {
-                        int src = idx / N, dst = idx % N;
-                        if (src == dst || active[src] == 0) continue;
-
-                        int cidx = tensor_idx(LAYER_CONFIDENCE, src, dst);
-                        float confidence = tensor[cidx];
-                        float cost       = tensor[tensor_idx(LAYER_COST,   src, dst)];
-                        float safety     = tensor[tensor_idx(LAYER_SAFETY, src, dst)];
-                        if (confidence <= BOTTOM || safety <= BOTTOM || cost >= COST_INFINITY) continue;
-
-                        int hop = witness[cidx];
-                        if (hop != target_hop || consumed[src * N + hop] != 0) continue;
-
-                        float score = alpha * confidence - beta * cost + gamma * safety;
-                        candidates++;
-                        if (score > best_value) {
-                            best_value = score;
-                            best_src = src; best_dst = dst; best_hop = hop;
-                        }
-                    }
-                }
-
-                decisions[i].step           = next_step;
-                decisions[i].selected_src   = best_src;
-                decisions[i].selected_dst   = best_dst;
-                decisions[i].first_hop      = best_hop;
-                decisions[i].selected_value = best_value;
-                decisions[i].halted         = (best_hop == HALT_NODE) ? 1 : 0;
-                decisions[i].blocked        = (candidates == 0) ? 1 : 0;
-
-                if (decisions[i].blocked || decisions[i].halted) { all_ready = false; break; }
-            }
-
-            if (!all_ready) continue;
-
-            global_decision[0].step           = next_step;
-            global_decision[0].selected_src   = decisions[0].selected_src;
-            global_decision[0].selected_dst   = decisions[0].selected_dst;
-            global_decision[0].first_hop      = decisions[0].first_hop;
-            global_decision[0].selected_value = decisions[0].selected_value;
-            global_decision[0].halted         = 0;
-            global_decision[0].blocked        = 0;
-
-            result->selected_group_idx = g;
-            result->group_size = sz;
-            for (int i = 0; i < sz; i++) {
-                result->decisions[i]  = decisions[i];
-                result->region_ids[i] = region_ids[i];
-                result->dispatch_descriptors[i].member_index = i;
-                result->dispatch_descriptors[i].node_id = node_ids[i];
-                result->dispatch_descriptors[i].region_id = region_ids[i];
-                result->dispatch_descriptors[i].dispatch_kind = dispatch_kinds[i];
-                result->dispatch_descriptors[i].src_node = decisions[i].selected_src;
-                result->dispatch_descriptors[i].dst_node = decisions[i].first_hop;
-            }
-
-            // Broadcast to shared memory for Phase 2.
-            sh_selected_g = g;
-            sh_sz = sz;
-            for (int i = 0; i < sz; i++) {
-                sh_region_ids[i] = region_ids[i];
-                sh_srcs[i] = decisions[i].selected_src;
-                sh_dsts[i] = decisions[i].selected_dst;
-                sh_hops[i] = decisions[i].first_hop;
-            }
-
-            break;
         }
+        __syncthreads();
+
+        if (sh_sz == 0) {
+            __syncthreads();
+            continue;
+        }
+
+        for (int m = 0; m < sh_sz; m++) {
+            int target_hop = par_table[group_start + m * 4];
+            int region_id = par_table[group_start + m * 4 + 1];
+            int is_dispatchable = par_table[group_start + m * 4 + 2];
+            int dispatch_kind = par_table[group_start + m * 4 + 3];
+
+            float local_best_value = -COST_INFINITY;
+            int local_best_src = -1;
+            int local_best_dst = -1;
+            int local_best_hop = -1;
+            int local_candidates = 0;
+
+            if (is_dispatchable && target_hop >= 0 && target_hop < N) {
+                for (int idx = tid; idx < MATRIX_LEN; idx += blockDim.x) {
+                    int src = idx / N;
+                    int dst = idx % N;
+                    if (src == dst || active[src] == 0) continue;
+
+                    int cidx = tensor_idx(LAYER_CONFIDENCE, src, dst);
+                    float confidence = tensor[cidx];
+                    float cost       = tensor[tensor_idx(LAYER_COST,   src, dst)];
+                    float safety     = tensor[tensor_idx(LAYER_SAFETY, src, dst)];
+                    if (confidence <= BOTTOM || safety <= BOTTOM || cost >= COST_INFINITY) continue;
+
+                    int hop = witness[cidx];
+                    if (hop != target_hop || consumed[src * N + hop] != 0) continue;
+
+                    float score = alpha * confidence - beta * cost + gamma * safety;
+                    local_candidates++;
+                    choose_best(score, src, dst, hop, local_best_value, local_best_src, local_best_dst, local_best_hop);
+                }
+            }
+
+            int warp_candidate_count = warp_reduce_sum(local_candidates);
+            warp_reduce_best(local_best_value, local_best_src, local_best_dst, local_best_hop);
+
+            if (lane == 0) {
+                warp_values[warp_id] = local_best_value;
+                warp_srcs[warp_id] = local_best_src;
+                warp_dsts[warp_id] = local_best_dst;
+                warp_hops[warp_id] = local_best_hop;
+                warp_candidates[warp_id] = warp_candidate_count;
+            }
+            __syncthreads();
+
+            if (warp_id == 0) {
+                float block_best_value = lane < warp_count ? warp_values[lane] : -COST_INFINITY;
+                int block_best_src = lane < warp_count ? warp_srcs[lane] : -1;
+                int block_best_dst = lane < warp_count ? warp_dsts[lane] : -1;
+                int block_best_hop = lane < warp_count ? warp_hops[lane] : -1;
+                int block_candidates = lane < warp_count ? warp_candidates[lane] : 0;
+
+                block_candidates = warp_reduce_sum(block_candidates);
+                warp_reduce_best(block_best_value, block_best_src, block_best_dst, block_best_hop);
+
+                if (lane == 0) {
+                    sh_node_ids[m] = target_hop;
+                    sh_region_ids[m] = region_id;
+                    sh_dispatch_kinds[m] = dispatch_kind;
+                    sh_srcs[m] = block_best_src;
+                    sh_dsts[m] = block_best_dst;
+                    sh_hops[m] = block_best_hop;
+                    sh_best_values[m] = block_best_value;
+                    sh_member_ready[m] = (is_dispatchable && block_candidates > 0 && block_best_hop != HALT_NODE) ? 1 : 0;
+                }
+            }
+            __syncthreads();
+        }
+
+        int local_group_ready = 1;
+        for (int m = tid; m < sh_sz; m += blockDim.x) {
+            if (!sh_member_ready[m]) local_group_ready = 0;
+        }
+        int group_ready = warp_reduce_sum(local_group_ready == 0 ? 1 : 0);
+        if (lane == 0) warp_candidates[warp_id] = group_ready;
+        __syncthreads();
+        if (warp_id == 0) {
+            int failed_count = lane < warp_count ? warp_candidates[lane] : 0;
+            failed_count = warp_reduce_sum(failed_count);
+            if (lane == 0 && failed_count == 0) {
+                sh_selected_g = g;
+                global_decision[0].step           = next_step;
+                global_decision[0].selected_src   = sh_srcs[0];
+                global_decision[0].selected_dst   = sh_dsts[0];
+                global_decision[0].first_hop      = sh_hops[0];
+                global_decision[0].selected_value = sh_best_values[0];
+                global_decision[0].halted         = 0;
+                global_decision[0].blocked        = 0;
+
+                result->selected_group_idx = g;
+                result->group_size = sh_sz;
+                for (int i = 0; i < sh_sz; i++) {
+                    result->decisions[i].step = next_step;
+                    result->decisions[i].selected_src = sh_srcs[i];
+                    result->decisions[i].selected_dst = sh_dsts[i];
+                    result->decisions[i].first_hop = sh_hops[i];
+                    result->decisions[i].selected_value = sh_best_values[i];
+                    result->decisions[i].halted = 0;
+                    result->decisions[i].blocked = 0;
+                    result->region_ids[i] = sh_region_ids[i];
+                    result->dispatch_descriptors[i].member_index = i;
+                    result->dispatch_descriptors[i].node_id = sh_node_ids[i];
+                    result->dispatch_descriptors[i].region_id = sh_region_ids[i];
+                    result->dispatch_descriptors[i].dispatch_kind = sh_dispatch_kinds[i];
+                    result->dispatch_descriptors[i].src_node = sh_srcs[i];
+                    result->dispatch_descriptors[i].dst_node = sh_hops[i];
+                }
+            }
+        }
+        __syncthreads();
+        if (sh_selected_g >= 0) break;
     }
     __syncthreads();
 
@@ -1448,9 +2561,30 @@ extern "C" __global__ void tensor_quantale_par_group_step(
 
     for (int i = 0; i < sh_sz; i++) {
         int rid = sh_region_ids[i];
+        int table_idx = sh_selected_g * MAX_PAR_GROUP_SIZE + i;
+        int dispatch_kind = result->dispatch_descriptors[i].dispatch_kind;
+
+        if (dispatch_kind == PAR_DISPATCH_ABSTRACT_DEVICE) {
+            if (threadIdx.x == 0) {
+                DeviceReceipt r;
+                r.region_id    = -1;
+                r.src          = sh_srcs[i];
+                r.dst          = sh_dsts[i];
+                r.outcome      = 0;
+                r.latency      = 0.0f;
+                r.valid        = 1;
+                r.output_flags = 0;
+                int tail = *hf->ring_tail;
+                hf->receipt_ring[tail % hf->ring_size] = r;
+                *hf->ring_tail = tail + 1;
+                result->dispatched_on_device[i] = 1;
+            }
+            __syncthreads();
+            continue;
+        }
+
         if (rid < 0 || rid >= hf->region_count) continue;
 
-        int table_idx = sh_selected_g * MAX_PAR_GROUP_SIZE + i;
         unsigned long long slot_table_ptr = hf->slot_table_ptrs[table_idx];
         int elem_count = hf->element_counts[table_idx];
         float** slot_ptrs = slot_table_ptr ? (float**)slot_table_ptr : (float**)0;
@@ -1476,6 +2610,7 @@ extern "C" __global__ void tensor_quantale_par_group_step(
             case 5: region_analysis_signal_score(slot_ptrs, elem_count, &r); break;
             case 6: region_commit_receipt       (slot_ptrs, elem_count, &r); break;
             case 7: region_analysis_fused_signal_score(slot_ptrs, elem_count, &r); break;
+            // @@FUSION_HF_GENERATED_PAR_CASES@@
             default: handled = 0; break;
         }
         __syncthreads();
