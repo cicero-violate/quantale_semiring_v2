@@ -2,11 +2,11 @@
 mod cuda_smoke {
     use cudarc::driver::{CudaDevice, LaunchAsync, LaunchConfig};
     use quantale_semiring_v2::{
-        build_node_dispatch_kinds, load_operator_registry, DeviceSlotRegistry, FusionHfCoverage,
-        JitCache, JitChain, OperatorRegistry, OrchStepStatus, ProjectionBias, SystemConfig,
-        TensorEdge, TensorQuantaleWorld, TopologyRuntime, UploadQueue, DISPATCH_KIND_EXTERNAL_IO,
-        DISPATCH_KIND_EXTERNAL_PROCESS, DISPATCH_KIND_HF_DEVICE, PAR_DISPATCH_ABSTRACT_DEVICE,
-        PAR_DISPATCH_HF_DEVICE, TENSOR_NODE_COUNT,
+        DISPATCH_KIND_EXTERNAL_IO, DISPATCH_KIND_EXTERNAL_PROCESS, DISPATCH_KIND_HF_DEVICE,
+        DeviceSlotRegistry, FusionHfCoverage, JitCache, JitChain, OperatorRegistry, OrchStepStatus,
+        PAR_DISPATCH_ABSTRACT_DEVICE, PAR_DISPATCH_HF_DEVICE, ProjectionBias, SystemConfig,
+        TENSOR_NODE_COUNT, TensorEdge, TensorQuantaleWorld, TopologyRuntime, UploadQueue,
+        build_node_dispatch_kinds, load_operator_registry,
     };
 
     #[test]
@@ -114,8 +114,8 @@ mod cuda_smoke {
     }
 
     #[test]
-    fn generated_hf_region_id_eight_runs_through_par_group_step(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn generated_hf_region_id_eight_runs_through_par_group_step()
+    -> Result<(), Box<dyn std::error::Error>> {
         let mut world = match TensorQuantaleWorld::empty_with_generated_fusion_hf_fragments(
             &generated_fixture_hf_fragment(),
         ) {
@@ -159,9 +159,11 @@ mod cuda_smoke {
         assert_eq!(decisions.len(), 2);
         assert_eq!(region_ids, vec![8, 8]);
         assert_eq!(dispatched, vec![1, 1]);
-        assert!(descriptors
-            .iter()
-            .all(|d| d.dispatch_kind == PAR_DISPATCH_HF_DEVICE));
+        assert!(
+            descriptors
+                .iter()
+                .all(|d| d.dispatch_kind == PAR_DISPATCH_HF_DEVICE)
+        );
 
         let actual = device.dtoh_sync_copy(slots.get("fixture.out").unwrap())?;
         assert_eq!(actual, vec![22.0, 66.0, 132.0, 220.0]);
@@ -170,8 +172,8 @@ mod cuda_smoke {
     }
 
     #[test]
-    fn abstract_device_par_member_writes_device_receipt_on_gpu(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn abstract_device_par_member_writes_device_receipt_on_gpu()
+    -> Result<(), Box<dyn std::error::Error>> {
         let mut world = match TensorQuantaleWorld::empty() {
             Ok(w) => w,
             Err(e) => {
@@ -201,9 +203,11 @@ mod cuda_smoke {
         };
         assert_eq!(region_ids, vec![-1, -1]);
         assert_eq!(dispatched, vec![1, 1]);
-        assert!(descriptors
-            .iter()
-            .all(|d| d.dispatch_kind == PAR_DISPATCH_ABSTRACT_DEVICE));
+        assert!(
+            descriptors
+                .iter()
+                .all(|d| d.dispatch_kind == PAR_DISPATCH_ABSTRACT_DEVICE)
+        );
         world.drain_device_receipts()?;
         Ok(())
     }
@@ -438,8 +442,8 @@ mod cuda_smoke {
     }
 
     #[test]
-    fn default_dispatch_table_reaches_market_feed_external_command(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn default_dispatch_table_reaches_market_feed_external_command()
+    -> Result<(), Box<dyn std::error::Error>> {
         let topology = TopologyRuntime::load_checked_default()?;
         let goal = topology.registry().id_of("State::Goal").unwrap() as i32;
         let market = topology.registry().id_of("State::MarketFeed").unwrap() as i32;
@@ -470,11 +474,9 @@ mod cuda_smoke {
         Ok(())
     }
 
-    /// Phase-2: device scheduler and the CPU frontier_step select the same node
-    /// on an equivalent graph (equivalence test for the singleton path).
+    /// Phase-2: the GPU-native scheduler selects the deterministic highest-score singleton.
     #[test]
-    fn cpu_gpu_scheduler_equivalence_singleton() -> Result<(), Box<dyn std::error::Error>> {
-        // Build a world for the GPU scheduler.
+    fn gpu_scheduler_selects_expected_singleton() -> Result<(), Box<dyn std::error::Error>> {
         let mut gpu_world = match TensorQuantaleWorld::empty() {
             Ok(w) => w,
             Err(e) => {
@@ -482,27 +484,16 @@ mod cuda_smoke {
                 return Ok(());
             }
         };
-        let edges = [
+        gpu_world.embed_tensor_edges(&[
             TensorEdge::new(0, 1, 0.9, 1.0, 0.9),
             TensorEdge::new(0, 2, 0.7, 1.0, 0.7),
             TensorEdge::new(0, 3, 0.5, 1.0, 0.5),
-        ];
-        gpu_world.embed_tensor_edges(&edges)?;
+        ])?;
 
-        // Run one GPU scheduler step.
         gpu_world.orchestrate_step()?;
         let gpu_state = gpu_world.orch_state_snapshot()?;
 
-        // Build an identical world for the CPU frontier step.
-        let mut cpu_world = TensorQuantaleWorld::from_tensor_edges(&edges)?;
-        let cpu_decision = cpu_world.frontier_step(ProjectionBias::default())?;
-
-        // Both should select the same first hop.
-        assert_eq!(
-            gpu_state.selected_node, cpu_decision.first_hop,
-            "GPU scheduler selected node {} but CPU frontier_step selected {}",
-            gpu_state.selected_node, cpu_decision.first_hop
-        );
+        assert_eq!(gpu_state.selected_node, 1);
         Ok(())
     }
 
@@ -512,7 +503,7 @@ mod cuda_smoke {
     /// the matching (lhs, rhs) pair returns CONTROL_OP_SEQ.
     #[test]
     fn control_flow_advance_seq_edge_matched() -> Result<(), Box<dyn std::error::Error>> {
-        use quantale_semiring_v2::{ControlEdge, CONTROL_OP_SEQ};
+        use quantale_semiring_v2::{CONTROL_OP_SEQ, ControlEdge};
         let mut world = match TensorQuantaleWorld::empty() {
             Ok(w) => w,
             Err(e) => {
@@ -616,7 +607,7 @@ mod cuda_smoke {
     /// advances star_counter and sets halted when the bound is reached.
     #[test]
     fn control_flow_star_bounded_advances_counter() -> Result<(), Box<dyn std::error::Error>> {
-        use quantale_semiring_v2::{ControlEdge, CONTROL_OP_STAR_BOUNDED};
+        use quantale_semiring_v2::{CONTROL_OP_STAR_BOUNDED, ControlEdge};
         let mut world = match TensorQuantaleWorld::empty() {
             Ok(w) => w,
             Err(e) => {
@@ -752,8 +743,8 @@ mod cuda_smoke {
             "rollback_available should be 1"
         );
 
-        // Advance one step (marks consumed[0*N+1]).
-        world.frontier_step(quantale_semiring_v2::ProjectionBias::default())?;
+        // Advance one GPU-native scheduler step (marks consumed[0*N+1]).
+        world.orchestrate_step()?;
 
         // Restore.
         world.apply_rollback()?;
@@ -915,7 +906,7 @@ mod cuda_smoke {
     #[test]
     fn learned_delta_apply_updates_tensor() -> Result<(), Box<dyn std::error::Error>> {
         use quantale_semiring_v2::{
-            TensorEdge, LAYER_CONFIDENCE, LAYER_SAFETY, MATRIX_LEN, TENSOR_NODE_COUNT,
+            LAYER_CONFIDENCE, LAYER_SAFETY, MATRIX_LEN, TENSOR_NODE_COUNT, TensorEdge,
         };
         let mut world = match TensorQuantaleWorld::empty() {
             Ok(w) => w,
@@ -985,7 +976,7 @@ mod cuda_smoke {
     /// drained event matches what was pushed.
     #[test]
     fn trace_ring_push_drain_round_trip() -> Result<(), Box<dyn std::error::Error>> {
-        use quantale_semiring_v2::{TensorQuantaleWorld, ORCH_EVENT_STEP_COMMITTED};
+        use quantale_semiring_v2::{ORCH_EVENT_STEP_COMMITTED, TensorQuantaleWorld};
         let mut world = match TensorQuantaleWorld::empty() {
             Ok(w) => w,
             Err(e) => {
@@ -1020,8 +1011,8 @@ mod cuda_smoke {
 
     /// Phase-8: no-duplicate-receipts check returns true when receipt ring is empty.
     #[test]
-    fn invariant_no_duplicate_receipts_passes_on_empty_ring(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn invariant_no_duplicate_receipts_passes_on_empty_ring()
+    -> Result<(), Box<dyn std::error::Error>> {
         let mut world = match TensorQuantaleWorld::empty() {
             Ok(w) => w,
             Err(e) => {

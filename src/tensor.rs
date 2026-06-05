@@ -11,11 +11,11 @@ use cudarc::driver::{CudaDevice, CudaSlice, DeviceRepr, DeviceSlice, LaunchAsync
 use cudarc::nvrtc::compile_ptx;
 use serde::{Deserialize, Serialize};
 
-use crate::config::{RuntimeContext, DEFAULT_BLOCK_SIZE};
+use crate::config::{DEFAULT_BLOCK_SIZE, RuntimeContext};
 use crate::device_slots::DeviceSlotRegistry;
 use crate::error::CudaError;
 use crate::exploration::{ExplorationCandidate, ExplorationEngine, ExplorationToken};
-use crate::graph::{reconstruct_path_from_witness_matrix, DecisionReport, Node};
+use crate::graph::{DecisionReport, Node, reconstruct_path_from_witness_matrix};
 use crate::topology::{GraphTopology, NodeRegistry};
 use crate::types::ProcessReceipt;
 
@@ -36,10 +36,7 @@ const CLOSURE_KERNEL: &str = "tensor_quantale_closure";
 const PROJECT_KERNEL: &str = "tensor_quantale_project";
 const PROJECT_BATCH_KERNEL: &str = "tensor_quantale_project_batch";
 const COMMIT_BATCH_KERNEL: &str = "tensor_quantale_commit_batch";
-const DRAIN_KERNEL: &str = "tensor_quantale_drain_queue";
 const DECAY_KERNEL: &str = "tensor_quantale_decay";
-const FRONTIER_STEP_KERNEL: &str = "tensor_quantale_frontier_step";
-const TICK_KERNEL: &str = "tensor_quantale_tick";
 const EXPLORATION_SEED_KERNEL: &str = "tensor_quantale_seed_exploration";
 const EXPLORATION_EXPAND_KERNEL: &str = "tensor_quantale_expand_tokens";
 const EXPLORATION_SCORE_KERNEL: &str = "tensor_quantale_score_tokens";
@@ -571,16 +568,6 @@ impl ExecutionOutcome {
         }
     }
 }
-
-#[repr(C)]
-#[derive(Clone, Copy, Debug)]
-pub struct ExecutionReceipt {
-    pub src: i32,
-    pub dst: i32,
-    pub outcome: i32,
-}
-
-unsafe impl DeviceRepr for ExecutionReceipt {}
 
 /// GPU-native receipt produced by the hot dispatch path.
 ///
@@ -1172,8 +1159,6 @@ pub struct TensorQuantaleWorld {
     /// than re-uploading from the host edge list, so it works even when the
     /// original edge list is no longer in scope.
     base_tensor: Vec<f32>,
-    /// Host-side queue of execution receipts pending a drain_lattice_queue call.
-    event_queue: Vec<ExecutionReceipt>,
     /// Device-resident receipt ring for the GPU hot-dispatch path.
     device_receipt_buffer: DeviceReceiptBuffer,
     /// Phase-1 orchestration state block: persistent scheduler state, command
@@ -1254,10 +1239,7 @@ impl TensorQuantaleWorld {
                 PROJECT_KERNEL,
                 PROJECT_BATCH_KERNEL,
                 COMMIT_BATCH_KERNEL,
-                DRAIN_KERNEL,
                 DECAY_KERNEL,
-                FRONTIER_STEP_KERNEL,
-                TICK_KERNEL,
                 EXPLORATION_SEED_KERNEL,
                 EXPLORATION_EXPAND_KERNEL,
                 EXPLORATION_SCORE_KERNEL,
@@ -1492,7 +1474,6 @@ impl TensorQuantaleWorld {
             exploration_token_count,
             exploration_selected_count,
             base_tensor: Vec::new(),
-            event_queue: Vec::new(),
             device_receipt_buffer: DeviceReceiptBuffer {
                 ring: device_receipt_ring,
                 head: device_receipt_head,
@@ -1903,107 +1884,9 @@ impl TensorQuantaleWorld {
         )))
     }
 
-    /// Project and advance the tensor frontier on CUDA.
-    pub fn frontier_step(&mut self, bias: ProjectionBias) -> Result<DecisionReport, CudaError> {
-        let bias_buffer = self
-            .dev
-            .htod_copy(vec![bias])
-            .map_err(|error| CudaError::new("htod_copy tensor frontier bias", error))?;
-        let kernel = self
-            .dev
-            .get_func(MODULE_NAME, FRONTIER_STEP_KERNEL)
-            .ok_or(CudaError::missing_function(FRONTIER_STEP_KERNEL))?;
-        unsafe {
-            kernel.launch(
-                kernel_config(),
-                (
-                    &self.tensor,
-                    &self.witness,
-                    &mut self.consumed,
-                    &mut self.active,
-                    &mut self.next_active,
-                    &bias_buffer,
-                    &mut self.decision,
-                ),
-            )
-        }
-        .map_err(|error| CudaError::new("tensor_quantale_frontier_step", error))?;
-        let report = self.decision_report()?;
-        // Invariant 16: frontier one-hot validity — first_hop must be a valid
-        // node index.  In test builds this panics at the source instead of
-        // propagating Unknown(-1) through subsequent calls.
-        debug_assert!(
-            report.blocked != 0 || (0..TENSOR_NODE_COUNT as i32).contains(&report.first_hop),
-            "frontier_step returned invalid node id: {}",
-            report.first_hop
-        );
-        Ok(report)
-    }
-
-    /// Fused tensor closure plus frontier projection/update.
-    pub fn tick(&mut self, bias: ProjectionBias) -> Result<DecisionReport, CudaError> {
-        let bias_buffer = self
-            .dev
-            .htod_copy(vec![bias])
-            .map_err(|error| CudaError::new("htod_copy tensor tick bias", error))?;
-        let kernel = self
-            .dev
-            .get_func(MODULE_NAME, TICK_KERNEL)
-            .ok_or(CudaError::missing_function(TICK_KERNEL))?;
-        unsafe {
-            kernel.launch(
-                kernel_config(),
-                (
-                    &mut self.tensor,
-                    &mut self.scratch,
-                    &mut self.witness,
-                    &mut self.consumed,
-                    &mut self.active,
-                    &mut self.next_active,
-                    &bias_buffer,
-                    &mut self.decision,
-                ),
-            )
-        }
-        .map_err(|error| CudaError::new("tensor_quantale_tick", error))?;
-        self.decision_report()
-    }
-
-    /// Push an execution receipt onto the host-side event queue.
-    /// Call drain_lattice_queue to flush the batch to the GPU.
-    pub fn queue_lattice_update(&mut self, src: i32, dst: i32, outcome: ExecutionOutcome) {
-        self.event_queue.push(ExecutionReceipt {
-            src,
-            dst,
-            outcome: outcome.code(),
-        });
-    }
-
-    /// Drain all pending execution receipts to the GPU in a single parallel kernel launch.
-    /// No-ops if the queue is empty.
-    pub fn drain_lattice_queue(&mut self) -> Result<(), CudaError> {
-        if self.event_queue.is_empty() {
-            return Ok(());
-        }
-        let receipts = std::mem::take(&mut self.event_queue);
-        let count = i32::try_from(receipts.len())
-            .map_err(|_| CudaError::invalid_input("too many queued lattice updates"))?;
-        let receipt_buf = self
-            .dev
-            .htod_copy(receipts)
-            .map_err(|error| CudaError::new("htod_copy lattice receipts", error))?;
-        let kernel = self
-            .dev
-            .get_func(MODULE_NAME, DRAIN_KERNEL)
-            .ok_or(CudaError::missing_function(DRAIN_KERNEL))?;
-        unsafe { kernel.launch(kernel_config(), (&mut self.tensor, &receipt_buf, count)) }
-            .map_err(|error| CudaError::new("tensor_quantale_drain_queue", error))
-    }
-
     /// Drain all `DeviceReceipt`s in the device ring buffer on-device.
     ///
-    /// Unlike `drain_lattice_queue`, this path never touches the CPU for
-    /// tensor updates — the GPU reads the ring and applies confidence/cost/
+    /// The GPU reads the ring and applies confidence/cost/
     /// safety atomics directly.
     pub fn drain_device_receipts(&mut self) -> Result<(), CudaError> {
         let ring_size = DEVICE_RECEIPT_RING_SIZE as i32;
@@ -2339,7 +2222,7 @@ impl TensorQuantaleWorld {
                     }
                 }
                 OrchStepStatus::WaitExternal | OrchStepStatus::Halted | OrchStepStatus::Error => {
-                    return Ok(status)
+                    return Ok(status);
                 }
             }
         }

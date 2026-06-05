@@ -159,18 +159,11 @@ __device__ __forceinline__ void atomic_float_add_capped(float* addr, float delta
     } while (atomicCAS(iptr, ob, nb) != ob);
 }
 
-struct ExecutionReceipt {
-    int src;
-    int dst;
-    int outcome; // 0=success, 1=failure, 2=timeout, 3=safety violation
-};
-
 // ── Device-side receipts ──────────────────────────────────────────────────────
 //
 // DeviceReceipt is the GPU-native receipt produced by the hot execution path.
-// Unlike ExecutionReceipt (built on the CPU from process stdout), a
-// DeviceReceipt is written entirely on-device by tensor_quantale_gpu_dispatch
-// and drained by tensor_quantale_drain_device_receipts without any CPU hop.
+// It is written entirely on-device by tensor_quantale_gpu_dispatch and drained
+// by tensor_quantale_drain_device_receipts without any CPU hop.
 
 struct DeviceReceipt {
     int region_id;    // GPU region that produced this receipt
@@ -540,7 +533,7 @@ extern "C" __global__ void tensor_quantale_embed_edges(
 
 extern "C" __global__ void tensor_quantale_closure(
     float* tensor,
-    float* scratch,  // unused; retained so tensor_quantale_tick can call with same args
+    float* scratch,
     int*   witness
 ) {
     int tid = threadIdx.x;
@@ -752,49 +745,6 @@ extern "C" __global__ void tensor_quantale_commit_batch(
     for (int i = tid; i < N; i += blockDim.x) active[i] = next_active[i];
 }
 
-extern "C" __global__ void tensor_quantale_drain_queue(
-    float* tensor,
-    const ExecutionReceipt* receipts,
-    int count
-) {
-    for (int event_idx = threadIdx.x; event_idx < count; event_idx += blockDim.x) {
-        ExecutionReceipt r = receipts[event_idx];
-        if (r.src < 0 || r.src >= N || r.dst < 0 || r.dst >= N || r.src == r.dst) continue;
-
-        int cidx = tensor_idx(LAYER_CONFIDENCE, r.src, r.dst);
-        int eidx = tensor_idx(LAYER_COST,       r.src, r.dst);
-        int sidx = tensor_idx(LAYER_SAFETY,     r.src, r.dst);
-
-        if (r.outcome == 0) { // success
-            // q_join(x, 1.0) = 1.0 always — safe to atomicExch.
-            atomicExch(&tensor[cidx], 1.0f);
-            // Halve cost only if above threshold; CAS loop preserves atomicity.
-            {
-                int* ptr = (int*)&tensor[eidx];
-                int ob, nb;
-                do {
-                    ob = *((volatile int*)ptr);
-                    float v = __int_as_float(ob);
-                    if (v <= 0.01f) break;
-                    nb = __float_as_int(v * 0.5f);
-                } while (atomicCAS(ptr, ob, nb) != ob);
-            }
-            atomicExch(&tensor[sidx], 1.0f);
-        } else if (r.outcome == 1) { // failure
-            atomic_float_mul(&tensor[cidx], 0.1f);
-            atomic_float_add_capped(&tensor[eidx], 10.0f);
-            atomic_float_mul(&tensor[sidx], 0.5f);
-        } else if (r.outcome == 2) { // timeout
-            atomic_float_mul(&tensor[cidx], 0.5f);
-            atomic_float_add_capped(&tensor[eidx], 100.0f);
-        } else if (r.outcome == 3) { // safety violation
-            atomic_float_mul(&tensor[cidx], 0.25f);
-            atomic_float_add_capped(&tensor[eidx], 25.0f);
-            atomicExch(&tensor[sidx], BOTTOM);
-        }
-    }
-}
-
 extern "C" __global__ void tensor_quantale_decay(float* tensor, float factor) {
     float decay = q_clamp(factor);
     for (int idx = threadIdx.x; idx < MATRIX_LEN; idx += blockDim.x) {
@@ -808,89 +758,6 @@ extern "C" __global__ void tensor_quantale_decay(float* tensor, float factor) {
             tensor[eidx] = tensor_cost_compose(tensor[eidx], 1.0f - decay);
         tensor[sidx] *= decay;
     }
-}
-
-extern "C" __global__ void tensor_quantale_frontier_step(
-    const float* tensor,
-    const int*   witness,
-    int*   consumed,
-    int*   active,
-    int*   next_active,
-    const ProjectionBias* bias,
-    DecisionReport* decision
-) {
-    int tid = threadIdx.x, lane = tid & 31, warp_id = tid >> 5;
-    int warp_count = (blockDim.x + 31) >> 5;
-
-    __shared__ float warp_values[32];
-    __shared__ int   warp_srcs[32], warp_dsts[32], warp_hops[32], warp_candidates[32];
-
-    for (int i = tid; i < N; i += blockDim.x) next_active[i] = 0;
-    __syncthreads();
-
-    float local_best_value = -COST_INFINITY;
-    int local_best_src = -1, local_best_dst = -1, local_best_hop = -1, local_candidates = 0;
-    float alpha = bias[0].confidence, beta = bias[0].cost, gamma = bias[0].safety;
-
-    for (int idx = tid; idx < MATRIX_LEN; idx += blockDim.x) {
-        int src = idx / N, dst = idx % N;
-        if (src == dst || active[src] == 0) continue;
-
-        int cidx = tensor_idx(LAYER_CONFIDENCE, src, dst);
-        int eidx = tensor_idx(LAYER_COST,       src, dst);
-        int sidx = tensor_idx(LAYER_SAFETY,     src, dst);
-        float confidence = tensor[cidx], cost = tensor[eidx], safety = tensor[sidx];
-        if (confidence <= BOTTOM || safety <= BOTTOM || cost >= COST_INFINITY) continue;
-
-        int hop = witness[cidx];
-        if (hop < 0 || hop >= N || consumed[src * N + hop] != 0) continue;
-
-        float score = alpha * confidence - beta * cost + gamma * safety;
-        local_candidates += 1;
-        choose_best(score, src, dst, hop, local_best_value, local_best_src, local_best_dst, local_best_hop);
-    }
-
-    int warp_candidate_count = warp_reduce_sum(local_candidates);
-    warp_reduce_best(local_best_value, local_best_src, local_best_dst, local_best_hop);
-
-    if (lane == 0) {
-        warp_values[warp_id]     = local_best_value;
-        warp_srcs[warp_id]       = local_best_src;
-        warp_dsts[warp_id]       = local_best_dst;
-        warp_hops[warp_id]       = local_best_hop;
-        warp_candidates[warp_id] = warp_candidate_count;
-    }
-    __syncthreads();
-
-    if (warp_id == 0) {
-        float block_best_value = lane < warp_count ? warp_values[lane]     : -COST_INFINITY;
-        int block_best_src     = lane < warp_count ? warp_srcs[lane]       : -1;
-        int block_best_dst     = lane < warp_count ? warp_dsts[lane]       : -1;
-        int block_best_hop     = lane < warp_count ? warp_hops[lane]       : -1;
-        int block_candidates   = lane < warp_count ? warp_candidates[lane] : 0;
-
-        block_candidates = warp_reduce_sum(block_candidates);
-        warp_reduce_best(block_best_value, block_best_src, block_best_dst, block_best_hop);
-
-        if (lane == 0) {
-            decision->step         += 1;
-            decision->selected_src  = block_best_src;
-            decision->selected_dst  = block_best_dst;
-            decision->first_hop     = block_best_hop;
-            decision->selected_value = block_best_value;
-            decision->halted        = block_best_hop == HALT_NODE ? 1 : 0;
-            decision->blocked       = block_candidates == 0 ? 1 : 0;
-
-            if (block_candidates > 0 && block_best_src >= 0 && block_best_hop >= 0) {
-                consumed[block_best_src * N + block_best_hop] = 1;
-                next_active[block_best_hop] = 1;
-            } else {
-                for (int i = 0; i < N; ++i) next_active[i] = active[i];
-            }
-        }
-    }
-    __syncthreads();
-    for (int i = tid; i < N; i += blockDim.x) active[i] = next_active[i];
 }
 
 // ── exploration ───────────────────────────────────────────────────────────
@@ -1164,26 +1031,11 @@ extern "C" __global__ void jit_chain_score_embed(
     }
 }
 
-extern "C" __global__ void tensor_quantale_tick(
-    float* tensor,
-    float* scratch,
-    int*   witness,
-    int*   consumed,
-    int*   active,
-    int*   next_active,
-    const ProjectionBias* bias,
-    DecisionReport* decision
-) {
-    tensor_quantale_closure(tensor, scratch, witness);
-    __syncthreads();
-    tensor_quantale_frontier_step(tensor, witness, consumed, active, next_active, bias, decision);
-}
-
 // ── Device-side receipt drain ─────────────────────────────────────────────────
 //
 // Processes completed DeviceReceipts from the ring buffer entirely on-device,
-// applying the same tensor updates as tensor_quantale_drain_queue but without
-// any CPU round-trip.  ring_head is the consumer index (advances per receipt
+// applying tensor updates without any CPU round-trip. ring_head is the consumer index
+// (advances per receipt
 // processed); ring_tail is the producer index written by gpu_dispatch.
 
 extern "C" __global__ void tensor_quantale_drain_device_receipts(
@@ -1299,7 +1151,7 @@ struct TensorWorldBundle {
 };
 
 // Select the highest-scoring ready singleton node on-device, using the same
-// readiness predicate as tensor_quantale_frontier_step.
+// readiness predicate used by the GPU-native scheduler.
 // Writes the selected src/dst/hop/score into *out.  Returns 1 if a node was
 // found, 0 if the frontier is empty or halted.
 __device__ int select_ready_singleton(

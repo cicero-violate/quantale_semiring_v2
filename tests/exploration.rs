@@ -247,7 +247,8 @@ fn gpu_exploration_commit_advances_frontier() {
     assert_eq!(decision.blocked, 0);
     assert_eq!(decision.first_hop, selected[0].first_hop);
 
-    let next = world.frontier_step(ProjectionBias::default()).unwrap();
+    world.orchestrate_step().unwrap();
+    let next = world.orch_state_snapshot().unwrap();
     assert_eq!(next.selected_src, selected[0].first_hop);
 }
 

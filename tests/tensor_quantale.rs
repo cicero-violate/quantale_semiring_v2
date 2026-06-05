@@ -1,6 +1,6 @@
 use quantale_semiring_v2::{
-    COST_INFINITY, ExecutionOutcome, GraphTopology, LAYER_CONFIDENCE, LAYER_COST, LAYER_SAFETY,
-    Node, NodeRegistry, ProjectionBias, TENSOR_LEN, TENSOR_NODE_COUNT, TensorEdge,
+    COST_INFINITY, DeviceReceiptExt, ExecutionOutcome, GraphTopology, LAYER_CONFIDENCE, LAYER_COST,
+    LAYER_SAFETY, Node, NodeRegistry, ProjectionBias, TENSOR_LEN, TENSOR_NODE_COUNT, TensorEdge,
     TensorQuantaleWorld, tensor_idx,
 };
 
@@ -138,8 +138,21 @@ fn gpu_tensor_update_and_decay_mutate_layers() {
     let mut world =
         TensorQuantaleWorld::from_tensor_edges(&[TensorEdge::new(goal, plan, 0.8, 2.0, 0.9)])
             .unwrap();
-    world.queue_lattice_update(goal, plan, ExecutionOutcome::SafetyViolation);
-    world.drain_lattice_queue().unwrap();
+    world
+        .push_device_receipt_ext(DeviceReceiptExt {
+            valid: 1,
+            consumed: 0,
+            command_id: 1,
+            node_id: plan,
+            src: goal,
+            dst: plan,
+            outcome: ExecutionOutcome::SafetyViolation.code(),
+            receipt_kind: 0,
+            output_flags: 0,
+            latency: 0.0,
+        })
+        .unwrap();
+    world.drain_device_receipt_ext().unwrap();
     world.decay(0.9).unwrap();
     world.synchronize().unwrap();
     let tensor = world.tensor().unwrap();
@@ -150,7 +163,30 @@ fn gpu_tensor_update_and_decay_mutate_layers() {
 }
 
 #[test]
-fn gpu_tensor_frontier_step_advances_active_state() {
+fn gpu_native_scheduler_advances_active_state() {
+    let r = reg();
+    let goal = nid(&r, "State::Goal");
+    let plan = nid(&r, "State::Plan");
+    let execute = nid(&r, "State::Execute");
+    let edges = [
+        TensorEdge::new(goal, plan, 0.95, 1.0, 0.95),
+        TensorEdge::new(plan, execute, 0.90, 1.0, 0.90),
+    ];
+    let mut world = TensorQuantaleWorld::from_tensor_edges(&edges).unwrap();
+    world.orchestrate_step().unwrap();
+    let first = world.orch_state_snapshot().unwrap();
+    assert_eq!(first.blocked, 0);
+    assert_eq!(first.selected_node, plan);
+
+    world.orchestrate_step().unwrap();
+    let second = world.orch_state_snapshot().unwrap();
+    assert_eq!(second.blocked, 0);
+    assert_eq!(second.selected_src, plan);
+    assert_eq!(second.selected_node, execute);
+}
+
+#[test]
+fn gpu_closure_then_native_scheduler_advances_frontier() {
     let r = reg();
     let goal = nid(&r, "State::Goal");
     let plan = nid(&r, "State::Plan");
@@ -161,30 +197,10 @@ fn gpu_tensor_frontier_step_advances_active_state() {
     ];
     let mut world = TensorQuantaleWorld::from_tensor_edges(&edges).unwrap();
     world.close().unwrap();
-    let first = world.frontier_step(ProjectionBias::default()).unwrap();
-    assert_eq!(first.blocked, 0);
-    assert_eq!(first.first_hop, plan);
-
-    let second = world.frontier_step(ProjectionBias::default()).unwrap();
-    assert_eq!(second.blocked, 0);
-    assert_eq!(second.selected_src, plan);
-    assert_eq!(second.first_hop, execute);
-}
-
-#[test]
-fn gpu_tensor_tick_closes_and_advances_frontier() {
-    let r = reg();
-    let goal = nid(&r, "State::Goal");
-    let plan = nid(&r, "State::Plan");
-    let execute = nid(&r, "State::Execute");
-    let edges = [
-        TensorEdge::new(goal, plan, 0.95, 1.0, 0.95),
-        TensorEdge::new(plan, execute, 0.90, 1.0, 0.90),
-    ];
-    let mut world = TensorQuantaleWorld::from_tensor_edges(&edges).unwrap();
-    let decision = world.tick(ProjectionBias::default()).unwrap();
+    world.orchestrate_step().unwrap();
+    let decision = world.orch_state_snapshot().unwrap();
     assert_eq!(decision.blocked, 0);
-    assert_eq!(decision.first_hop, plan);
+    assert_eq!(decision.selected_node, plan);
 
     let tensor = world.tensor().unwrap();
     assert!((tensor[tensor_idx(LAYER_CONFIDENCE, goal, execute)] - 0.855).abs() < 1e-5);
