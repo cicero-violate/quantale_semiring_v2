@@ -969,6 +969,31 @@ extern "C" __global__ void tensor_quantale_drain_device_receipts(
     *ring_head = head;
 }
 
+extern "C" __global__ void tensor_quantale_push_device_receipt(
+    DeviceReceipt* receipt_ring,
+    int*           ring_tail,
+    int            ring_size,
+    int            region_id,
+    int            src,
+    int            dst,
+    int            outcome
+) {
+    if (threadIdx.x != 0 || blockIdx.x != 0 || ring_size <= 0) return;
+
+    DeviceReceipt r;
+    r.region_id    = region_id;
+    r.src          = src;
+    r.dst          = dst;
+    r.outcome      = outcome;
+    r.latency      = 0.0f;
+    r.valid        = 1;
+    r.output_flags = 0;
+
+    int tail = *ring_tail;
+    receipt_ring[tail % ring_size] = r;
+    *ring_tail = tail + 1;
+}
+
 // ── Device-ring push / pop ────────────────────────────────────────────────────
 
 // Write n floats into the ring from src (single-threaded for head/tail safety).

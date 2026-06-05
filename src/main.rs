@@ -7,12 +7,12 @@ use serde_json::{Value, json};
 use quantale_semiring_v2::{
     ContractContext, ContractViolation, DecisionReport, ExecutionOutcome, ExplorationConfig,
     ExplorationEngine, GraphTopology, LAYER_CONFIDENCE, LearningPolicy, Node, NodeContracts,
-    PAR_DISPATCH_HF_DEVICE, ProcessReceipt, ProjectionBias, ReloadPolicy, RuntimeContext,
-    SystemConfig, TensorQuantaleWorld, TlogWriter, TopologyInvariants, TopologyRuntime,
-    UniversalExecutor, ViolationKind, action_label, check, check_with_operators,
-    compile_and_emit_pattern_edges, compile_pattern, compile_tensor_plan, console,
-    format_quantale_value, format_violations, load_compiled_pattern_edges, load_default_patterns,
-    load_learned_tensor_edges, runtime_check,
+    PAR_DISPATCH_FUSION_ENTRY, PAR_DISPATCH_HF_DEVICE, ProcessReceipt, ProjectionBias,
+    ReloadPolicy, RuntimeContext, SystemConfig, TensorQuantaleWorld, TlogWriter,
+    TopologyInvariants, TopologyRuntime, UniversalExecutor, ViolationKind, action_label, check,
+    check_with_operators, compile_and_emit_pattern_edges, compile_pattern, compile_tensor_plan,
+    console, format_quantale_value, format_violations, load_compiled_pattern_edges,
+    load_default_patterns, load_learned_tensor_edges, runtime_check,
 };
 
 use topology_core::build_overlay_assets;
@@ -538,6 +538,43 @@ fn main() {
                         ],
                     );
                     true
+                } else if descriptor.dispatch_kind == PAR_DISPATCH_FUSION_ENTRY
+                    && receipt.exit_code == 0
+                    && receipt
+                        .stdout_payload
+                        .contains("\"kernel\":\"jit_fused_batch\"")
+                {
+                    match epoch.world.push_device_receipt(
+                        -1,
+                        decision.selected_src,
+                        decision.first_hop,
+                        par_outcome.code(),
+                    ) {
+                        Ok(()) => {
+                            console::info(
+                                "parallel",
+                                "fusion_batch_device_receipt",
+                                &[("node", par_node_name.clone())],
+                            );
+                            true
+                        }
+                        Err(error) => {
+                            console::warn(
+                                "parallel",
+                                "fusion_batch_device_fallback",
+                                &[
+                                    ("node", par_node_name.clone()),
+                                    ("error", error.to_string()),
+                                ],
+                            );
+                            epoch.world.queue_lattice_update(
+                                decision.selected_src,
+                                decision.first_hop,
+                                par_outcome,
+                            );
+                            false
+                        }
+                    }
                 } else if kernel_region_id >= 0 {
                     match epoch.world.gpu_dispatch_region(
                         kernel_region_id,

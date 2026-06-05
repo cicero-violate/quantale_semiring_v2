@@ -47,6 +47,7 @@ const EXPLORATION_TOPK_KERNEL: &str = "tensor_quantale_select_topk_tokens";
 const EXPLORATION_COMMIT_KERNEL: &str = "tensor_quantale_commit_exploration";
 const JIT_CHAIN_SCORE_KERNEL: &str = "jit_chain_score_embed";
 const DRAIN_DEVICE_RECEIPTS_KERNEL: &str = "tensor_quantale_drain_device_receipts";
+const PUSH_DEVICE_RECEIPT_KERNEL: &str = "tensor_quantale_push_device_receipt";
 const GPU_DISPATCH_KERNEL: &str = "tensor_quantale_gpu_dispatch";
 const RING_PUSH_KERNEL: &str = "device_ring_push";
 const RING_POP_KERNEL: &str = "device_ring_pop";
@@ -489,6 +490,7 @@ impl TensorQuantaleWorld {
                 EXPLORATION_COMMIT_KERNEL,
                 JIT_CHAIN_SCORE_KERNEL,
                 DRAIN_DEVICE_RECEIPTS_KERNEL,
+                PUSH_DEVICE_RECEIPT_KERNEL,
                 GPU_DISPATCH_KERNEL,
                 RING_PUSH_KERNEL,
                 RING_POP_KERNEL,
@@ -1066,6 +1068,40 @@ impl TensorQuantaleWorld {
             )
         }
         .map_err(|error| CudaError::new("tensor_quantale_drain_device_receipts", error))
+    }
+
+    /// Push a generic execution receipt into the device receipt ring.
+    ///
+    /// This is for GPU-dispatched work that is not a registered hot region, such
+    /// as a batched fusion JIT kernel. Call `drain_device_receipts` afterwards
+    /// to apply the tensor update on-device.
+    pub fn push_device_receipt(
+        &mut self,
+        region_id: i32,
+        src_node: i32,
+        dst_node: i32,
+        outcome: i32,
+    ) -> Result<(), CudaError> {
+        let ring_size = DEVICE_RECEIPT_RING_SIZE as i32;
+        let kernel = self
+            .dev
+            .get_func(MODULE_NAME, PUSH_DEVICE_RECEIPT_KERNEL)
+            .ok_or(CudaError::missing_function(PUSH_DEVICE_RECEIPT_KERNEL))?;
+        unsafe {
+            kernel.launch(
+                kernel_config(),
+                (
+                    &mut self.device_receipt_buffer.ring,
+                    &mut self.device_receipt_buffer.tail,
+                    ring_size,
+                    region_id,
+                    src_node,
+                    dst_node,
+                    outcome,
+                ),
+            )
+        }
+        .map_err(|error| CudaError::new("tensor_quantale_push_device_receipt", error))
     }
 
     /// Write a region dispatch request to the device mailbox and launch
