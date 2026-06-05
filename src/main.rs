@@ -7,12 +7,11 @@ use serde_json::{Value, json};
 use quantale_semiring_v2::{
     ContractContext, ContractViolation, DecisionReport, ExecutionOutcome, ExplorationConfig,
     ExplorationEngine, GraphTopology, LAYER_CONFIDENCE, LearningPolicy, Node, NodeContracts,
-    PAR_DISPATCH_FUSION_ENTRY, PAR_DISPATCH_HF_DEVICE, ProcessReceipt, ProjectionBias,
-    ReloadPolicy, RuntimeContext, SystemConfig, TensorQuantaleWorld, TlogWriter,
-    TopologyInvariants, TopologyRuntime, UniversalExecutor, ViolationKind, action_label, check,
-    check_with_operators, compile_and_emit_pattern_edges, compile_pattern, compile_tensor_plan,
-    console, format_quantale_value, format_violations, load_compiled_pattern_edges,
-    load_default_patterns, load_learned_tensor_edges, runtime_check,
+    ProcessReceipt, ProjectionBias, ReloadPolicy, RuntimeContext, SystemConfig,
+    TensorQuantaleWorld, TlogWriter, TopologyInvariants, TopologyRuntime, UniversalExecutor,
+    ViolationKind, action_label, check, check_with_operators, compile_and_emit_pattern_edges,
+    compile_pattern, compile_tensor_plan, console, format_quantale_value, format_violations,
+    load_compiled_pattern_edges, load_default_patterns, load_learned_tensor_edges, runtime_check,
 };
 
 use topology_core::build_overlay_assets;
@@ -29,7 +28,7 @@ use runtime_dispatch::{
     record_learning_edge_for_pair, record_learning_edges, update_execution_receipt_priors,
 };
 use runtime_epoch::{RuntimeEpoch, build_runtime_epoch, changed_asset_fingerprint};
-use runtime_parallel::dispatch_gpu_parallel_group;
+use runtime_parallel::{dispatch_gpu_parallel_group, route_parallel_receipt};
 use runtime_reset::maybe_hard_reset_after_blocks;
 
 macro_rules! fatal {
@@ -483,8 +482,9 @@ fn main() {
 
             let mut par_failures = 0usize;
             let mut par_stdout: Vec<Value> = Vec::new();
-            // Tracks whether any receipt was routed through the device ring.
+            // Tracks which receipt sinks need draining after the par group.
             let mut any_device_ring = false;
+            let mut any_lattice_queue = false;
             for ((((decision, receipt), par_node_name), &kernel_region_id), descriptor) in
                 par_decisions
                     .iter()
@@ -517,108 +517,17 @@ fn main() {
                 }
                 let par_outcome = ExecutionOutcome::from(receipt);
 
-                // Route the receipt to the device ring or CPU queue.
-                //
-                // H_f path (on_device == 1): the kernel already wrote the receipt to the
-                // device ring in Phase 2.  No separate gpu_dispatch_region call needed;
-                // drain_device_receipts at the end will apply the tensor update.
-                //
-                // Hot-region CPU path (kernel_region_id >= 0, on_device == 0): CPU ran the
-                // operator; route through gpu_dispatch_region so the tensor update stays
-                // GPU-resident.
-                //
-                // Default path: queue_lattice_update → drain_lattice_queue.
-                let via_device = if descriptor.dispatch_kind == PAR_DISPATCH_HF_DEVICE {
-                    console::info(
-                        "parallel",
-                        "hf_dispatch_receipt",
-                        &[
-                            ("node", par_node_name.clone()),
-                            ("region_id", kernel_region_id.to_string()),
-                        ],
-                    );
-                    true
-                } else if descriptor.dispatch_kind == PAR_DISPATCH_FUSION_ENTRY
-                    && receipt.exit_code == 0
-                    && receipt
-                        .stdout_payload
-                        .contains("\"kernel\":\"jit_fused_batch\"")
-                {
-                    match epoch.world.push_device_receipt(
-                        -1,
-                        decision.selected_src,
-                        decision.first_hop,
-                        par_outcome.code(),
-                    ) {
-                        Ok(()) => {
-                            console::info(
-                                "parallel",
-                                "fusion_batch_device_receipt",
-                                &[("node", par_node_name.clone())],
-                            );
-                            true
-                        }
-                        Err(error) => {
-                            console::warn(
-                                "parallel",
-                                "fusion_batch_device_fallback",
-                                &[
-                                    ("node", par_node_name.clone()),
-                                    ("error", error.to_string()),
-                                ],
-                            );
-                            epoch.world.queue_lattice_update(
-                                decision.selected_src,
-                                decision.first_hop,
-                                par_outcome,
-                            );
-                            false
-                        }
-                    }
-                } else if kernel_region_id >= 0 {
-                    match epoch.world.gpu_dispatch_region(
-                        kernel_region_id,
-                        decision.selected_src,
-                        decision.first_hop,
-                        par_outcome.code(),
-                    ) {
-                        Ok(()) => {
-                            console::info(
-                                "parallel",
-                                "device_ring_receipt",
-                                &[
-                                    ("node", par_node_name.clone()),
-                                    ("region_id", kernel_region_id.to_string()),
-                                ],
-                            );
-                            true
-                        }
-                        Err(error) => {
-                            console::warn(
-                                "parallel",
-                                "device_ring_fallback",
-                                &[
-                                    ("node", par_node_name.clone()),
-                                    ("error", error.to_string()),
-                                ],
-                            );
-                            epoch.world.queue_lattice_update(
-                                decision.selected_src,
-                                decision.first_hop,
-                                par_outcome,
-                            );
-                            false
-                        }
-                    }
-                } else {
-                    epoch.world.queue_lattice_update(
-                        decision.selected_src,
-                        decision.first_hop,
-                        par_outcome,
-                    );
-                    false
-                };
-                any_device_ring |= via_device;
+                let receipt_route = route_parallel_receipt(
+                    &mut epoch.world,
+                    par_node_name,
+                    decision,
+                    kernel_region_id,
+                    descriptor,
+                    par_outcome,
+                    receipt,
+                );
+                any_device_ring |= receipt_route.via_device_ring;
+                any_lattice_queue |= receipt_route.queued_lattice;
                 epoch
                     .exploration_engine
                     .update_receipt_prior(decision.first_hop, receipt);
@@ -676,6 +585,7 @@ fn main() {
                                         decision.first_hop,
                                         ExecutionOutcome::Failure,
                                     );
+                                    any_lattice_queue = true;
                                 }
                             }
                         } else {
@@ -697,8 +607,10 @@ fn main() {
                     );
                 }
             }
-            if let Err(error) = epoch.world.drain_lattice_queue() {
-                fatal!("tensor", "drain_lattice_queue_failed", error);
+            if any_lattice_queue {
+                if let Err(error) = epoch.world.drain_lattice_queue() {
+                    fatal!("tensor", "drain_lattice_queue_failed", error);
+                }
             }
             if par_failures > 0 {
                 consecutive_blocks += par_failures;

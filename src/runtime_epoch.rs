@@ -166,8 +166,13 @@ pub(super) fn build_runtime_epoch(
                     topology
                         .registry()
                         .name_of(id as usize)
-                        .and_then(|name| config.hot_region_registry.region_id_for(name))
-                        .map(|r| r as i32)
+                        .map(|name| {
+                            par_member_region_id(
+                                name,
+                                &config.fusion_dispatch,
+                                &config.hot_region_registry,
+                            )
+                        })
                         .unwrap_or(-1)
                 })
                 .collect()
@@ -195,14 +200,11 @@ pub(super) fn build_runtime_epoch(
             group
                 .iter()
                 .map(|&id| {
-                    let Some(name) = topology.registry().name_of(id as usize) else {
-                        return quantale_semiring_v2::PAR_DISPATCH_HOST_FALLBACK;
-                    };
-                    if config.fusion_dispatch.is_fusion_entry(name) {
-                        quantale_semiring_v2::PAR_DISPATCH_FUSION_ENTRY
-                    } else {
-                        quantale_semiring_v2::PAR_DISPATCH_HOST_FALLBACK
-                    }
+                    topology
+                        .registry()
+                        .name_of(id as usize)
+                        .map(|name| classify_par_dispatch_kind(name, &config.fusion_dispatch))
+                        .unwrap_or(quantale_semiring_v2::PAR_DISPATCH_HOST_FALLBACK)
                 })
                 .collect()
         })
@@ -283,6 +285,62 @@ fn watched_asset_paths() -> Vec<PathBuf> {
 /// These persistent buffers are the `float**` tables the Phase 2 H_f dispatch
 /// path writes into and reads from.  Returned as `None` when no CUDA device is
 /// available or when no hot-region slots are referenced.
+
+fn par_member_region_id(
+    node_name: &str,
+    fusion_dispatch: &quantale_semiring_v2::FusionDispatch,
+    hot_region_registry: &quantale_semiring_v2::HotRegionRegistry,
+) -> i32 {
+    if fusion_dispatch.is_fusion_entry(node_name) {
+        return lowered_fusion_hot_region_id(node_name, fusion_dispatch, hot_region_registry)
+            .map(|region_id| region_id as i32)
+            .unwrap_or(-1);
+    }
+
+    hot_region_registry
+        .region_id_for(node_name)
+        .map(|region_id| region_id as i32)
+        .unwrap_or(-1)
+}
+
+fn lowered_fusion_hot_region_id(
+    node_name: &str,
+    fusion_dispatch: &quantale_semiring_v2::FusionDispatch,
+    hot_region_registry: &quantale_semiring_v2::HotRegionRegistry,
+) -> Option<u32> {
+    let entry = fusion_dispatch.get_by_entry(node_name)?;
+    let fusion_reads = string_set(&entry.reads);
+    let fusion_writes = string_set(&entry.writes);
+
+    hot_region_registry
+        .entries
+        .iter()
+        .find(|hot| {
+            hot.kind == "gpu_region"
+                && hot.kernel == "jit_fused"
+                && hot.pure
+                && !entry.nodes.iter().any(|member| member == &hot.name)
+                && string_set(&hot.reads) == fusion_reads
+                && string_set(&hot.writes) == fusion_writes
+        })
+        .map(|hot| hot.region_id)
+}
+
+fn string_set(values: &[String]) -> BTreeSet<&str> {
+    values.iter().map(String::as_str).collect()
+}
+
+fn classify_par_dispatch_kind(
+    node_name: &str,
+    fusion_dispatch: &quantale_semiring_v2::FusionDispatch,
+) -> i32 {
+    if fusion_dispatch.is_fusion_entry(node_name) {
+        quantale_semiring_v2::PAR_DISPATCH_FUSION_ENTRY
+    } else {
+        quantale_semiring_v2::PAR_DISPATCH_HOST_FALLBACK
+    }
+}
+
 fn build_par_slot_registry(
     world: &TensorQuantaleWorld,
     par_region_ids: &[Vec<i32>],
@@ -320,4 +378,199 @@ fn build_par_slot_registry(
         }
     }
     Some(registry)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use quantale_semiring_v2::{FusionDispatch, HotRegionRegistry};
+    use serde_json::json;
+    use std::collections::HashMap;
+
+    fn fusion_dispatch() -> FusionDispatch {
+        let registry = HashMap::from([
+            (
+                "Execution::VectorAdd".to_string(),
+                json!({
+                    "node_name": "Execution::VectorAdd",
+                    "executable": "jit_cuda",
+                    "jit_body": "out[i] = in0[i] + in1[i];",
+                    "effects": {
+                        "reads": ["math.a", "math.b"],
+                        "writes": ["math.add_out"],
+                        "locks": []
+                    }
+                }),
+            ),
+            (
+                "Execution::VectorScale".to_string(),
+                json!({
+                    "node_name": "Execution::VectorScale",
+                    "executable": "jit_cuda",
+                    "jit_body": "out[i] = in0[i] * in1[i];",
+                    "effects": {
+                        "reads": ["math.add_out", "math.scale"],
+                        "writes": ["math.out"],
+                        "locks": []
+                    }
+                }),
+            ),
+            (
+                "Analysis::Return1".to_string(),
+                json!({
+                    "node_name": "Analysis::Return1",
+                    "executable": "jit_cuda",
+                    "jit_body": "out[i] = (in0[i] - in1[i]) / (in1[i] + 1e-8f);",
+                    "effects": {
+                        "reads": ["market.price", "market.open"],
+                        "writes": ["analysis.return"],
+                        "locks": []
+                    }
+                }),
+            ),
+            (
+                "Analysis::Volatility".to_string(),
+                json!({
+                    "node_name": "Analysis::Volatility",
+                    "executable": "jit_cuda",
+                    "jit_body": "out[i] = fabsf(in0[i] - in1[i]) / (in1[i] + 1e-8f);",
+                    "effects": {
+                        "reads": ["market.price", "analysis.return"],
+                        "writes": ["analysis.volatility"],
+                        "locks": []
+                    }
+                }),
+            ),
+            (
+                "Analysis::SignalScore".to_string(),
+                json!({
+                    "node_name": "Analysis::SignalScore",
+                    "executable": "jit_cuda",
+                    "jit_body": "out[i] = in0[i] / (1.0f + fabsf(in1[i]));",
+                    "effects": {
+                        "reads": ["analysis.return", "analysis.volatility"],
+                        "writes": ["analysis.signal_score"],
+                        "locks": []
+                    }
+                }),
+            ),
+        ]);
+        FusionDispatch::from_json_str(
+            &json!({
+                "regions": [
+                    {
+                        "region": "Execution::VectorAdd__Execution::VectorScale",
+                        "nodes": ["Execution::VectorAdd", "Execution::VectorScale"],
+                        "reads": ["math.a", "math.b", "math.scale"],
+                        "writes": ["math.out"]
+                    },
+                    {
+                        "region": "Analysis::Return1__Analysis::Volatility__Analysis::SignalScore",
+                        "nodes": ["Analysis::Return1", "Analysis::Volatility", "Analysis::SignalScore"],
+                        "reads": ["market.open", "market.price"],
+                        "writes": ["analysis.signal_score"]
+                    }
+                ]
+            })
+            .to_string(),
+            &registry,
+        )
+        .unwrap()
+    }
+
+    fn hot_region_registry() -> HotRegionRegistry {
+        HotRegionRegistry::from_json_str(
+            &json!({
+                "regions": [
+                    {
+                        "region_id": 0,
+                        "name": "Execution::VectorAdd",
+                        "kind": "gpu_region",
+                        "reads": ["math.a", "math.b"],
+                        "writes": ["math.add_out"],
+                        "kernel": "jit_fused",
+                        "pure": true
+                    },
+                    {
+                        "region_id": 1,
+                        "name": "Execution::VectorScale",
+                        "kind": "gpu_region",
+                        "reads": ["math.add_out", "math.scale"],
+                        "writes": ["math.out"],
+                        "kernel": "jit_fused",
+                        "pure": true
+                    },
+                    {
+                        "region_id": 2,
+                        "name": "Execution::FusedVectorAddScale",
+                        "kind": "gpu_region",
+                        "reads": ["math.a", "math.b", "math.scale"],
+                        "writes": ["math.out"],
+                        "kernel": "jit_fused",
+                        "pure": true
+                    },
+                    {
+                        "region_id": 3,
+                        "name": "Analysis::Return1",
+                        "kind": "gpu_region",
+                        "reads": ["market.price", "market.open"],
+                        "writes": ["analysis.return"],
+                        "kernel": "jit_fused",
+                        "pure": true
+                    },
+                    {
+                        "region_id": 7,
+                        "name": "Analysis::FusedReturnVolatilitySignalScore",
+                        "kind": "gpu_region",
+                        "reads": ["market.open", "market.price"],
+                        "writes": ["analysis.signal_score"],
+                        "kernel": "jit_fused",
+                        "pure": true
+                    }
+                ]
+            })
+            .to_string(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn fusion_entry_with_exact_fused_hot_region_lowers_to_that_region() {
+        let fusion = fusion_dispatch();
+        let hot = hot_region_registry();
+
+        assert_eq!(
+            par_member_region_id("Execution::VectorAdd", &fusion, &hot),
+            2
+        );
+    }
+
+    #[test]
+    fn analysis_fusion_entry_with_exact_fused_hot_region_lowers_to_region() {
+        let fusion = fusion_dispatch();
+        let hot = hot_region_registry();
+
+        assert_eq!(par_member_region_id("Analysis::Return1", &fusion, &hot), 7);
+    }
+
+    #[test]
+    fn non_lowerable_fusion_entry_does_not_inherit_first_hot_member_region() {
+        let fusion = fusion_dispatch();
+        let mut hot = hot_region_registry();
+        hot.entries
+            .retain(|entry| entry.name != "Analysis::FusedReturnVolatilitySignalScore");
+
+        assert_eq!(par_member_region_id("Analysis::Return1", &fusion, &hot), -1);
+    }
+
+    #[test]
+    fn non_fusion_hot_member_keeps_own_hot_region() {
+        let fusion = fusion_dispatch();
+        let hot = hot_region_registry();
+
+        assert_eq!(
+            par_member_region_id("Execution::VectorScale", &fusion, &hot),
+            1
+        );
+    }
 }

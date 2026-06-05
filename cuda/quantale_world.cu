@@ -1095,6 +1095,19 @@ __device__ void region_analysis_signal_score(float** slot_ptrs, int n, DeviceRec
         out[i] = ret[i] / (1.0f + fabsf(vol[i]));
 }
 
+__device__ void region_analysis_fused_signal_score(float** slot_ptrs, int n, DeviceReceipt* r) {
+    r->output_flags |= (1 << 7);
+    if (!slot_ptrs || n <= 0) return;
+    float* price = slot_ptrs[0];  // market.price
+    float* open  = slot_ptrs[1];  // market.open
+    float* out   = slot_ptrs[2];  // analysis.signal_score
+    for (int i = threadIdx.x; i < n; i += blockDim.x) {
+        float ret = (price[i] - open[i]) / (open[i] + 1.0e-8f);
+        float vol = fabsf(price[i] - ret) / (ret + 1.0e-8f);
+        out[i] = ret / (1.0f + fabsf(vol));
+    }
+}
+
 __device__ void region_commit_receipt(float** slot_ptrs, int n, DeviceReceipt* r) {
     (void)slot_ptrs; (void)n;
     r->output_flags |= (1 << 6);
@@ -1138,6 +1151,7 @@ extern "C" __global__ void tensor_quantale_gpu_dispatch(
         case 4: region_analysis_volatility  (slot_ptrs, element_count, &r); break;
         case 5: region_analysis_signal_score(slot_ptrs, element_count, &r); break;
         case 6: region_commit_receipt       (slot_ptrs, element_count, &r); break;
+        case 7: region_analysis_fused_signal_score(slot_ptrs, element_count, &r); break;
         default: break;
     }
 
@@ -1185,6 +1199,7 @@ extern "C" __global__ void tensor_quantale_gpu_dispatch(
 #define PAR_DISPATCH_HF_DEVICE 1
 #define PAR_DISPATCH_HOST_FALLBACK 2
 #define PAR_DISPATCH_FUSION_ENTRY 3
+#define PAR_DISPATCH_ABSTRACT_DEVICE 4
 
 struct ParDispatchDescriptor {
     int member_index;
@@ -1460,6 +1475,7 @@ extern "C" __global__ void tensor_quantale_par_group_step(
             case 4: region_analysis_volatility  (slot_ptrs, elem_count, &r); break;
             case 5: region_analysis_signal_score(slot_ptrs, elem_count, &r); break;
             case 6: region_commit_receipt       (slot_ptrs, elem_count, &r); break;
+            case 7: region_analysis_fused_signal_score(slot_ptrs, elem_count, &r); break;
             default: handled = 0; break;
         }
         __syncthreads();

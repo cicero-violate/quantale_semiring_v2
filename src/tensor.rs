@@ -58,11 +58,12 @@ const PAR_GROUP_STEP_KERNEL: &str = "tensor_quantale_par_group_step";
 pub const MAX_PAR_GROUP_SIZE: usize = 8;
 
 pub const DEVICE_RECEIPT_RING_SIZE: usize = 256;
-pub const GPU_HOT_REGION_COUNT: i32 = 7;
+pub const GPU_HOT_REGION_COUNT: i32 = 8;
 pub const PAR_DISPATCH_NONE: i32 = 0;
 pub const PAR_DISPATCH_HF_DEVICE: i32 = 1;
 pub const PAR_DISPATCH_HOST_FALLBACK: i32 = 2;
 pub const PAR_DISPATCH_FUSION_ENTRY: i32 = 3;
+pub const PAR_DISPATCH_ABSTRACT_DEVICE: i32 = 4;
 
 pub const EXPLORATION_MAX_TOKENS: usize = TENSOR_NODE_COUNT * TENSOR_NODE_COUNT;
 pub const EXPLORATION_MAX_SELECTED: usize = TENSOR_NODE_COUNT;
@@ -79,6 +80,8 @@ const REGION_ANALYSIS_SIGNAL_SCORE_SLOTS: &[&str] = &[
     "analysis.volatility",
     "analysis.signal_score",
 ];
+const REGION_ANALYSIS_FUSED_SIGNAL_SCORE_SLOTS: &[&str] =
+    &["market.price", "market.open", "analysis.signal_score"];
 const REGION_COMMIT_RECEIPT_SLOTS: &[&str] = &[];
 
 /// Default number of f32 elements allocated per slot when building epoch-start
@@ -95,6 +98,7 @@ pub fn gpu_region_slots(region_id: i32) -> Option<&'static [&'static str]> {
         4 => Some(REGION_ANALYSIS_VOLATILITY_SLOTS),
         5 => Some(REGION_ANALYSIS_SIGNAL_SCORE_SLOTS),
         6 => Some(REGION_COMMIT_RECEIPT_SLOTS),
+        7 => Some(REGION_ANALYSIS_FUSED_SIGNAL_SCORE_SLOTS),
         _ => None,
     }
 }
@@ -375,9 +379,9 @@ pub(crate) struct ParGroupStepOutputRaw {
     /// 1 when the member was dispatched in-kernel via the H_f path (Phase 2).
     /// CPU must skip execute_*_blocking and gpu_dispatch_region for those members.
     pub dispatched_on_device: [i32; MAX_PAR_GROUP_SIZE],
-    /// Per-member dispatch descriptors emitted by the GPU. Non-H_f members are
-    /// currently marked `PAR_DISPATCH_HOST_FALLBACK`; future tiers can consume
-    /// these descriptors without re-deriving member routing on the host.
+    /// Per-member dispatch descriptors emitted by the GPU. Non-H_f members keep
+    /// explicit dispatch kinds so future tiers can consume descriptors without
+    /// re-deriving member routing on the host.
     pub dispatch_descriptors: [ParDispatchDescriptor; MAX_PAR_GROUP_SIZE],
 }
 
