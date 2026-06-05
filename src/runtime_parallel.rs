@@ -1,5 +1,6 @@
 use quantale_semiring_v2::{
-    FusionEntry, PAR_DISPATCH_HF_DEVICE, ParDispatchDescriptor, ProcessReceipt, UniversalExecutor,
+    FusionEntry, PAR_DISPATCH_FUSION_ENTRY, PAR_DISPATCH_HF_DEVICE, ParDispatchDescriptor,
+    ProcessReceipt, UniversalExecutor,
 };
 use serde_json::{Value, json};
 
@@ -32,14 +33,20 @@ pub(super) fn dispatch_gpu_parallel_group(
             }
 
             let entry = fusion_entries.get(idx).copied().flatten();
+            let dispatch_kind = dispatch_descriptors
+                .get(idx)
+                .map(|descriptor| descriptor.dispatch_kind)
+                .unwrap_or_default();
             handles.push((
                 idx,
-                scope.spawn(move || {
-                    if let Some(entry) = entry {
-                        executor.execute_fusion_entry_blocking(entry, current_payload)
-                    } else {
-                        executor.execute_abstract_node_blocking(name.as_str(), current_payload)
-                    }
+                scope.spawn(move || match dispatch_kind {
+                    PAR_DISPATCH_FUSION_ENTRY => match entry {
+                        Some(entry) => {
+                            executor.execute_fusion_entry_blocking(entry, current_payload)
+                        }
+                        None => missing_fusion_receipt(name),
+                    },
+                    _ => executor.execute_abstract_node_blocking(name.as_str(), current_payload),
                 }),
             ));
         }
@@ -53,6 +60,17 @@ pub(super) fn dispatch_gpu_parallel_group(
             .map(|receipt| receipt.expect("parallel receipt missing"))
             .collect()
     })
+}
+
+fn missing_fusion_receipt(node_name: &str) -> ProcessReceipt {
+    ProcessReceipt {
+        node_name: node_name.to_string(),
+        exit_code: 1,
+        stdout_payload: String::new(),
+        stderr_payload:
+            "GPU par descriptor requested fusion dispatch, but no fusion entry was loaded"
+                .to_string(),
+    }
 }
 
 fn device_dispatched_receipt(node_name: &str) -> ProcessReceipt {
@@ -72,7 +90,7 @@ fn device_dispatched_receipt(node_name: &str) -> ProcessReceipt {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use quantale_semiring_v2::PAR_DISPATCH_HOST_FALLBACK;
+    use quantale_semiring_v2::{PAR_DISPATCH_FUSION_ENTRY, PAR_DISPATCH_HOST_FALLBACK};
     use std::collections::HashMap;
 
     #[test]
@@ -130,6 +148,31 @@ mod tests {
             receipts[0]
                 .stderr_payload
                 .contains("Failed to spawn process")
+        );
+    }
+
+    #[test]
+    fn fusion_descriptor_requires_loaded_fusion_entry() {
+        let executor = UniversalExecutor::new(HashMap::new());
+        let names = vec!["Fusion::Entry".to_string()];
+        let descriptors = [ParDispatchDescriptor {
+            member_index: 0,
+            node_id: 0,
+            region_id: -1,
+            dispatch_kind: PAR_DISPATCH_FUSION_ENTRY,
+            src_node: 1,
+            dst_node: 2,
+        }];
+        let receipts =
+            dispatch_gpu_parallel_group(&executor, &[None], &names, &Value::Null, &descriptors);
+
+        assert_eq!(receipts.len(), 1);
+        assert_eq!(receipts[0].node_name, "Fusion::Entry");
+        assert_eq!(receipts[0].exit_code, 1);
+        assert!(
+            receipts[0]
+                .stderr_payload
+                .contains("requested fusion dispatch")
         );
     }
 }

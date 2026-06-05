@@ -152,9 +152,10 @@ pub(super) fn build_runtime_epoch(
 
     // Build GPU-resident par group data.
     //
-    // Per-member tables — both are encoded as triples in the packed table so the
-    // kernel computes eligibility on-device (E_g = 1) and emits region_ids in the
-    // output (R_k = 1) without any CPU-side registry lookup per dispatch tick.
+    // Per-member tables are encoded in the packed par table so the kernel
+    // computes eligibility on-device (E_g = 1) and emits region_ids plus
+    // dispatch descriptors (R_k = 1) without any CPU-side registry lookup per
+    // dispatch tick.
     let par_region_ids: Vec<Vec<i32>> = topology
         .parallel_groups
         .iter()
@@ -187,6 +188,25 @@ pub(super) fn build_runtime_epoch(
                 .collect()
         })
         .collect();
+    let par_dispatch_kinds: Vec<Vec<i32>> = topology
+        .parallel_groups
+        .iter()
+        .map(|group| {
+            group
+                .iter()
+                .map(|&id| {
+                    let Some(name) = topology.registry().name_of(id as usize) else {
+                        return quantale_semiring_v2::PAR_DISPATCH_HOST_FALLBACK;
+                    };
+                    if config.fusion_dispatch.is_fusion_entry(name) {
+                        quantale_semiring_v2::PAR_DISPATCH_FUSION_ENTRY
+                    } else {
+                        quantale_semiring_v2::PAR_DISPATCH_HOST_FALLBACK
+                    }
+                })
+                .collect()
+        })
+        .collect();
 
     // Build a DeviceSlotRegistry with zero-initialised device buffers for all
     // hot-region slots referenced by par-group members.  Phase 2 of
@@ -199,6 +219,7 @@ pub(super) fn build_runtime_epoch(
             &topology.parallel_groups,
             &par_region_ids,
             &par_is_dispatchable,
+            &par_dispatch_kinds,
             par_slot_registry.as_ref(),
         )
         .ok();

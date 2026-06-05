@@ -1136,10 +1136,11 @@ extern "C" __global__ void tensor_quantale_gpu_dispatch(
 // Eligibility (jit_cuda/fusion/hot) is precomputed on the CPU at epoch start
 // and passed as a static int[] mask — 0=ineligible, 1=eligible.
 //
-// Table layout: [g0_size, g0_n0, g0_r0, g0_d0, g0_n1, g0_r1, g0_d1, ..., g1_size, ...]
-// Each member is a (node_id, region_id, is_gpu_dispatchable) triple.
+// Table layout: [g0_size, g0_n0, g0_r0, g0_e0, g0_k0, g0_n1, ...]
+// Each member is a (node_id, region_id, is_gpu_dispatchable, dispatch_kind) tuple.
 //   region_id            = -1 for non-hot members (fusion-entry and pure-CPU alike)
 //   is_gpu_dispatchable  = 1 for hot-region or fusion-entry; 0 for pure-CPU
+//   dispatch_kind        = initial descriptor kind; H_f may upgrade to device
 // (num_groups is passed as a separate int)
 //
 // Eligibility is computed on-device: a group is eligible iff all members have
@@ -1157,6 +1158,7 @@ extern "C" __global__ void tensor_quantale_gpu_dispatch(
 #define PAR_DISPATCH_NONE 0
 #define PAR_DISPATCH_HF_DEVICE 1
 #define PAR_DISPATCH_HOST_FALLBACK 2
+#define PAR_DISPATCH_FUSION_ENTRY 3
 
 struct ParDispatchDescriptor {
     int member_index;
@@ -1262,14 +1264,14 @@ extern "C" __global__ void tensor_quantale_par_group_step(
         for (int g = 0; g < num_groups; g++) {
             int sz = par_table[ptr++];
             int group_start = ptr;
-            ptr += sz * 3;
+            ptr += sz * 4;
 
             if (sz < 2 || sz > MAX_PAR_GROUP_SIZE) continue;
 
             // On-device eligibility: all members must be GPU-dispatchable.
             int all_eligible = 1;
             for (int i = 0; i < sz; i++) {
-                if (!par_table[group_start + i * 3 + 2]) { all_eligible = 0; break; }
+                if (!par_table[group_start + i * 4 + 2]) { all_eligible = 0; break; }
             }
             if (!all_eligible) continue;
 
@@ -1277,11 +1279,13 @@ extern "C" __global__ void tensor_quantale_par_group_step(
             struct DecisionReport decisions[MAX_PAR_GROUP_SIZE];
             int region_ids[MAX_PAR_GROUP_SIZE];
             int node_ids[MAX_PAR_GROUP_SIZE];
+            int dispatch_kinds[MAX_PAR_GROUP_SIZE];
 
             for (int i = 0; i < sz; i++) {
-                int target_hop = par_table[group_start + i * 3];
+                int target_hop = par_table[group_start + i * 4];
                 node_ids[i]    = target_hop;
-                region_ids[i]  = par_table[group_start + i * 3 + 1];
+                region_ids[i]  = par_table[group_start + i * 4 + 1];
+                dispatch_kinds[i] = par_table[group_start + i * 4 + 3];
                 float best_value = -1.0e30f;
                 int best_src = -1, best_dst = -1, best_hop = -1, candidates = 0;
 
@@ -1349,7 +1353,7 @@ extern "C" __global__ void tensor_quantale_par_group_step(
                 result->dispatch_descriptors[i].member_index = i;
                 result->dispatch_descriptors[i].node_id = node_ids[i];
                 result->dispatch_descriptors[i].region_id = region_ids[i];
-                result->dispatch_descriptors[i].dispatch_kind = PAR_DISPATCH_HOST_FALLBACK;
+                result->dispatch_descriptors[i].dispatch_kind = dispatch_kinds[i];
                 result->dispatch_descriptors[i].src_node = decisions[i].selected_src;
                 result->dispatch_descriptors[i].dst_node = decisions[i].first_hop;
             }

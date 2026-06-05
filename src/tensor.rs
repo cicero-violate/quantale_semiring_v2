@@ -61,6 +61,7 @@ pub const GPU_HOT_REGION_COUNT: i32 = 7;
 pub const PAR_DISPATCH_NONE: i32 = 0;
 pub const PAR_DISPATCH_HF_DEVICE: i32 = 1;
 pub const PAR_DISPATCH_HOST_FALLBACK: i32 = 2;
+pub const PAR_DISPATCH_FUSION_ENTRY: i32 = 3;
 
 pub const EXPLORATION_MAX_TOKENS: usize = TENSOR_NODE_COUNT * TENSOR_NODE_COUNT;
 pub const EXPLORATION_MAX_SELECTED: usize = TENSOR_NODE_COUNT;
@@ -230,8 +231,8 @@ impl ParGroupGpuData {
     ///
     /// `is_gpu_dispatchable[g][i]` is `true` when the member is GPU-executable
     /// (jit_cuda / fusion-entry / hot-region).  The table is packed as
-    /// `[g0_size, g0_n0, g0_r0, g0_d0, g0_n1, g0_r1, g0_d1, ..., g1_size, ...]`
-    /// — `(node_id, region_id, is_gpu_dispatchable)` triples.  The kernel computes
+    /// `[g0_size, g0_n0, g0_r0, g0_e0, g0_k0, g0_n1, ...]`
+    /// — `(node_id, region_id, is_gpu_dispatchable, dispatch_kind)` tuples.  The kernel computes
     /// eligibility on-device from the `is_gpu_dispatchable` flags rather than from
     /// a separate CPU-precomputed mask.
     ///
@@ -244,12 +245,14 @@ impl ParGroupGpuData {
         groups: &[Vec<i32>],
         region_ids: &[Vec<i32>],
         is_gpu_dispatchable: &[Vec<bool>],
+        dispatch_kinds: &[Vec<i32>],
         slot_registry: Option<&DeviceSlotRegistry>,
     ) -> Result<Self, CudaError> {
         use cudarc::driver::DevicePtr;
 
         assert_eq!(groups.len(), region_ids.len());
         assert_eq!(groups.len(), is_gpu_dispatchable.len());
+        assert_eq!(groups.len(), dispatch_kinds.len());
 
         let num_groups = groups.len();
         let flat_size = (num_groups * MAX_PAR_GROUP_SIZE).max(1);
@@ -309,19 +312,25 @@ impl ParGroupGpuData {
             });
         }
 
-        // Packed table: [g0_size, g0_n0, g0_r0, g0_d0, g0_n1, g0_r1, g0_d1, ..., g1_size, ...]
+        // Packed table: [g0_size, g0_n0, g0_r0, g0_e0, g0_k0, g0_n1, ...]
         let mut table: Vec<i32> = Vec::new();
-        for ((group, rids), dispatchable) in groups
+        for (((group, rids), dispatchable), kinds) in groups
             .iter()
             .zip(region_ids.iter())
             .zip(is_gpu_dispatchable.iter())
+            .zip(dispatch_kinds.iter())
         {
             table.push(group.len() as i32);
-            for ((&node_id, &rid), &disp) in group.iter().zip(rids.iter()).zip(dispatchable.iter())
+            for (((&node_id, &rid), &disp), &kind) in group
+                .iter()
+                .zip(rids.iter())
+                .zip(dispatchable.iter())
+                .zip(kinds.iter())
             {
                 table.push(node_id);
                 table.push(rid);
                 table.push(disp as i32);
+                table.push(kind);
             }
         }
         let table_buf = dev
@@ -822,6 +831,8 @@ impl TensorQuantaleWorld {
     /// `groups` are the compiled par groups (node ID lists).
     /// `region_ids[g][i]` is the hot-region id for member `i` (-1 if not hot).
     /// `is_gpu_dispatchable[g][i]` is `true` for hot-region / fusion-entry members.
+    /// `dispatch_kinds[g][i]` is the initial descriptor kind the kernel should
+    /// emit for each committed member; H_f dispatch may upgrade it in-kernel.
     /// Eligibility is encoded per-member in the table and validated by the kernel.
     ///
     /// `slot_registry` provides `float**` device slot tables for hot-region members
@@ -832,6 +843,7 @@ impl TensorQuantaleWorld {
         groups: &[Vec<i32>],
         region_ids: &[Vec<i32>],
         is_gpu_dispatchable: &[Vec<bool>],
+        dispatch_kinds: &[Vec<i32>],
         slot_registry: Option<&DeviceSlotRegistry>,
     ) -> Result<ParGroupGpuData, CudaError> {
         ParGroupGpuData::build(
@@ -839,6 +851,7 @@ impl TensorQuantaleWorld {
             groups,
             region_ids,
             is_gpu_dispatchable,
+            dispatch_kinds,
             slot_registry,
         )
     }
