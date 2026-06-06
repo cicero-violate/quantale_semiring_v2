@@ -16,6 +16,7 @@ pub mod orch_service;
 pub mod pattern;
 pub mod plan;
 pub mod runtime_check;
+pub mod streaming;
 pub mod tensor;
 pub mod tlog;
 pub mod topology;
@@ -42,6 +43,11 @@ pub use learning::*;
 pub use pattern::*;
 pub use plan::*;
 pub use tensor::*;
+pub use streaming::{
+    BackpressurePolicy, NormalizeError, RawStreamEvent, SlotApplier, SlotDType, SlotSchema,
+    SlotUpdate, SlotVersions, StreamConfig, StreamIngress, StreamIngressError, StreamReceipt,
+    StreamReceiptWriter, compact_latest_wins, normalize_event,
+};
 pub use tlog::*;
 pub use topology::*;
 pub use types::*;
