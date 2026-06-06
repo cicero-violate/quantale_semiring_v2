@@ -130,8 +130,6 @@ mod tests {
             "tensor_quantale_embed_edges",
             "tensor_quantale_closure",
             "tensor_quantale_project",
-            "tensor_quantale_project_batch",
-            "tensor_quantale_commit_batch",
             "tensor_quantale_decay",
             "tensor_quantale_seed_exploration",
             "tensor_quantale_expand_tokens",

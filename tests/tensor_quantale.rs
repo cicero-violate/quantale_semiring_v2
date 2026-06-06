@@ -1,7 +1,7 @@
 use quantale_semiring_v2::{
     COST_INFINITY, DeviceReceiptExt, ExecutionOutcome, GraphTopology, LAYER_CONFIDENCE, LAYER_COST,
-    LAYER_SAFETY, Node, NodeRegistry, ProjectionBias, TENSOR_LEN, TENSOR_NODE_COUNT, TensorEdge,
-    TensorQuantaleWorld, tensor_idx,
+    LAYER_SAFETY, Node, NodeRegistry, PAR_DISPATCH_ABSTRACT_DEVICE, ProjectionBias, TENSOR_LEN,
+    TENSOR_NODE_COUNT, TensorEdge, TensorQuantaleWorld, tensor_idx,
 };
 
 fn reg() -> NodeRegistry {
@@ -248,7 +248,7 @@ fn gpu_tensor_witness_reconstructs_distinct_layer_paths() {
 }
 
 #[test]
-fn gpu_tensor_projects_and_commits_parallel_group() {
+fn gpu_tensor_commits_parallel_group_with_gpu_native_step() {
     let r = reg();
     let goal = nid(&r, "State::Goal");
     let map = nid(&r, "State::Map");
@@ -264,15 +264,37 @@ fn gpu_tensor_projects_and_commits_parallel_group() {
     let mut world = TensorQuantaleWorld::from_tensor_edges(&edges).unwrap();
     world.close().unwrap();
 
-    let decisions = world
-        .project_parallel_group(&[map, parse], ProjectionBias::default())
+    let data = world
+        .make_par_group_data(
+            &[vec![map, parse]],
+            &[vec![-1, -1]],
+            &[vec![true, true]],
+            &[vec![
+                PAR_DISPATCH_ABSTRACT_DEVICE,
+                PAR_DISPATCH_ABSTRACT_DEVICE,
+            ]],
+            None,
+            None,
+        )
         .unwrap();
+    let (group_idx, decisions, region_ids, dispatched, descriptors) = world
+        .par_group_step(&data, ProjectionBias::default())
+        .unwrap()
+        .expect("parallel group should be ready");
+
+    assert_eq!(group_idx, 0);
     assert_eq!(decisions.len(), 2);
+    assert_eq!(region_ids, vec![-1, -1]);
+    assert_eq!(dispatched, vec![1, 1]);
+    assert!(
+        descriptors
+            .iter()
+            .all(|d| d.dispatch_kind == PAR_DISPATCH_ABSTRACT_DEVICE)
+    );
     assert!(decisions.iter().all(|d| d.blocked == 0));
     assert_eq!(decisions[0].first_hop, map);
     assert_eq!(decisions[1].first_hop, parse);
 
-    world.commit_decision_batch(&decisions).unwrap();
     let next = world.project(ProjectionBias::default()).unwrap();
     assert!(next.selected_src == map || next.selected_src == parse);
 }

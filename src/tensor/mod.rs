@@ -101,8 +101,6 @@ impl TensorQuantaleWorld {
                 EMBED_KERNEL,
                 CLOSURE_KERNEL,
                 PROJECT_KERNEL,
-                PROJECT_BATCH_KERNEL,
-                COMMIT_BATCH_KERNEL,
                 DECAY_KERNEL,
                 EXPLORATION_SEED_KERNEL,
                 EXPLORATION_EXPAND_KERNEL,
@@ -516,123 +514,6 @@ impl TensorQuantaleWorld {
         }
         .map_err(|error| CudaError::new("tensor_quantale_project", error))?;
         self.decision_report()
-    }
-
-    pub fn project_parallel_group(
-        &mut self,
-        group_nodes: &[i32],
-        bias: ProjectionBias,
-    ) -> Result<Vec<DecisionReport>, CudaError> {
-        if group_nodes.len() < 2 {
-            return Err(CudaError::invalid_input(
-                "parallel projection requires at least two group nodes",
-            ));
-        }
-        if group_nodes.len() > TENSOR_NODE_COUNT {
-            return Err(CudaError::invalid_input(
-                "parallel projection group too large",
-            ));
-        }
-        for node in group_nodes {
-            if Node::decode(*node, &bundled_registry()?).is_none() {
-                return Err(CudaError::invalid_input(format!(
-                    "invalid parallel projection node {node}"
-                )));
-            }
-        }
-
-        let group_len = i32::try_from(group_nodes.len())
-            .map_err(|_| CudaError::invalid_input("parallel projection group too large"))?;
-        let bias_buffer = self
-            .dev
-            .htod_copy(vec![bias])
-            .map_err(|error| CudaError::new("htod_copy tensor batch bias", error))?;
-        let group_buffer = self
-            .dev
-            .htod_copy(group_nodes.to_vec())
-            .map_err(|error| CudaError::new("htod_copy tensor batch group", error))?;
-        let mut out_decisions = self
-            .dev
-            .htod_copy(vec![DecisionReport::default(); group_nodes.len()])
-            .map_err(|error| CudaError::new("htod_copy tensor batch decisions", error))?;
-        let kernel = self
-            .dev
-            .get_func(MODULE_NAME, PROJECT_BATCH_KERNEL)
-            .ok_or(CudaError::missing_function(PROJECT_BATCH_KERNEL))?;
-        unsafe {
-            kernel.launch(
-                kernel_config(),
-                (
-                    &self.tensor,
-                    &self.witness,
-                    &self.consumed,
-                    &self.active,
-                    &bias_buffer,
-                    &group_buffer,
-                    group_len,
-                    &self.decision,
-                    &mut out_decisions,
-                ),
-            )
-        }
-        .map_err(|error| CudaError::new("tensor_quantale_project_batch", error))?;
-        self.dev
-            .dtoh_sync_copy(&out_decisions)
-            .map_err(|error| CudaError::new("dtoh_sync_copy tensor batch decisions", error))
-    }
-
-    pub fn commit_decision_batch(&mut self, decisions: &[DecisionReport]) -> Result<(), CudaError> {
-        if decisions.len() < 2 {
-            return Err(CudaError::invalid_input(
-                "decision batch commit requires at least two decisions",
-            ));
-        }
-        if decisions.len() > TENSOR_NODE_COUNT {
-            return Err(CudaError::invalid_input("decision batch is too large"));
-        }
-        if decisions
-            .iter()
-            .any(|decision| decision.blocked != 0 || decision.halted != 0)
-        {
-            return Err(CudaError::invalid_input(
-                "cannot commit blocked or halted decision batch",
-            ));
-        }
-        for decision in decisions {
-            let registry = bundled_registry()?;
-            if Node::decode(decision.selected_src, &registry).is_none()
-                || Node::decode(decision.first_hop, &registry).is_none()
-            {
-                return Err(CudaError::invalid_input(
-                    "cannot commit decision batch with invalid node IDs",
-                ));
-            }
-        }
-
-        let decision_count = i32::try_from(decisions.len())
-            .map_err(|_| CudaError::invalid_input("decision batch is too large"))?;
-        let decision_buffer = self
-            .dev
-            .htod_copy(decisions.to_vec())
-            .map_err(|error| CudaError::new("htod_copy tensor batch commit decisions", error))?;
-        let kernel = self
-            .dev
-            .get_func(MODULE_NAME, COMMIT_BATCH_KERNEL)
-            .ok_or(CudaError::missing_function(COMMIT_BATCH_KERNEL))?;
-        unsafe {
-            kernel.launch(
-                kernel_config(),
-                (
-                    &mut self.consumed,
-                    &mut self.active,
-                    &mut self.next_active,
-                    &decision_buffer,
-                    decision_count,
-                    &mut self.decision,
-                ),
-            )
-        }
-        .map_err(|error| CudaError::new("tensor_quantale_commit_batch", error))
     }
 }
 
