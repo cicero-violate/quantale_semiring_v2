@@ -40,9 +40,16 @@ pub use graph::*;
 pub use hot_region::{HotRegionEntry, HotRegionRegistry};
 pub use jit_kernel_fusion::*;
 pub use learning::*;
+#[cfg(feature = "cuda")]
+pub use orch_service::service_external_commands_parallel;
+pub use orch_service::{
+    CommandServiceResult, commands_are_independent, partition_independent_groups,
+    service_external_commands,
+};
 pub use pattern::*;
 pub use plan::*;
-pub use tensor::*;
+#[cfg(feature = "cuda")]
+pub use streaming::DoubleBufferedSlot;
 pub use streaming::{
     AsyncStreamBridge, BackpressurePolicy, ChannelStreamSource, DoubleBufferRegistry,
     FileLineSource, InMemorySource, NormalizeError, PinnedSlotApplier, QueueSnapshot,
@@ -50,14 +57,7 @@ pub use streaming::{
     StreamConfig, StreamIngress, StreamIngressError, StreamMetrics, StreamReceipt,
     StreamReceiptWriter, StreamSource, StreamWorkers, compact_latest_wins, normalize_event,
 };
-#[cfg(feature = "cuda")]
-pub use streaming::DoubleBufferedSlot;
-pub use orch_service::{
-    CommandServiceResult, commands_are_independent, partition_independent_groups,
-    service_external_commands,
-};
-#[cfg(feature = "cuda")]
-pub use orch_service::service_external_commands_parallel;
+pub use tensor::*;
 pub use tlog::*;
 pub use topology::*;
 pub use types::*;

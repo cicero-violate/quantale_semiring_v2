@@ -14,7 +14,7 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io::{BufRead, BufReader, Write as _};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::mpsc::{self, RecvTimeoutError, Receiver, SyncSender, TrySendError};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TrySendError};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -135,6 +135,47 @@ pub struct StreamReceipt {
     pub version: u64,
 }
 
+impl StreamReceipt {
+    /// Receipt for an update applied to the current device-slot state.
+    pub fn applied(update: SlotUpdate, version: u64) -> Self {
+        Self {
+            source: update.source,
+            event_hash: update.event_hash,
+            slot: update.slot,
+            applied: true,
+            dropped: false,
+            reason: None,
+            version,
+        }
+    }
+
+    /// Receipt for an update rejected or dropped before mutating slot state.
+    pub fn dropped(update: SlotUpdate, reason: impl Into<String>) -> Self {
+        Self {
+            source: update.source,
+            event_hash: update.event_hash,
+            slot: update.slot,
+            applied: false,
+            dropped: true,
+            reason: Some(reason.into()),
+            version: 0,
+        }
+    }
+
+    /// Receipt placeholder for a valid update staged for a later batch flush.
+    fn staged(update: SlotUpdate) -> Self {
+        Self {
+            source: update.source,
+            event_hash: update.event_hash,
+            slot: update.slot,
+            applied: false,
+            dropped: false,
+            reason: None,
+            version: 0,
+        }
+    }
+}
+
 // ── Stream configuration ──────────────────────────────────────────────────────
 
 /// Configuration for the streaming ingress layer.
@@ -165,6 +206,58 @@ impl Default for StreamConfig {
             ],
             reader_poll_interval_ms: 5,
         }
+    }
+}
+
+impl StreamConfig {
+    /// Explicit name for the current production-safe defaults.
+    pub fn normal_capacity() -> Self {
+        Self::default()
+    }
+
+    /// Higher-throughput profile from the async-streamer sizing plan.
+    pub fn high_throughput() -> Self {
+        Self {
+            raw_event_queue_capacity: 65_536,
+            slot_update_queue_capacity: 65_536,
+            max_batch_size: 4_096,
+            stream_window_ms: 10,
+            ..Self::default()
+        }
+    }
+
+    /// Upper bound for slot updates drained by the applier per second.
+    pub fn apply_capacity_per_sec(&self) -> usize {
+        if self.stream_window_ms == 0 {
+            return 0;
+        }
+        self.max_batch_size * (1000usize / self.stream_window_ms as usize)
+    }
+
+    /// Complete market ticks representable before pressure, assuming five slots per tick.
+    pub fn market_tick_buffer_capacity(&self) -> usize {
+        let update_limited = self.slot_update_queue_capacity / 5;
+        self.raw_event_queue_capacity.min(update_limited)
+    }
+
+    /// Reject impossible queue/window settings before worker startup.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.stream_window_ms == 0 {
+            return Err("stream_window_ms must be greater than 0".into());
+        }
+        if self.max_batch_size == 0 {
+            return Err("max_batch_size must be greater than 0".into());
+        }
+        if self.raw_event_queue_capacity == 0 {
+            return Err("raw_event_queue_capacity must be greater than 0".into());
+        }
+        if self.slot_update_queue_capacity == 0 {
+            return Err("slot_update_queue_capacity must be greater than 0".into());
+        }
+        if self.max_batch_size > self.slot_update_queue_capacity {
+            return Err("max_batch_size must not exceed slot_update_queue_capacity".into());
+        }
+        Ok(())
     }
 }
 
@@ -304,7 +397,11 @@ fn normalize_slot_update_envelope(
 
     let values_f32: Vec<f32> = event.payload["value"]
         .as_array()
-        .map(|arr| arr.iter().map(|v| v.as_f64().unwrap_or(0.0) as f32).collect())
+        .map(|arr| {
+            arr.iter()
+                .map(|v| v.as_f64().unwrap_or(0.0) as f32)
+                .collect()
+        })
         .unwrap_or_default();
 
     let policy = slot_policy(slot, config);
@@ -459,15 +556,7 @@ impl SlotApplier {
         for update in updates {
             match self.validate_update(&update) {
                 Err(reason) => {
-                    receipts.push(StreamReceipt {
-                        source: update.source,
-                        event_hash: update.event_hash,
-                        slot: update.slot,
-                        applied: false,
-                        dropped: true,
-                        reason: Some(reason),
-                        version: 0,
-                    });
+                    receipts.push(StreamReceipt::dropped(update, reason));
                     continue;
                 }
                 Ok(()) => {}
@@ -475,30 +564,14 @@ impl SlotApplier {
 
             match self.upload_queue.stage(&update.slot, &update.values_f32) {
                 Err(e) => {
-                    receipts.push(StreamReceipt {
-                        source: update.source,
-                        event_hash: update.event_hash,
-                        slot: update.slot,
-                        applied: false,
-                        dropped: true,
-                        reason: Some(format!("stage failed: {e}")),
-                        version: 0,
-                    });
+                    receipts.push(StreamReceipt::dropped(update, format!("stage failed: {e}")));
                     continue;
                 }
                 Ok(()) => {}
             }
 
             staged_slots.push(update.slot.clone());
-            receipts.push(StreamReceipt {
-                source: update.source,
-                event_hash: update.event_hash,
-                slot: update.slot,
-                applied: false,
-                dropped: false,
-                reason: None,
-                version: 0,
-            });
+            receipts.push(StreamReceipt::staged(update));
         }
 
         if !staged_slots.is_empty() {
@@ -540,15 +613,7 @@ impl SlotApplier {
                     .validate_update(&u)
                     .err()
                     .unwrap_or_else(|| "cuda feature not enabled".into());
-                StreamReceipt {
-                    source: u.source,
-                    event_hash: u.event_hash,
-                    slot: u.slot,
-                    applied: false,
-                    dropped: true,
-                    reason: Some(reason),
-                    version: 0,
-                }
+                StreamReceipt::dropped(u, reason)
             })
             .collect()
     }
@@ -774,7 +839,8 @@ impl QueueSnapshot {
 
     /// Approximate number of slot updates waiting to be applied.
     pub fn slot_update_queue_depth(&self) -> u64 {
-        self.slot_update_enqueued.saturating_sub(self.slot_update_dequeued)
+        self.slot_update_enqueued
+            .saturating_sub(self.slot_update_dequeued)
     }
 }
 
@@ -978,7 +1044,8 @@ fn run_normalizer_worker(
                                             std::thread::sleep(Duration::from_millis(1));
                                             match update_tx.try_send(pending) {
                                                 Ok(()) => {
-                                                    metrics.slot_update_enqueued
+                                                    metrics
+                                                        .slot_update_enqueued
                                                         .fetch_add(1, Ordering::Relaxed);
                                                     break;
                                                 }
@@ -990,7 +1057,9 @@ fn run_normalizer_worker(
                                             }
                                         }
                                         if retries == 0 {
-                                            metrics.slot_update_dropped.fetch_add(1, Ordering::Relaxed);
+                                            metrics
+                                                .slot_update_dropped
+                                                .fetch_add(1, Ordering::Relaxed);
                                         }
                                     } else {
                                         // LatestWins / WindowSample / etc: drop immediately.
@@ -1246,10 +1315,7 @@ impl AsyncStreamBridge {
     ///
     /// Pass the source to `StreamWorkers::spawn`; clone the bridge for each
     /// async producer.
-    pub fn channel(
-        name: impl Into<String>,
-        config: &StreamConfig,
-    ) -> (ChannelStreamSource, Self) {
+    pub fn channel(name: impl Into<String>, config: &StreamConfig) -> (ChannelStreamSource, Self) {
         let (tx, rx) = mpsc::sync_channel(config.raw_event_queue_capacity);
         let metrics = Arc::new(StreamMetrics::default());
         let source = ChannelStreamSource::new(name, rx);
@@ -1411,11 +1477,7 @@ impl DoubleBufferRegistry {
         self.slots.contains_key(name)
     }
 
-    pub fn read_buf(
-        &self,
-        name: &str,
-        version: u64,
-    ) -> Option<&cudarc::driver::CudaSlice<f32>> {
+    pub fn read_buf(&self, name: &str, version: u64) -> Option<&cudarc::driver::CudaSlice<f32>> {
         self.slots.get(name).map(|s| s.read_buf(version))
     }
 }
@@ -1504,18 +1566,11 @@ impl PinnedSlotApplier {
             }
 
             if !registry.contains(&update.slot) {
-                receipts.push(StreamReceipt {
-                    source: update.source,
-                    event_hash: update.event_hash,
-                    slot: update.slot,
-                    applied: false,
-                    dropped: true,
-                    reason: Some(format!(
-                        "slot '{}' not registered in DoubleBufferRegistry",
-                        update.slot
-                    )),
-                    version: 0,
-                });
+                let reason = format!(
+                    "slot '{}' not registered in DoubleBufferRegistry",
+                    update.slot
+                );
+                receipts.push(StreamReceipt::dropped(update, reason));
                 continue;
             }
 
@@ -1523,15 +1578,10 @@ impl PinnedSlotApplier {
             let pinned = match PinnedHostBuffer::from_slice(&update.values_f32) {
                 Ok(p) => p,
                 Err(e) => {
-                    receipts.push(StreamReceipt {
-                        source: update.source,
-                        event_hash: update.event_hash,
-                        slot: update.slot,
-                        applied: false,
-                        dropped: true,
-                        reason: Some(format!("pinned alloc failed: {e}")),
-                        version: 0,
-                    });
+                    receipts.push(StreamReceipt::dropped(
+                        update,
+                        format!("pinned alloc failed: {e}"),
+                    ));
                     continue;
                 }
             };
@@ -1540,15 +1590,10 @@ impl PinnedSlotApplier {
             let new_buf = match dev.htod_copy(pinned.as_slice().to_vec()) {
                 Ok(b) => b,
                 Err(e) => {
-                    receipts.push(StreamReceipt {
-                        source: update.source,
-                        event_hash: update.event_hash,
-                        slot: update.slot,
-                        applied: false,
-                        dropped: true,
-                        reason: Some(format!("htod_copy failed: {e}")),
-                        version: 0,
-                    });
+                    receipts.push(StreamReceipt::dropped(
+                        update,
+                        format!("htod_copy failed: {e}"),
+                    ));
                     continue;
                 }
             };
@@ -1560,15 +1605,7 @@ impl PinnedSlotApplier {
             }
             let v = self.versions.bump(&update.slot);
 
-            receipts.push(StreamReceipt {
-                source: update.source,
-                event_hash: update.event_hash,
-                slot: update.slot,
-                applied: true,
-                dropped: false,
-                reason: None,
-                version: v,
-            });
+            receipts.push(StreamReceipt::applied(update, v));
         }
 
         receipts
@@ -1588,15 +1625,7 @@ impl PinnedSlotApplier {
                     .validate_update(&u)
                     .err()
                     .unwrap_or_else(|| "cuda feature not enabled".into());
-                StreamReceipt {
-                    source: u.source,
-                    event_hash: u.event_hash,
-                    slot: u.slot,
-                    applied: false,
-                    dropped: true,
-                    reason: Some(reason),
-                    version: 0,
-                }
+                StreamReceipt::dropped(u, reason)
             })
             .collect()
     }
@@ -1614,6 +1643,30 @@ mod tests {
     }
 
     // ── normalize ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn stream_config_profiles_report_expected_capacity() {
+        let normal = StreamConfig::normal_capacity();
+        assert_eq!(normal.apply_capacity_per_sec(), 20_480);
+        assert_eq!(normal.market_tick_buffer_capacity(), 1_638);
+        assert!(normal.validate().is_ok());
+
+        let high = StreamConfig::high_throughput();
+        assert_eq!(high.apply_capacity_per_sec(), 409_600);
+        assert_eq!(high.market_tick_buffer_capacity(), 13_107);
+        assert!(high.validate().is_ok());
+    }
+
+    #[test]
+    fn stream_config_rejects_invalid_capacity_settings() {
+        let mut config = StreamConfig::normal_capacity();
+        config.stream_window_ms = 0;
+        assert!(config.validate().is_err());
+
+        let mut config = StreamConfig::normal_capacity();
+        config.max_batch_size = config.slot_update_queue_capacity + 1;
+        assert!(config.validate().is_err());
+    }
 
     #[test]
     fn stream_event_normalizes_market_tick() {
@@ -1714,7 +1767,11 @@ mod tests {
         let _ = &config; // config used by normalize_event; not needed for compact test
         let compacted = compact_latest_wins(updates);
 
-        assert_eq!(compacted.len(), 1, "expected latest-wins to collapse to one update");
+        assert_eq!(
+            compacted.len(),
+            1,
+            "expected latest-wins to collapse to one update"
+        );
         assert_eq!(compacted[0].values_f32, vec![102.0_f32]);
     }
 
@@ -1736,7 +1793,11 @@ mod tests {
             make("safe.slot", 2.0, BackpressurePolicy::NeverDrop),
         ];
         let compacted = compact_latest_wins(updates);
-        assert_eq!(compacted.len(), 2, "NeverDrop updates must not be compacted");
+        assert_eq!(
+            compacted.len(),
+            2,
+            "NeverDrop updates must not be compacted"
+        );
     }
 
     // ── schema validation ──────────────────────────────────────────────────────
@@ -1816,13 +1877,16 @@ mod tests {
 
         #[cfg(feature = "cuda")]
         {
-            use std::sync::Arc;
             use cudarc::driver::CudaDevice;
+            use std::sync::Arc;
             if let Ok(dev) = CudaDevice::new(0).map(Arc::new) {
                 let receipts = ingress.run_batch(&mut registry, &dev);
                 assert!(!receipts.is_empty());
                 let dropped = receipts.iter().find(|r| r.dropped);
-                assert!(dropped.is_some(), "expected dropped receipt for unknown slot");
+                assert!(
+                    dropped.is_some(),
+                    "expected dropped receipt for unknown slot"
+                );
             }
         }
 
@@ -1882,8 +1946,8 @@ mod tests {
 
         #[cfg(feature = "cuda")]
         {
-            use std::sync::Arc;
             use cudarc::driver::CudaDevice;
+            use std::sync::Arc;
             if let Ok(dev) = CudaDevice::new(0).map(Arc::new) {
                 let receipts = ingress.run_batch(&mut registry, &dev);
                 // With a known slot registered, at least one update should apply.
@@ -1957,9 +2021,7 @@ mod tests {
         // The bounded mpsc queue rejects pushes when at capacity, preventing
         // unbounded memory growth under a fast producer.
         let (tx, _rx) = mpsc::sync_channel::<RawStreamEvent>(3);
-        let make = || {
-            RawStreamEvent::new("test", "market_tick", "", json!({ "price": 1.0 }))
-        };
+        let make = || RawStreamEvent::new("test", "market_tick", "", json!({ "price": 1.0 }));
 
         // Fill to capacity.
         assert!(tx.try_send(make()).is_ok());
@@ -2028,10 +2090,8 @@ mod tests {
 
     #[test]
     fn receipt_writer_appends_valid_jsonl() {
-        let path = std::env::temp_dir().join(format!(
-            "stream_receipts_test_{}.jsonl",
-            std::process::id()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("stream_receipts_test_{}.jsonl", std::process::id()));
         let mut writer = StreamReceiptWriter::open(&path).unwrap();
         let receipts = vec![
             StreamReceipt {
@@ -2073,10 +2133,20 @@ mod tests {
         let (tx, rx) = mpsc::sync_channel(16);
         let mut source = ChannelStreamSource::new("test", rx);
 
-        tx.send(RawStreamEvent::new("s", "market_tick", "", json!({ "price": 1.0 })))
-            .unwrap();
-        tx.send(RawStreamEvent::new("s", "market_tick", "", json!({ "price": 2.0 })))
-            .unwrap();
+        tx.send(RawStreamEvent::new(
+            "s",
+            "market_tick",
+            "",
+            json!({ "price": 1.0 }),
+        ))
+        .unwrap();
+        tx.send(RawStreamEvent::new(
+            "s",
+            "market_tick",
+            "",
+            json!({ "price": 2.0 }),
+        ))
+        .unwrap();
 
         assert!(source.poll().is_some(), "expected first event");
         assert!(source.poll().is_some(), "expected second event");
@@ -2090,7 +2160,12 @@ mod tests {
         let bridge = AsyncStreamBridge::new(tx, metrics.clone());
 
         bridge
-            .push(RawStreamEvent::new("src", "market_tick", "", json!({ "price": 1.0 })))
+            .push(RawStreamEvent::new(
+                "src",
+                "market_tick",
+                "",
+                json!({ "price": 1.0 }),
+            ))
             .unwrap();
 
         assert_eq!(metrics.raw_enqueued.load(Ordering::Relaxed), 1);
@@ -2118,7 +2193,12 @@ mod tests {
         assert_eq!(source.source_name(), "linked");
 
         bridge
-            .push(RawStreamEvent::new("x", "market_tick", "", json!({ "price": 9.0 })))
+            .push(RawStreamEvent::new(
+                "x",
+                "market_tick",
+                "",
+                json!({ "price": 9.0 }),
+            ))
             .unwrap();
 
         // The source's internal rx should now have one event.
@@ -2176,12 +2256,18 @@ mod tests {
         // write_buf index at version v = (v+1) % 2
         // read_buf  index at version v = v % 2
         let write_at_even = (even_version + 1) % 2; // = 1 (odd buf)
-        let read_at_even = even_version % 2;         // = 0 (even buf)
-        let write_at_odd = (odd_version + 1) % 2;   // = 0 (even buf)
-        let read_at_odd = odd_version % 2;           // = 1 (odd buf)
+        let read_at_even = even_version % 2; // = 0 (even buf)
+        let write_at_odd = (odd_version + 1) % 2; // = 0 (even buf)
+        let read_at_odd = odd_version % 2; // = 1 (odd buf)
 
-        assert_ne!(write_at_even, read_at_even, "write and read must differ (even version)");
-        assert_ne!(write_at_odd, read_at_odd, "write and read must differ (odd version)");
+        assert_ne!(
+            write_at_even, read_at_even,
+            "write and read must differ (even version)"
+        );
+        assert_ne!(
+            write_at_odd, read_at_odd,
+            "write and read must differ (odd version)"
+        );
     }
 
     #[test]

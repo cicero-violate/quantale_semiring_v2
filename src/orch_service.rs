@@ -207,10 +207,7 @@ pub fn service_external_commands_parallel(
                         })
                     })
                     .collect();
-                handles
-                    .into_iter()
-                    .filter_map(|h| h.join().ok())
-                    .collect()
+                handles.into_iter().filter_map(|h| h.join().ok()).collect()
             });
             all_results.append(&mut group_results);
         }
@@ -483,11 +480,8 @@ mod tests {
     #[test]
     fn three_commands_with_one_conflict_partition_correctly() {
         // A and B independent, B and C conflict → A+B in group 1, C in group 2.
-        let contracts = contracts_with(&[
-            ("A", &["slot.x"]),
-            ("B", &["slot.y"]),
-            ("C", &["slot.y"]),
-        ]);
+        let contracts =
+            contracts_with(&[("A", &["slot.x"]), ("B", &["slot.y"]), ("C", &["slot.y"])]);
         let table = vec!["A".to_string(), "B".to_string(), "C".to_string()];
         let a = make_cmd(1, 1, 0);
         let b = make_cmd(2, 2, 1);

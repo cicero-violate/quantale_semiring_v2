@@ -1012,10 +1012,17 @@ mod tests {
             .filter_map(|r| r.get("name").and_then(Value::as_str))
             .filter(|&n| n != "Region::CommitReceipt")
             .collect();
-        for name in &hot_names {
+        let gen_node_names: std::collections::HashSet<&str> = topology
+            .get("nodes")
+            .and_then(Value::as_array)
+            .unwrap()
+            .iter()
+            .filter_map(|n| n.get("name").and_then(Value::as_str))
+            .collect();
+        for name in &region_names {
             assert!(
-                region_names.contains(name),
-                "hot node '{name}' missing from regions.hot.json"
+                gen_node_names.contains(name),
+                "hot region '{name}' missing from generated topology nodes"
             );
         }
 
@@ -1084,24 +1091,17 @@ mod tests {
             "safe no-op marker nodes should be covered by abstract-device path"
         );
 
-        // Invariant: all hot transitions reference known nodes in hot topology.
-        for t in hot_transitions {
+        // Invariant: all generated transitions reference known generated nodes.
+        for t in gen_transitions {
             let from = t.get("from").and_then(Value::as_str).unwrap();
             let to = t.get("to").and_then(Value::as_str).unwrap();
-            let all_hot: std::collections::HashSet<&str> = hot
-                .get("nodes")
-                .and_then(Value::as_array)
-                .unwrap()
-                .iter()
-                .filter_map(|n| n.get("name").and_then(Value::as_str))
-                .collect();
             assert!(
-                all_hot.contains(from),
-                "transition 'from' '{from}' not in hot nodes"
+                gen_node_names.contains(from),
+                "transition 'from' '{from}' not in generated nodes"
             );
             assert!(
-                all_hot.contains(to),
-                "transition 'to' '{to}' not in hot nodes"
+                gen_node_names.contains(to),
+                "transition 'to' '{to}' not in generated nodes"
             );
         }
 
