@@ -445,7 +445,7 @@ orch_replay_snapshot / orch_replay_restore
 
 ```text
 Decision, TensorEdges, AgentStep
-ExplorationSeed, ExplorationTopK, ExplorationCommit, ExplorationReceipt
+AgentStep and TensorEdges records
 parallel::gpu_group_committed, parallel::operator_receipt  (par tier)
 fusion::regions_loaded, fusion::region, fusion::kernel_synthesized  (startup)
 ```

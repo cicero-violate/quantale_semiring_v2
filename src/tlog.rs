@@ -7,20 +7,14 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::exploration::ExplorationCommitRecord;
 use crate::graph::DecisionReport;
 use crate::tensor::TensorEdge;
 use crate::types::ProcessReceipt;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TlogRecordKind {
-    Decision,
     TensorEdges,
     AgentStep,
-    ExplorationSeed,
-    ExplorationTopK,
-    ExplorationCommit,
-    ExplorationReceipt,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -55,10 +49,6 @@ impl TlogWriter {
         })
     }
 
-    pub fn append_decision(&mut self, report: &DecisionReport) -> io::Result<u64> {
-        self.append_record(TlogRecordKind::Decision, report)
-    }
-
     /// Fused step log: process receipt outcome + the decision that triggered it.
     pub fn log_step(
         &mut self,
@@ -88,25 +78,6 @@ impl TlogWriter {
             TlogRecordKind::TensorEdges,
             &json!({ "label": label, "edges": edges }),
         )
-    }
-
-    pub fn append_exploration_seed<T: Serialize>(&mut self, payload: &T) -> io::Result<u64> {
-        self.append_record(TlogRecordKind::ExplorationSeed, payload)
-    }
-
-    pub fn append_exploration_topk<T: Serialize>(&mut self, payload: &T) -> io::Result<u64> {
-        self.append_record(TlogRecordKind::ExplorationTopK, payload)
-    }
-
-    pub fn append_exploration_commit(
-        &mut self,
-        record: &ExplorationCommitRecord,
-    ) -> io::Result<u64> {
-        self.append_record(TlogRecordKind::ExplorationCommit, record)
-    }
-
-    pub fn append_exploration_receipt<T: Serialize>(&mut self, payload: &T) -> io::Result<u64> {
-        self.append_record(TlogRecordKind::ExplorationReceipt, payload)
     }
 
     pub fn append_record<T: Serialize>(
