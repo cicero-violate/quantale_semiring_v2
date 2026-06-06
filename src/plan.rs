@@ -32,8 +32,8 @@ struct TensorPlanEdge {
 /// ]
 /// ```
 ///
-/// Tensor plans require explicit layer values. They do not accept the legacy
-/// scalar `weight` field because the tensor engine needs confidence, cost, and
+/// Tensor plans require explicit layer values. They do not accept the scalar
+/// `weight` shorthand because the tensor engine needs confidence, cost, and
 /// safety as independent algebraic quantities.
 pub fn compile_tensor_plan(raw: &str) -> Result<Vec<TensorEdge>, String> {
     let payload = extract_json_array(raw.trim());
@@ -119,7 +119,7 @@ mod tests {
     }
 
     #[test]
-    fn compile_tensor_plan_rejects_legacy_scalar_weight() {
+    fn compile_tensor_plan_rejects_scalar_weight_shorthand() {
         let raw = r#"[{"from":"State::Plan","to":"State::Execute","weight":0.9}]"#;
         assert!(compile_tensor_plan(raw).is_err());
     }

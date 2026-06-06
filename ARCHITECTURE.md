@@ -165,7 +165,7 @@ GPU-native orchestration with external command service (current)
 Fully GPU-native orchestration (complete — all nine phases done 2026-06-05)
   Same as above plus: standalone control-flow side paths retired;
   all runtime test coverage migrated to orchestrate_step observations;
-  no legacy CPU orchestration fallback is compiled into the runtime.
+  no CPU orchestration fallback is compiled into the runtime.
 
   Metrics: S_g=1  P_g=1  E_g=1  D_g=1  C_g=1  R_g=1  F_g=1  H_g=0
 ```
