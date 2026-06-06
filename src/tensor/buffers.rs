@@ -33,8 +33,6 @@ pub struct OrchestrationBuffers {
     pub control_edges: CudaSlice<ControlEdge>,
     /// Phase-4: per-node effect table indexed by node id.
     pub effect_table: CudaSlice<EffectTable>,
-    /// Phase-4: single-element scratch buffer for `control_flow_advance` output.
-    pub control_op_out: CudaSlice<i32>,
     /// Phase-5: per-node failure policy table (length N).
     /// Defaults to all-zero (budget=0 → immediate BLOCK); callers invoke
     /// `failure_policy_init` to set non-zero retry budgets.

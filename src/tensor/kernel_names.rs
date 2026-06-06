@@ -24,7 +24,6 @@ pub(super) const DEVICE_CMD_RING_PUSH_KERNEL: &str = "device_command_ring_push";
 pub(super) const DEVICE_RECEIPT_EXT_PUSH_KERNEL: &str = "device_receipt_ext_ring_push";
 pub(super) const DEVICE_RECEIPT_EXT_DRAIN_KERNEL: &str = "device_receipt_ext_drain";
 pub(super) const ORCHESTRATE_STEP_KERNEL: &str = "tensor_quantale_orchestrate_step";
-pub(super) const CONTROL_FLOW_ADVANCE_KERNEL: &str = "control_flow_advance";
 pub(super) const CHECK_EFFECTS_INDEPENDENT_KERNEL: &str = "check_effects_independent";
 pub(super) const FAILURE_POLICY_INIT_KERNEL: &str = "failure_policy_init";
 pub(super) const FAILURE_POLICY_CLASSIFY_KERNEL: &str = "failure_policy_classify_and_emit";

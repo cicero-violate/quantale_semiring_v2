@@ -122,7 +122,6 @@ impl TensorQuantaleWorld {
                 DEVICE_RECEIPT_EXT_PUSH_KERNEL,
                 DEVICE_RECEIPT_EXT_DRAIN_KERNEL,
                 ORCHESTRATE_STEP_KERNEL,
-                CONTROL_FLOW_ADVANCE_KERNEL,
                 CHECK_EFFECTS_INDEPENDENT_KERNEL,
                 FAILURE_POLICY_INIT_KERNEL,
                 FAILURE_POLICY_CLASSIFY_KERNEL,
@@ -255,9 +254,6 @@ impl TensorQuantaleWorld {
         let effect_table = dev
             .htod_copy(vec![EffectTable::default()])
             .map_err(|error| CudaError::new("htod_copy effect_table", error))?;
-        let control_op_out = dev
-            .htod_copy(vec![-1_i32])
-            .map_err(|error| CudaError::new("htod_copy control_op_out", error))?;
 
         // Phase-5: failure policy table, rollback snapshot buffers, action scratch.
         let failure_policies = dev
@@ -362,7 +358,6 @@ impl TensorQuantaleWorld {
                 default_bias,
                 control_edges,
                 effect_table,
-                control_op_out,
                 failure_policies,
                 rollback_consumed,
                 rollback_active,

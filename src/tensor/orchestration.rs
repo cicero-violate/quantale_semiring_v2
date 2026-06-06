@@ -371,50 +371,6 @@ impl TensorQuantaleWorld {
         .map_err(|e| CudaError::new(STAR_COUNTERS_INIT_KERNEL, e))
     }
 
-    /// Look up and advance the matching control edge for (src, dst).
-    ///
-    /// Prefer `orchestrate_step` for all runtime use.  This side-path kernel
-    /// mutates `OrchestrationState` directly and bypasses the scheduler's
-    /// deterministic selection logic.  It is retained only for legacy tests;
-    /// new tests should observe control-flow behavior through `orchestrate_step`.
-    #[deprecated(
-        since = "0.0.0",
-        note = "use orchestrate_step; this side-path bypasses scheduler selection"
-    )]
-    pub fn control_flow_advance(&mut self, src: i32, dst: i32) -> Result<i32, CudaError> {
-        let f = self
-            .dev
-            .get_func(MODULE_NAME, CONTROL_FLOW_ADVANCE_KERNEL)
-            .ok_or(CudaError::missing_function(CONTROL_FLOW_ADVANCE_KERNEL))?;
-        self.orch_buffers.control_op_out = self
-            .dev
-            .htod_copy(vec![-1_i32])
-            .map_err(|e| CudaError::new("reset control_op_out", e))?;
-        let edge_count = self.orch_buffers.control_edges.len() as i32;
-        let effect_count = self.orch_buffers.effect_table.len() as i32;
-        unsafe {
-            f.launch(
-                kernel_config(),
-                (
-                    &self.orch_buffers.control_edges,
-                    edge_count,
-                    &self.orch_buffers.effect_table,
-                    effect_count,
-                    &mut self.orch_buffers.state,
-                    src,
-                    dst,
-                    &mut self.orch_buffers.control_op_out,
-                ),
-            )
-        }
-        .map_err(|e| CudaError::new(CONTROL_FLOW_ADVANCE_KERNEL, e))?;
-        let out = self
-            .dev
-            .dtoh_sync_copy(&self.orch_buffers.control_op_out)
-            .map_err(|e| CudaError::new("dtoh control_op_out", e))?;
-        Ok(out[0])
-    }
-
     /// Check whether nodes `a` and `b` are par-eligible (effect-independent)
     /// according to the current device effect table.
     pub fn check_effects_independent(&mut self, a: i32, b: i32) -> Result<bool, CudaError> {

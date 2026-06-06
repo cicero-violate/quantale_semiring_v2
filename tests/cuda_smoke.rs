@@ -506,42 +506,6 @@ mod cuda_smoke {
     }
 
     // ── Phase-4 CUDA smoke tests ──────────────────────────────────────────────
-    // These tests use the deprecated control_flow_advance side-path as a
-    // reference model.  New coverage uses orchestrate_step (Phase-9 tests below).
-
-    /// Phase-4: loading a SEQ control edge and calling control_flow_advance for
-    /// the matching (lhs, rhs) pair returns CONTROL_OP_SEQ.
-    #[test]
-    fn control_flow_advance_seq_edge_matched() -> Result<(), Box<dyn std::error::Error>> {
-        use quantale_semiring_v2::{CONTROL_OP_SEQ, ControlEdge};
-        let mut world = match TensorQuantaleWorld::empty() {
-            Ok(w) => w,
-            Err(e) => {
-                eprintln!("skip: {e}");
-                return Ok(());
-            }
-        };
-        let edges = vec![ControlEdge {
-            op: CONTROL_OP_SEQ,
-            lhs: 0,
-            rhs: 1,
-            guard: 0,
-            order: 0,
-            bound: 0,
-        }];
-        world.load_control_table(edges, vec![])?;
-
-        let op = world.control_flow_advance(0, 1)?;
-        assert_eq!(
-            op, CONTROL_OP_SEQ,
-            "advance(0,1) should return CONTROL_OP_SEQ"
-        );
-
-        // Non-matching edge returns -1.
-        let op2 = world.control_flow_advance(0, 2)?;
-        assert_eq!(op2, -1, "advance(0,2) should return -1 (no match)");
-        Ok(())
-    }
 
     /// Phase-4: two effect-table entries with non-overlapping write sets are
     /// reported as par-eligible by check_effects_independent.
@@ -610,49 +574,6 @@ mod cuda_smoke {
             !world.check_effects_independent(0, 1)?,
             "conflicting effects should NOT be independent"
         );
-        Ok(())
-    }
-
-    /// Phase-4: calling control_flow_advance on a STAR_BOUNDED edge twice
-    /// advances star_counter and sets halted when the bound is reached.
-    #[test]
-    fn control_flow_star_bounded_advances_counter() -> Result<(), Box<dyn std::error::Error>> {
-        use quantale_semiring_v2::{CONTROL_OP_STAR_BOUNDED, ControlEdge};
-        let mut world = match TensorQuantaleWorld::empty() {
-            Ok(w) => w,
-            Err(e) => {
-                eprintln!("skip: {e}");
-                return Ok(());
-            }
-        };
-        // STAR_BOUNDED back-edge: node 1 loops to itself with bound=2.
-        let edges = vec![ControlEdge {
-            op: CONTROL_OP_STAR_BOUNDED,
-            lhs: 1,
-            rhs: 1,
-            guard: 0,
-            order: 0,
-            bound: 2,
-        }];
-        world.load_control_table(edges, vec![])?;
-
-        let op1 = world.control_flow_advance(1, 1)?;
-        assert_eq!(op1, CONTROL_OP_STAR_BOUNDED);
-        let state1 = world.orch_state_snapshot()?;
-        assert_eq!(
-            state1.star_counter, 1,
-            "counter should be 1 after first advance"
-        );
-        assert_eq!(state1.halted, 0, "not yet halted after first advance");
-
-        let op2 = world.control_flow_advance(1, 1)?;
-        assert_eq!(op2, CONTROL_OP_STAR_BOUNDED);
-        let state2 = world.orch_state_snapshot()?;
-        assert_eq!(
-            state2.star_counter, 2,
-            "counter should be 2 after second advance"
-        );
-        assert_eq!(state2.halted, 1, "should be halted after reaching bound=2");
         Ok(())
     }
 

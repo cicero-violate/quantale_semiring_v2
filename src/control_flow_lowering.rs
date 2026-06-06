@@ -1,7 +1,7 @@
 //! Phase-4 control-flow lowering.
 //!
 //! Converts CKA pattern expressions (from `patterns.source.json`) into flat
-//! `ControlEdge` + `EffectTable` device tables for `control_flow_advance` and
+//! `ControlEdge` + `EffectTable` device tables for GPU-native `orchestrate_step` and
 //! `check_effects_independent` without any CPU-side pattern interpretation at
 //! runtime.
 

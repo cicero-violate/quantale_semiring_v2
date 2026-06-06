@@ -577,28 +577,6 @@ extern "C" __global__ void tensor_quantale_orchestrate_step(
 
 // ── Phase-4 kernels: control-flow advance and par-eligibility check ───────────
 
-// Look up the matching CONTROL_OP_* for a selected (src, dst) edge.
-// Advances the bounded-star counter if the edge is STAR_BOUNDED.
-// Writes the matched op (or -1 if no match) into *out_op.
-extern "C" __global__ void control_flow_advance(
-    const ControlEdge*   edges,
-    int                  edge_count,
-    const EffectTable*   effects,
-    int                  effect_count,
-    OrchestrationState*  state,
-    int                  src,
-    int                  dst,
-    int*                 out_op
-) {
-    if (threadIdx.x != 0 || blockIdx.x != 0) return;
-    int op = find_matching_control_edge(edges, edge_count, src, dst);
-    if (op == CONTROL_OP_STAR_BOUNDED && state) {
-        star_counter_advance(state, edges, edge_count, src, dst);
-    }
-    *out_op = op;
-    (void)effects; (void)effect_count; // reserved for Phase-5 guard evaluation
-}
-
 // Returns 1 into *out if nodes a and b are effect-independent (par-eligible),
 // 0 otherwise.  Single-thread; used by smoke tests and the par tier.
 extern "C" __global__ void check_effects_independent(
