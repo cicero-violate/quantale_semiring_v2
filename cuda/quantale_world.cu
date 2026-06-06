@@ -17,4 +17,3 @@
 #include "quantale/10_device_float_ring.cuh"
 #include "quantale/11_hot_regions_dispatch.cuh"
 #include "quantale/12_par_group.cuh"
-#include "quantale/13_ir_ops.cuh"

@@ -24,7 +24,6 @@ fn main() {
     println!("cargo:rerun-if-changed=cuda/quantale/10_device_float_ring.cuh");
     println!("cargo:rerun-if-changed=cuda/quantale/11_hot_regions_dispatch.cuh");
     println!("cargo:rerun-if-changed=cuda/quantale/12_par_group.cuh");
-    println!("cargo:rerun-if-changed=cuda/quantale/13_ir_ops.cuh");
 
     let topology_path = if Path::new("assets/topology.generated.json").exists() {
         "assets/topology.generated.json"

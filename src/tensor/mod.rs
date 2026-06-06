@@ -113,8 +113,6 @@ impl TensorQuantaleWorld {
                 GPU_DISPATCH_KERNEL,
                 RING_PUSH_KERNEL,
                 RING_POP_KERNEL,
-                PARALLEL_REDUCE_KERNEL,
-                TOPK_BITONIC_KERNEL,
                 PAR_GROUP_STEP_KERNEL,
                 ORCH_STATE_INIT_KERNEL,
                 ORCH_STATE_SNAPSHOT_KERNEL,

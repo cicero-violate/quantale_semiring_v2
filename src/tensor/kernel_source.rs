@@ -14,7 +14,6 @@ const CUDA_KERNEL_FRAGMENTS: &[&str] = &[
     include_str!("../../cuda/quantale/10_device_float_ring.cuh"),
     include_str!("../../cuda/quantale/11_hot_regions_dispatch.cuh"),
     include_str!("../../cuda/quantale/12_par_group.cuh"),
-    include_str!("../../cuda/quantale/13_ir_ops.cuh"),
 ];
 
 const FUSION_HF_GENERATED_FUNCTIONS_MARKER: &str = "// @@FUSION_HF_GENERATED_FUNCTIONS@@";
@@ -160,8 +159,6 @@ mod tests {
             "device_ring_pop",
             "tensor_quantale_gpu_dispatch",
             "tensor_quantale_par_group_step",
-            "quantale_parallel_reduce",
-            "quantale_topk_bitonic",
         ];
         for kernel in expected {
             let needle = format!("extern \"C\" __global__ void {kernel}(");
