@@ -344,33 +344,6 @@ impl TensorQuantaleWorld {
         Ok(())
     }
 
-    /// Look up the control-flow op for a selected (src, dst) edge.
-    ///
-    /// Returns the matched `CONTROL_OP_*` code, or `-1` if no matching edge is
-    /// found in the current control table.  Advances the bounded-star counter
-    /// in `OrchestrationState` when the matching edge is `CONTROL_OP_STAR_BOUNDED`.
-    /// Zero all per-edge star counters on device.
-    ///
-    /// Call this when entering a new STAR loop scope so iteration counts start
-    /// fresh.  Also called automatically by `load_control_table`.
-    pub fn star_counters_reset(&mut self) -> Result<(), CudaError> {
-        let count = self.orch_buffers.star_counters.len() as i32;
-        if count == 0 {
-            return Ok(());
-        }
-        let f = self
-            .dev
-            .get_func(MODULE_NAME, STAR_COUNTERS_INIT_KERNEL)
-            .ok_or(CudaError::missing_function(STAR_COUNTERS_INIT_KERNEL))?;
-        unsafe {
-            f.launch(
-                kernel_config(),
-                (&mut self.orch_buffers.star_counters, count),
-            )
-        }
-        .map_err(|e| CudaError::new(STAR_COUNTERS_INIT_KERNEL, e))
-    }
-
     // ── Phase-5 failure policy wrappers ──────────────────────────────────────
 
     /// Initialise the per-node failure policy table on the GPU.
