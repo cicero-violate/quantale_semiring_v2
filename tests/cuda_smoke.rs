@@ -1,5 +1,4 @@
 #[cfg(feature = "cuda")]
-#[allow(deprecated)]
 mod cuda_smoke {
     use cudarc::driver::{CudaDevice, LaunchAsync, LaunchConfig};
     use quantale_semiring_v2::{
@@ -239,7 +238,6 @@ mod cuda_smoke {
         assert_eq!(state.pending_receipt_count, 0);
         assert_eq!(state.failure_count, 0);
         assert_eq!(state.rollback_requested, 0);
-        assert_eq!(state.star_counter, 0, "Phase-4: star_counter should be 0");
         assert_eq!(state.star_bound, 0, "Phase-4: star_bound should be 0");
         assert_eq!(
             state,
@@ -254,7 +252,6 @@ mod cuda_smoke {
                 pending_receipt_count: 0,
                 failure_count: 0,
                 rollback_requested: 0,
-                star_counter: 0,
                 star_bound: 0,
                 consecutive_blocks: 0,
                 block_threshold: 0,
@@ -1122,10 +1119,6 @@ mod cuda_smoke {
             "selected_control_op must be STAR_BOUNDED"
         );
         assert_eq!(state.selected_node, 1, "body node (rhs) must become active");
-        assert_eq!(
-            state.star_counter, 1,
-            "legacy star_counter must increment after body step"
-        );
         assert_eq!(
             state.star_counter_epoch, 1,
             "star_counter_epoch must increment"

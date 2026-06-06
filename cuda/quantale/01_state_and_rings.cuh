@@ -40,7 +40,6 @@ struct OrchestrationState {
     int pending_receipt_count;
     int failure_count;
     int rollback_requested;
-    int star_counter;   // Phase 4: bounded-star iteration count (legacy single-counter)
     int star_bound;     // Phase 4: current star bound (0 = no star active)
     int consecutive_blocks;    // Phase 5: count of consecutive blocked scheduler steps
     int block_threshold;       // Phase 5: hard-reset threshold in consecutive blocks (0=disabled)
@@ -100,7 +99,6 @@ extern "C" __global__ void orchestration_state_init(OrchestrationState* state) {
     state->pending_receipt_count = 0;
     state->failure_count         = 0;
     state->rollback_requested    = 0;
-    state->star_counter          = 0;
     state->star_bound            = 0;
     state->consecutive_blocks    = 0;
     state->block_threshold       = 0;

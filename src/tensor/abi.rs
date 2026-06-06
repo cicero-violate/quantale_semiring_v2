@@ -118,15 +118,14 @@ pub struct OrchestrationState {
     pub pending_receipt_count: i32,
     pub failure_count: i32,
     pub rollback_requested: i32,
-    pub star_counter: i32,         // Phase 4: bounded-star iteration count
-    pub star_bound: i32,           // Phase 4: current star bound (0 = no star active)
-    pub consecutive_blocks: i32,   // Phase 5: count of consecutive blocked steps
-    pub block_threshold: i32,      // Phase 5: hard-reset threshold (0 = disabled)
+    pub star_bound: i32, // Phase 4: current star bound (0 = no star active)
+    pub consecutive_blocks: i32, // Phase 5: count of consecutive blocked steps
+    pub block_threshold: i32, // Phase 5: hard-reset threshold (0 = disabled)
     pub hard_reset_requested: i32, // Phase 5: set to 1 when HALT action fires
-    pub rollback_available: i32,   // Phase 5: 1 when rollback marker is saved
-    pub failure_action: i32,       // Phase 5: last FAILURE_ACTION_* decision
-    pub selected_src: i32,         // Phase 8: src of last committed edge
-    pub selected_dst: i32,         // Phase 8: dst of last committed edge
+    pub rollback_available: i32, // Phase 5: 1 when rollback marker is saved
+    pub failure_action: i32, // Phase 5: last FAILURE_ACTION_* decision
+    pub selected_src: i32, // Phase 8: src of last committed edge
+    pub selected_dst: i32, // Phase 8: dst of last committed edge
     // GPU-native control-flow (Plan: gpu-native seq/par/choice/star)
     pub selected_control_edge: i32, // ControlEdge table index, or -1
     pub selected_control_op: i32,   // CONTROL_OP_* for last committed control op, or -1

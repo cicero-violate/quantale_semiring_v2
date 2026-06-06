@@ -13,7 +13,6 @@ use quantale_semiring_v2::{CudaError, OrchStepStatus, TensorQuantaleWorld, conso
 /// returned; it should drain and service the device command ring.
 ///
 /// Returns the device-reported step count before halting or an error.
-#[cfg(feature = "cuda")]
 pub fn gpu_native_supervisor_loop(
     world: &mut TensorQuantaleWorld,
     max_device_steps: u32,

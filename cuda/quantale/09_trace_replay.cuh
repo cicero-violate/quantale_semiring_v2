@@ -33,7 +33,7 @@ struct OrchestrationEvent {
     int selected_control_op;  // CONTROL_OP_* or -1
     int selected_control_edge;// ControlEdge table index or -1
     int branch_count;         // number of par members or choice candidates considered
-    int star_counter_val;     // per-edge star counter at commit time, or 0
+    int star_counter_val;     // star counter epoch at commit time, or 0
 };
 
 // Push one event built from the current OrchestrationState into the trace ring.
@@ -62,7 +62,7 @@ extern "C" __global__ void orch_event_trace_push(
     ev.selected_control_op   = state ? state->selected_control_op   : -1;
     ev.selected_control_edge = state ? state->selected_control_edge : -1;
     ev.branch_count          = 0; // filled by caller when known
-    ev.star_counter_val      = state ? state->star_counter          : 0;
+    ev.star_counter_val      = state ? state->star_counter_epoch    : 0;
     trace_ring[t % ring_size] = ev;
     *trace_tail = t + 1;
 }

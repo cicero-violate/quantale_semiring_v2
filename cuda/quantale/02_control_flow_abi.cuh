@@ -74,29 +74,6 @@ __device__ int find_matching_control_edge(
     return -1;
 }
 
-// Advance the bounded-star counter for the STAR_BOUNDED edge matching (src, dst).
-// Sets state->halted = 1 when star_counter reaches star_bound.
-// No-op if no matching STAR_BOUNDED edge is found.
-__device__ void star_counter_advance(
-    OrchestrationState*  state,
-    const ControlEdge*   edges,
-    int                  edge_count,
-    int                  src,
-    int                  dst
-) {
-    for (int i = 0; i < edge_count; ++i) {
-        const ControlEdge* e = &edges[i];
-        if (e->lhs == src && e->rhs == dst && e->op == CONTROL_OP_STAR_BOUNDED) {
-            if (e->bound > 0) {
-                state->star_bound   = e->bound;
-                state->star_counter = state->star_counter + 1;
-                if (state->star_counter >= e->bound) state->halted = 1;
-            }
-            return;
-        }
-    }
-}
-
 // Mailbox used by the hot dispatch path: the host fills pending_region_id,
 // src_node, dst_node, and outcome (from JIT exit code), then launches
 // tensor_quantale_gpu_dispatch which writes a DeviceReceipt with the correct

@@ -1,12 +1,17 @@
+use quantale_semiring_v2::console;
+#[cfg(feature = "cuda")]
 use quantale_semiring_v2::{
     DispatchKindSummary, LearningPolicy, RuntimeContext, SystemConfig, TlogWriter,
-    build_node_dispatch_kinds, build_node_reentrant_mask, console,
+    build_node_dispatch_kinds, build_node_reentrant_mask,
 };
 
 mod app;
 
-use app::{CliCommand, build_runtime_epoch, gpu_native_supervisor_loop, handle};
+use app::{CliCommand, handle};
+#[cfg(feature = "cuda")]
+use app::{build_runtime_epoch, gpu_native_supervisor_loop};
 
+#[cfg(feature = "cuda")]
 macro_rules! fatal {
     ($scope:expr, $message:expr, $error:expr) => {{
         console::error($scope, $message, &[("error", $error.to_string())]);
@@ -19,7 +24,24 @@ fn main() {
     if let CliCommand::Exit(code) = handle(&args) {
         std::process::exit(code);
     }
+    run_runtime();
+}
 
+#[cfg(not(feature = "cuda"))]
+fn run_runtime() {
+    console::error(
+        "runtime",
+        "cuda_feature_required",
+        &[(
+            "hint",
+            "run with --features cuda or use the default feature set".to_string(),
+        )],
+    );
+    std::process::exit(2);
+}
+
+#[cfg(feature = "cuda")]
+fn run_runtime() {
     let mut config = SystemConfig::default();
     let runtime_context = match RuntimeContext::default_asset() {
         Ok(context) => context,

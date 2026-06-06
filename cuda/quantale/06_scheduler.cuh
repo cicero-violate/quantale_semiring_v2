@@ -473,9 +473,7 @@ extern "C" __global__ void tensor_quantale_orchestrate_step(
             if (world->star_counters && ctrl.edge_idx >= 0
                     && ctrl.edge_idx < world->star_counter_count) {
                 world->star_counters[ctrl.edge_idx] += 1;
-                // Also update legacy single counter for backward compat.
                 if (state) {
-                    state->star_counter      += 1;
                     state->star_counter_epoch += 1;
                     const ControlEdge* e = &world->control_edges[ctrl.edge_idx];
                     state->star_bound = e->bound;
