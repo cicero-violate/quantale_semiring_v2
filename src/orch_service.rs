@@ -1,21 +1,21 @@
-//! Phase-3 external command service.
+//! External command service — serial (Phase 1) and parallel (Phase 3).
 //!
 //! When `orchestrate_step()` returns `OrchStepStatus::WaitExternal`, the GPU
 //! has emitted one or more `DeviceCommand` entries that require CPU/IO work.
-//! This module provides `service_external_commands`, which:
 //!
-//!   1. Drains the device command ring.
-//!   2. For each valid command, resolves the operator and executes it.
-//!   3. Pushes a `DeviceReceiptExt` with the outcome back into the device ring.
-//!   4. Decrements `OrchestrationState::pending_external_count` on device via
-//!      the receipt drain kernel.
+//! `service_external_commands` — serial, original implementation.
+//! `service_external_commands_parallel` — Phase 3: groups effect-independent
+//! commands and runs each group concurrently using `std::thread::scope`.
 //!
-//! The CPU no longer decides fallback routing. It only executes GPU-emitted
-//! commands and returns receipts.
+//! Effect independence is determined by:
+//!   1. `NodeContracts.side_effects` intersection (precise, declared).
+//!   2. `DISPATCH_KIND_EXTERNAL_IO` vs IO heuristic (conservative fallback).
+//!   3. Same `operator_name_id` → always serialize (conservative default).
 
 use serde_json::Value;
 
 use crate::UniversalExecutor;
+use crate::contracts::NodeContracts;
 use crate::error::CudaError;
 use crate::tensor::{
     DISPATCH_KIND_EXTERNAL_IO, DISPATCH_KIND_EXTERNAL_PROCESS, DeviceCommand, DeviceReceiptExt,
@@ -81,6 +81,165 @@ pub fn service_external_commands(
     }
 
     Ok(results)
+}
+
+// ── Phase 3: parallel command pool ───────────────────────────────────────────
+
+/// Determine whether two commands have no conflicting side effects and can
+/// run concurrently.
+///
+/// Rules (applied in priority order):
+/// 1. Same `operator_name_id` → serialize (conservative; may share state).
+/// 2. Both nodes have declared `side_effects` → independent iff sets are disjoint.
+/// 3. Both are `DISPATCH_KIND_EXTERNAL_IO` → independent by convention (IO-only).
+/// 4. Otherwise → serialize.
+pub fn commands_are_independent(
+    a: &DeviceCommand,
+    b: &DeviceCommand,
+    node_name_table: &[String],
+    contracts: &NodeContracts,
+) -> bool {
+    if a.operator_name_id == b.operator_name_id {
+        return false;
+    }
+
+    let name_a = resolve_operator_name(a, node_name_table);
+    let name_b = resolve_operator_name(b, node_name_table);
+
+    let effects_a = contracts.get(&name_a).map(|c| &c.side_effects);
+    let effects_b = contracts.get(&name_b).map(|c| &c.side_effects);
+
+    match (effects_a, effects_b) {
+        (Some(wa), Some(wb)) => !wa.iter().any(|e| wb.contains(e)),
+        _ => {
+            // IO-vs-IO: no shared GPU state by convention.
+            a.dispatch_kind == DISPATCH_KIND_EXTERNAL_IO
+                && b.dispatch_kind == DISPATCH_KIND_EXTERNAL_IO
+        }
+    }
+}
+
+/// Greedily partition a slice of valid commands into groups of mutually
+/// independent commands.  Commands within a group can run concurrently;
+/// groups themselves are serialized.
+///
+/// Time: O(n² × group_count) — acceptable for the small command batches
+/// that the GPU emits per WaitExternal step.
+pub fn partition_independent_groups<'a>(
+    cmds: &[&'a DeviceCommand],
+    node_name_table: &[String],
+    contracts: &NodeContracts,
+) -> Vec<Vec<&'a DeviceCommand>> {
+    let mut groups: Vec<Vec<&'a DeviceCommand>> = Vec::new();
+    for &cmd in cmds {
+        let mut placed = false;
+        for group in &mut groups {
+            if group
+                .iter()
+                .all(|&other| commands_are_independent(cmd, other, node_name_table, contracts))
+            {
+                group.push(cmd);
+                placed = true;
+                break;
+            }
+        }
+        if !placed {
+            groups.push(vec![cmd]);
+        }
+    }
+    groups
+}
+
+/// Service all pending external commands with parallel execution of
+/// effect-independent groups.
+///
+/// Each independent group is executed using `std::thread::scope` so that
+/// group threads cannot outlive the local stack frame.  Receipts are sorted
+/// by `command_id` before being pushed back to the device ring to ensure
+/// deterministic ordering regardless of thread scheduling.
+#[cfg(feature = "cuda")]
+pub fn service_external_commands_parallel(
+    world: &mut TensorQuantaleWorld,
+    executor: &UniversalExecutor,
+    node_name_table: &[String],
+    current_payload: &Value,
+    contracts: &NodeContracts,
+) -> Result<Vec<CommandServiceResult>, CudaError> {
+    let cmds = world.drain_device_commands()?;
+    let valid: Vec<&DeviceCommand> = cmds.iter().filter(|c| c.valid != 0).collect();
+    if valid.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let groups = partition_independent_groups(&valid, node_name_table, contracts);
+    let mut all_results: Vec<CommandServiceResult> = Vec::with_capacity(valid.len());
+
+    for group in groups {
+        if group.len() == 1 {
+            // Single command: execute on the calling thread.
+            let cmd = group[0];
+            let node_name = resolve_operator_name(cmd, node_name_table);
+            let receipt = execute_command(executor, cmd, &node_name, current_payload);
+            let outcome = outcome_from_receipt(&receipt, cmd);
+            all_results.push(CommandServiceResult {
+                command_id: cmd.command_id,
+                node_id: cmd.node_id,
+                outcome,
+                receipt,
+            });
+        } else {
+            // Multiple independent commands: execute concurrently.
+            let mut group_results: Vec<CommandServiceResult> = std::thread::scope(|scope| {
+                let handles: Vec<_> = group
+                    .iter()
+                    .map(|cmd| {
+                        let node_name = resolve_operator_name(cmd, node_name_table);
+                        scope.spawn(move || {
+                            let receipt =
+                                execute_command(executor, cmd, &node_name, current_payload);
+                            let outcome = outcome_from_receipt(&receipt, cmd);
+                            CommandServiceResult {
+                                command_id: cmd.command_id,
+                                node_id: cmd.node_id,
+                                outcome,
+                                receipt,
+                            }
+                        })
+                    })
+                    .collect();
+                handles
+                    .into_iter()
+                    .filter_map(|h| h.join().ok())
+                    .collect()
+            });
+            all_results.append(&mut group_results);
+        }
+    }
+
+    // Deterministic receipt ordering by command_id (ascending enqueue order).
+    all_results.sort_by_key(|r| r.command_id);
+
+    // Push receipts back to the device ring (sequential — world is &mut).
+    let cmd_by_id: std::collections::HashMap<i32, &DeviceCommand> =
+        cmds.iter().map(|c| (c.command_id, c)).collect();
+    for result in &all_results {
+        if let Some(&cmd) = cmd_by_id.get(&result.command_id) {
+            world.push_device_receipt_ext(DeviceReceiptExt {
+                valid: 1,
+                consumed: 0,
+                command_id: result.command_id,
+                node_id: result.node_id,
+                src: cmd.src,
+                dst: cmd.dst,
+                outcome: result.outcome,
+                receipt_kind: cmd.dispatch_kind,
+                output_flags: 0,
+                latency: 0.0,
+            })?;
+        }
+    }
+
+    Ok(all_results)
 }
 
 fn resolve_operator_name(cmd: &DeviceCommand, node_name_table: &[String]) -> String {
@@ -222,5 +381,140 @@ mod tests {
             let name = resolve_operator_name(cmd, &names);
             assert!(!name.is_empty());
         }
+    }
+
+    // ── Phase 3: independence and parallel grouping ────────────────────────────
+
+    fn empty_contracts() -> NodeContracts {
+        NodeContracts::default()
+    }
+
+    fn contracts_with(pairs: &[(&str, &[&str])]) -> NodeContracts {
+        let entries: Vec<String> = pairs
+            .iter()
+            .map(|(node, effects)| {
+                let effects_json = effects
+                    .iter()
+                    .map(|e| format!("\"{e}\""))
+                    .collect::<Vec<_>>()
+                    .join(",");
+                format!("{{\"node\":\"{node}\",\"side_effects\":[{effects_json}]}}")
+            })
+            .collect();
+        let json = format!("{{\"contracts\":[{}]}}", entries.join(","));
+        NodeContracts::from_json_str(&json).unwrap()
+    }
+
+    fn make_io_cmd(command_id: i32, node_id: i32, operator_name_id: i32) -> DeviceCommand {
+        let mut cmd = make_cmd(command_id, node_id, operator_name_id);
+        cmd.dispatch_kind = DISPATCH_KIND_EXTERNAL_IO;
+        cmd
+    }
+
+    #[test]
+    fn io_commands_with_different_operator_ids_are_independent() {
+        let contracts = empty_contracts();
+        let table = vec!["IO::ReadA".to_string(), "IO::ReadB".to_string()];
+        let a = make_io_cmd(1, 1, 0);
+        let b = make_io_cmd(2, 2, 1);
+        assert!(commands_are_independent(&a, &b, &table, &contracts));
+    }
+
+    #[test]
+    fn same_operator_id_commands_are_never_independent() {
+        let contracts = empty_contracts();
+        let table = vec!["Op::X".to_string()];
+        let a = make_cmd(1, 1, 0);
+        let b = make_cmd(2, 2, 0); // same operator_name_id
+        assert!(!commands_are_independent(&a, &b, &table, &contracts));
+    }
+
+    #[test]
+    fn process_commands_without_contracts_are_not_independent() {
+        // EXTERNAL_PROCESS without declared side_effects → conservative: serialize.
+        let contracts = empty_contracts();
+        let table = vec!["Proc::A".to_string(), "Proc::B".to_string()];
+        let a = make_cmd(1, 1, 0);
+        let b = make_cmd(2, 2, 1);
+        assert!(!commands_are_independent(&a, &b, &table, &contracts));
+    }
+
+    #[test]
+    fn overlapping_side_effects_make_commands_dependent() {
+        let contracts = contracts_with(&[("A", &["slot.x"]), ("B", &["slot.x"])]);
+        let table = vec!["A".to_string(), "B".to_string()];
+        let a = make_cmd(1, 1, 0);
+        let b = make_cmd(2, 2, 1);
+        assert!(!commands_are_independent(&a, &b, &table, &contracts));
+    }
+
+    #[test]
+    fn disjoint_side_effects_make_commands_independent() {
+        let contracts = contracts_with(&[("A", &["slot.x"]), ("B", &["slot.y"])]);
+        let table = vec!["A".to_string(), "B".to_string()];
+        let a = make_cmd(1, 1, 0);
+        let b = make_cmd(2, 2, 1);
+        assert!(commands_are_independent(&a, &b, &table, &contracts));
+    }
+
+    #[test]
+    fn two_independent_commands_partition_into_one_group() {
+        let contracts = contracts_with(&[("A", &["slot.x"]), ("B", &["slot.y"])]);
+        let table = vec!["A".to_string(), "B".to_string()];
+        let a = make_cmd(1, 1, 0);
+        let b = make_cmd(2, 2, 1);
+        let refs = [&a, &b];
+        let groups = partition_independent_groups(&refs, &table, &contracts);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].len(), 2);
+    }
+
+    #[test]
+    fn two_dependent_commands_partition_into_two_groups() {
+        let contracts = contracts_with(&[("A", &["slot.x"]), ("B", &["slot.x"])]);
+        let table = vec!["A".to_string(), "B".to_string()];
+        let a = make_cmd(1, 1, 0);
+        let b = make_cmd(2, 2, 1);
+        let refs = [&a, &b];
+        let groups = partition_independent_groups(&refs, &table, &contracts);
+        assert_eq!(groups.len(), 2);
+    }
+
+    #[test]
+    fn three_commands_with_one_conflict_partition_correctly() {
+        // A and B independent, B and C conflict → A+B in group 1, C in group 2.
+        let contracts = contracts_with(&[
+            ("A", &["slot.x"]),
+            ("B", &["slot.y"]),
+            ("C", &["slot.y"]),
+        ]);
+        let table = vec!["A".to_string(), "B".to_string(), "C".to_string()];
+        let a = make_cmd(1, 1, 0);
+        let b = make_cmd(2, 2, 1);
+        let c = make_cmd(3, 3, 2);
+        let refs = [&a, &b, &c];
+        let groups = partition_independent_groups(&refs, &table, &contracts);
+        // A goes to group 0; B goes to group 0 (A and B independent); C goes to group 1 (conflicts with B).
+        let total: usize = groups.iter().map(|g| g.len()).sum();
+        assert_eq!(total, 3, "all commands must be placed");
+        assert_eq!(groups.len(), 2);
+    }
+
+    #[test]
+    fn parallel_commands_preserve_receipt_identity() {
+        // Verify command_id is preserved as the stable identity through the pipeline.
+        let contracts = contracts_with(&[("A", &["slot.x"]), ("B", &["slot.y"])]);
+        let table = vec!["A".to_string(), "B".to_string()];
+        let a = make_cmd(42, 1, 0);
+        let b = make_cmd(99, 2, 1);
+        let refs = [&a, &b];
+        let groups = partition_independent_groups(&refs, &table, &contracts);
+        // Both commands in one group; both command_ids must be identifiable.
+        let ids: Vec<i32> = groups
+            .iter()
+            .flat_map(|g| g.iter().map(|c| c.command_id))
+            .collect();
+        assert!(ids.contains(&42));
+        assert!(ids.contains(&99));
     }
 }

@@ -44,11 +44,20 @@ pub use pattern::*;
 pub use plan::*;
 pub use tensor::*;
 pub use streaming::{
-    BackpressurePolicy, FileLineSource, InMemorySource, NormalizeError, QueueSnapshot,
-    RawStreamEvent, SlotApplier, SlotDType, SlotSchema, SlotUpdate, SlotVersions, StreamConfig,
-    StreamIngress, StreamIngressError, StreamMetrics, StreamReceipt, StreamReceiptWriter,
-    StreamSource, StreamWorkers, compact_latest_wins, normalize_event,
+    AsyncStreamBridge, BackpressurePolicy, ChannelStreamSource, DoubleBufferRegistry,
+    FileLineSource, InMemorySource, NormalizeError, PinnedSlotApplier, QueueSnapshot,
+    RawStreamEvent, ShutdownHandle, SlotApplier, SlotDType, SlotSchema, SlotUpdate, SlotVersions,
+    StreamConfig, StreamIngress, StreamIngressError, StreamMetrics, StreamReceipt,
+    StreamReceiptWriter, StreamSource, StreamWorkers, compact_latest_wins, normalize_event,
 };
+#[cfg(feature = "cuda")]
+pub use streaming::DoubleBufferedSlot;
+pub use orch_service::{
+    CommandServiceResult, commands_are_independent, partition_independent_groups,
+    service_external_commands,
+};
+#[cfg(feature = "cuda")]
+pub use orch_service::service_external_commands_parallel;
 pub use tlog::*;
 pub use topology::*;
 pub use types::*;

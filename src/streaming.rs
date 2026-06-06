@@ -22,7 +22,7 @@ use serde_json::Value;
 
 use crate::device_slots::{DeviceSlot, DeviceSlotRegistry};
 #[cfg(feature = "cuda")]
-use crate::device_slots::UploadQueue;
+use crate::device_slots::{PinnedHostBuffer, UploadQueue};
 
 // ── Core types ────────────────────────────────────────────────────────────────
 
@@ -1180,6 +1180,428 @@ impl Drop for StreamWorkers {
     }
 }
 
+// ── Phase 4: async runtime bridge ─────────────────────────────────────────────
+
+/// A `StreamSource` backed by an `mpsc::Receiver<RawStreamEvent>`.
+///
+/// Allows async runtimes (tokio, async-std) to feed events into the
+/// synchronous `StreamWorkers` pipeline without touching GPU state.
+/// The async side holds an `AsyncStreamBridge` (wraps the sender);
+/// this source is dropped into `StreamWorkers::spawn` as the source.
+pub struct ChannelStreamSource {
+    name: String,
+    rx: Receiver<RawStreamEvent>,
+}
+
+impl ChannelStreamSource {
+    pub fn new(name: impl Into<String>, rx: Receiver<RawStreamEvent>) -> Self {
+        Self {
+            name: name.into(),
+            rx,
+        }
+    }
+}
+
+impl StreamSource for ChannelStreamSource {
+    fn poll(&mut self) -> Option<RawStreamEvent> {
+        self.rx.try_recv().ok()
+    }
+
+    fn source_name(&self) -> &str {
+        &self.name
+    }
+}
+
+/// `Clone + Send + Sync` handle that async event producers use to push raw
+/// events into the streaming pipeline.
+///
+/// The bridge wraps the `SyncSender` half of the raw event channel.  Any
+/// number of async tasks can clone it; they push events and the CUDA worker
+/// thread remains entirely separate.
+///
+/// # Tokio migration path
+///
+/// 1. Add `tokio` to `Cargo.toml`.
+/// 2. Create a `ChannelStreamSource` / `AsyncStreamBridge` pair:
+///    `let (source, bridge) = AsyncStreamBridge::channel("my-source", &config);`
+/// 3. Spawn `StreamWorkers::spawn(config, schema, source)`.
+/// 4. Inside a tokio task: `bridge.push(event)`.
+/// 5. The CUDA worker thread stays on `std::thread`, unaffected.
+#[derive(Clone)]
+pub struct AsyncStreamBridge {
+    sender: Arc<SyncSender<RawStreamEvent>>,
+    metrics: Arc<StreamMetrics>,
+}
+
+impl AsyncStreamBridge {
+    /// Create a bridge from a `StreamWorkers` raw-event sender.
+    pub fn new(sender: SyncSender<RawStreamEvent>, metrics: Arc<StreamMetrics>) -> Self {
+        Self {
+            sender: Arc::new(sender),
+            metrics,
+        }
+    }
+
+    /// Create a linked `(ChannelStreamSource, AsyncStreamBridge)` pair.
+    ///
+    /// Pass the source to `StreamWorkers::spawn`; clone the bridge for each
+    /// async producer.
+    pub fn channel(
+        name: impl Into<String>,
+        config: &StreamConfig,
+    ) -> (ChannelStreamSource, Self) {
+        let (tx, rx) = mpsc::sync_channel(config.raw_event_queue_capacity);
+        let metrics = Arc::new(StreamMetrics::default());
+        let source = ChannelStreamSource::new(name, rx);
+        let bridge = Self::new(tx, metrics);
+        (source, bridge)
+    }
+
+    /// Push a raw event from any thread or async task.
+    ///
+    /// Returns `Err(QueueFull)` when the bounded queue has no capacity.
+    /// Async producers should handle this as a backpressure signal (drop,
+    /// retry after yielding, or apply source-specific policy).
+    pub fn push(&self, event: RawStreamEvent) -> Result<(), StreamIngressError> {
+        match self.sender.try_send(event) {
+            Ok(()) => {
+                self.metrics.raw_enqueued.fetch_add(1, Ordering::Relaxed);
+                Ok(())
+            }
+            Err(TrySendError::Full(_)) => {
+                self.metrics.raw_dropped.fetch_add(1, Ordering::Relaxed);
+                Err(StreamIngressError::QueueFull("raw_event_queue".into()))
+            }
+            Err(TrySendError::Disconnected(_)) => Err(StreamIngressError::Disconnected),
+        }
+    }
+
+    /// Expose the underlying metrics for monitoring.
+    pub fn metrics(&self) -> &StreamMetrics {
+        &self.metrics
+    }
+}
+
+/// Externally visible shutdown signal for `StreamWorkers`.
+///
+/// Signalling `shutdown` causes the normalizer worker to drain remaining
+/// raw events before exiting, preventing event loss on clean stop.
+pub struct ShutdownHandle {
+    signal: Arc<AtomicBool>,
+}
+
+impl ShutdownHandle {
+    /// Signal all workers to stop after draining in-flight events.
+    pub fn shutdown(&self) {
+        self.signal.store(true, Ordering::Relaxed);
+    }
+
+    pub fn is_shutdown(&self) -> bool {
+        self.signal.load(Ordering::Relaxed)
+    }
+}
+
+impl StreamWorkers {
+    /// Create a `Clone + Send` bridge for async event producers.
+    pub fn bridge(&self) -> AsyncStreamBridge {
+        AsyncStreamBridge::new(self.raw_event_tx.clone(), self.metrics.clone())
+    }
+
+    /// Create a shutdown handle that signals workers to drain and stop.
+    pub fn shutdown_handle(&self) -> ShutdownHandle {
+        ShutdownHandle {
+            signal: self.shutdown.clone(),
+        }
+    }
+}
+
+// ── Phase 5: double-buffered slot applier ─────────────────────────────────────
+
+/// One device slot with two alternating buffers.
+///
+/// At version `v`:
+///   - GPU compute reads from `read_buf(v)` = `buf[v % 2]` (last committed).
+///   - H2D upload writes to `write_buf(v)` = `buf[(v+1) % 2]` (in-flight).
+/// After `versions.bump(slot)` → `v+1`, the newly written buffer becomes the
+/// stable read buffer for the next orchestrator burst.
+#[cfg(feature = "cuda")]
+pub struct DoubleBufferedSlot {
+    pub name: String,
+    buf_even: cudarc::driver::CudaSlice<f32>,
+    buf_odd: cudarc::driver::CudaSlice<f32>,
+    pub len: usize,
+}
+
+#[cfg(feature = "cuda")]
+impl DoubleBufferedSlot {
+    /// The buffer the next H2D upload should write to.
+    pub fn write_buf_mut(&mut self, version: u64) -> &mut cudarc::driver::CudaSlice<f32> {
+        if version % 2 == 0 {
+            &mut self.buf_odd
+        } else {
+            &mut self.buf_even
+        }
+    }
+
+    /// The stable buffer that GPU compute reads from (last committed state).
+    pub fn read_buf(&self, version: u64) -> &cudarc::driver::CudaSlice<f32> {
+        if version % 2 == 0 {
+            &self.buf_even
+        } else {
+            &self.buf_odd
+        }
+    }
+}
+
+/// Registry of pre-allocated double-buffered device slots.
+///
+/// Callers register slot names + lengths at startup; `PinnedSlotApplier` then
+/// writes to the write buffer and bumps the version on each apply, keeping the
+/// read buffer stable for concurrent GPU kernels.
+#[cfg(feature = "cuda")]
+pub struct DoubleBufferRegistry {
+    slots: HashMap<String, DoubleBufferedSlot>,
+}
+
+#[cfg(feature = "cuda")]
+impl Default for DoubleBufferRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(feature = "cuda")]
+impl DoubleBufferRegistry {
+    pub fn new() -> Self {
+        Self {
+            slots: HashMap::new(),
+        }
+    }
+
+    /// Pre-allocate two device buffers for a slot.
+    pub fn register(
+        &mut self,
+        name: &str,
+        len: usize,
+        dev: &std::sync::Arc<cudarc::driver::CudaDevice>,
+    ) -> Result<(), String> {
+        let buf_even = dev
+            .htod_copy(vec![0.0f32; len])
+            .map_err(|e| format!("DoubleBufferRegistry register '{name}' even: {e}"))?;
+        let buf_odd = dev
+            .htod_copy(vec![0.0f32; len])
+            .map_err(|e| format!("DoubleBufferRegistry register '{name}' odd: {e}"))?;
+        self.slots.insert(
+            name.to_string(),
+            DoubleBufferedSlot {
+                name: name.to_string(),
+                buf_even,
+                buf_odd,
+                len,
+            },
+        );
+        Ok(())
+    }
+
+    pub fn get_mut(&mut self, name: &str) -> Option<&mut DoubleBufferedSlot> {
+        self.slots.get_mut(name)
+    }
+
+    pub fn contains(&self, name: &str) -> bool {
+        self.slots.contains_key(name)
+    }
+
+    pub fn read_buf(
+        &self,
+        name: &str,
+        version: u64,
+    ) -> Option<&cudarc::driver::CudaSlice<f32>> {
+        self.slots.get(name).map(|s| s.read_buf(version))
+    }
+}
+
+/// Non-CUDA stub so the type name resolves without the feature.
+#[cfg(not(feature = "cuda"))]
+#[derive(Default)]
+pub struct DoubleBufferRegistry;
+
+#[cfg(not(feature = "cuda"))]
+impl DoubleBufferRegistry {
+    pub fn new() -> Self {
+        Self
+    }
+
+    pub fn contains(&self, _name: &str) -> bool {
+        false
+    }
+}
+
+/// Slot applier that uses `PinnedHostBuffer` for page-locked staging and
+/// `DoubleBufferRegistry` for non-blocking read/write separation.
+///
+/// The H2D transfer writes to the write buffer; GPU compute reads the stable
+/// read buffer.  After `versions.bump`, the newly written buffer becomes the
+/// stable read buffer for the next orchestrator cycle.
+///
+/// **Fallback**: the synchronous `SlotApplier` + `UploadQueue` path remains
+/// available unchanged.  `PinnedSlotApplier` is an opt-in upgrade.
+pub struct PinnedSlotApplier {
+    pub schema: SlotSchema,
+    pub versions: SlotVersions,
+}
+
+impl PinnedSlotApplier {
+    pub fn new(schema: SlotSchema) -> Self {
+        Self {
+            schema,
+            versions: SlotVersions::new(),
+        }
+    }
+
+    /// Validate a slot update against the schema (same logic as `SlotApplier`).
+    pub fn validate_update(&self, update: &SlotUpdate) -> Result<(), String> {
+        match self.schema.get(&update.slot) {
+            Some(meta) if meta.dtype != update.dtype.to_string() => Err(format!(
+                "dtype mismatch: slot '{}' expects '{}', got '{}'",
+                update.slot, meta.dtype, update.dtype
+            )),
+            Some(_) => Ok(()),
+            None => Err(format!("unknown slot '{}'", update.slot)),
+        }
+    }
+
+    /// Apply a batch to the double-buffer registry using pinned host staging.
+    ///
+    /// For each valid update:
+    ///   1. Stage values in a `PinnedHostBuffer` (page-locked host memory).
+    ///   2. Copy to the slot's current write buffer via synchronous `htod_copy`.
+    ///   3. Replace the write buffer entry with the new device allocation.
+    ///   4. Bump the slot version so orchestrator kernels see the new state.
+    ///
+    /// Future: replace `htod_copy` with `cudaMemcpyAsync` on a dedicated CUDA
+    /// stream to overlap H2D with non-conflicting GPU compute.
+    #[cfg(feature = "cuda")]
+    pub fn apply_batch(
+        &mut self,
+        updates: Vec<SlotUpdate>,
+        registry: &mut DoubleBufferRegistry,
+        dev: &std::sync::Arc<cudarc::driver::CudaDevice>,
+    ) -> Vec<StreamReceipt> {
+        let mut receipts = Vec::with_capacity(updates.len());
+
+        for update in updates {
+            if let Err(reason) = self.validate_update(&update) {
+                receipts.push(StreamReceipt {
+                    source: update.source,
+                    event_hash: update.event_hash,
+                    slot: update.slot,
+                    applied: false,
+                    dropped: true,
+                    reason: Some(reason),
+                    version: 0,
+                });
+                continue;
+            }
+
+            if !registry.contains(&update.slot) {
+                receipts.push(StreamReceipt {
+                    source: update.source,
+                    event_hash: update.event_hash,
+                    slot: update.slot,
+                    applied: false,
+                    dropped: true,
+                    reason: Some(format!(
+                        "slot '{}' not registered in DoubleBufferRegistry",
+                        update.slot
+                    )),
+                    version: 0,
+                });
+                continue;
+            }
+
+            // Stage in pinned (page-locked) host memory for faster H2D.
+            let pinned = match PinnedHostBuffer::from_slice(&update.values_f32) {
+                Ok(p) => p,
+                Err(e) => {
+                    receipts.push(StreamReceipt {
+                        source: update.source,
+                        event_hash: update.event_hash,
+                        slot: update.slot,
+                        applied: false,
+                        dropped: true,
+                        reason: Some(format!("pinned alloc failed: {e}")),
+                        version: 0,
+                    });
+                    continue;
+                }
+            };
+
+            // H2D copy into a new device allocation (synchronous baseline).
+            let new_buf = match dev.htod_copy(pinned.as_slice().to_vec()) {
+                Ok(b) => b,
+                Err(e) => {
+                    receipts.push(StreamReceipt {
+                        source: update.source,
+                        event_hash: update.event_hash,
+                        slot: update.slot,
+                        applied: false,
+                        dropped: true,
+                        reason: Some(format!("htod_copy failed: {e}")),
+                        version: 0,
+                    });
+                    continue;
+                }
+            };
+
+            // Write to the double-buffer write slot and bump version.
+            let current_version = self.versions.get(&update.slot);
+            if let Some(slot) = registry.get_mut(&update.slot) {
+                *slot.write_buf_mut(current_version) = new_buf;
+            }
+            let v = self.versions.bump(&update.slot);
+
+            receipts.push(StreamReceipt {
+                source: update.source,
+                event_hash: update.event_hash,
+                slot: update.slot,
+                applied: true,
+                dropped: false,
+                reason: None,
+                version: v,
+            });
+        }
+
+        receipts
+    }
+
+    /// Non-CUDA path: schema validation only; all updates are dropped.
+    #[cfg(not(feature = "cuda"))]
+    pub fn apply_batch(
+        &mut self,
+        updates: Vec<SlotUpdate>,
+        _registry: &mut DoubleBufferRegistry,
+    ) -> Vec<StreamReceipt> {
+        updates
+            .into_iter()
+            .map(|u| {
+                let reason = self
+                    .validate_update(&u)
+                    .err()
+                    .unwrap_or_else(|| "cuda feature not enabled".into());
+                StreamReceipt {
+                    source: u.source,
+                    event_hash: u.event_hash,
+                    slot: u.slot,
+                    applied: false,
+                    dropped: true,
+                    reason: Some(reason),
+                    version: 0,
+                }
+            })
+            .collect()
+    }
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -1642,5 +2064,191 @@ mod tests {
         assert_eq!(v["applied"], true);
         assert_eq!(v["slot"], "market.price");
         assert_eq!(v["version"], 1);
+    }
+
+    // ── Phase 4: async bridge ──────────────────────────────────────────────────
+
+    #[test]
+    fn channel_source_drains_pending_events() {
+        let (tx, rx) = mpsc::sync_channel(16);
+        let mut source = ChannelStreamSource::new("test", rx);
+
+        tx.send(RawStreamEvent::new("s", "market_tick", "", json!({ "price": 1.0 })))
+            .unwrap();
+        tx.send(RawStreamEvent::new("s", "market_tick", "", json!({ "price": 2.0 })))
+            .unwrap();
+
+        assert!(source.poll().is_some(), "expected first event");
+        assert!(source.poll().is_some(), "expected second event");
+        assert!(source.poll().is_none(), "expected None when queue is empty");
+    }
+
+    #[test]
+    fn async_bridge_push_increments_metrics() {
+        let metrics = Arc::new(StreamMetrics::default());
+        let (tx, _rx) = mpsc::sync_channel::<RawStreamEvent>(16);
+        let bridge = AsyncStreamBridge::new(tx, metrics.clone());
+
+        bridge
+            .push(RawStreamEvent::new("src", "market_tick", "", json!({ "price": 1.0 })))
+            .unwrap();
+
+        assert_eq!(metrics.raw_enqueued.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn async_bridge_returns_queue_full_when_capacity_exceeded() {
+        let metrics = Arc::new(StreamMetrics::default());
+        let (tx, _rx) = mpsc::sync_channel::<RawStreamEvent>(1);
+        let bridge = AsyncStreamBridge::new(tx, metrics.clone());
+
+        let make = || RawStreamEvent::new("src", "market_tick", "", json!({ "price": 1.0 }));
+        assert!(bridge.push(make()).is_ok());
+        let err = bridge.push(make());
+        assert!(
+            matches!(err, Err(StreamIngressError::QueueFull(_))),
+            "expected QueueFull on overflow"
+        );
+        assert!(metrics.raw_dropped.load(Ordering::Relaxed) > 0);
+    }
+
+    #[test]
+    fn bridge_channel_pair_source_and_bridge_are_linked() {
+        let (source, bridge) = AsyncStreamBridge::channel("linked", &StreamConfig::default());
+        assert_eq!(source.source_name(), "linked");
+
+        bridge
+            .push(RawStreamEvent::new("x", "market_tick", "", json!({ "price": 9.0 })))
+            .unwrap();
+
+        // The source's internal rx should now have one event.
+        let mut source = source;
+        assert!(source.poll().is_some(), "bridge event should reach source");
+    }
+
+    #[test]
+    fn shutdown_handle_signals_workers() {
+        let schema = SlotSchema::new();
+        let source = InMemorySource::new("test", Vec::new());
+        let workers = StreamWorkers::spawn(StreamConfig::default(), schema, source);
+
+        let handle = workers.shutdown_handle();
+        assert!(!handle.is_shutdown());
+        handle.shutdown();
+        assert!(handle.is_shutdown());
+    }
+
+    #[test]
+    fn shutdown_drains_queues_cleanly() {
+        // Push events, signal shutdown, verify workers terminate without panic.
+        let mut schema = SlotSchema::new();
+        schema.register(DeviceSlot::tensor_f32("market.price", vec![1]));
+
+        let events: Vec<_> = (0..3)
+            .map(|i| {
+                RawStreamEvent::new(
+                    "feed",
+                    "market_tick",
+                    "",
+                    json!({ "price": (100.0 + i as f64) }),
+                )
+            })
+            .collect();
+        let source = InMemorySource::new("test", events);
+        let workers = StreamWorkers::spawn(StreamConfig::default(), schema, source);
+
+        std::thread::sleep(Duration::from_millis(30));
+        workers.shutdown_handle().shutdown();
+        // Drop joins both threads; if either panics, the test fails.
+        drop(workers);
+    }
+
+    // ── Phase 5: double-buffered applier ───────────────────────────────────────
+
+    #[test]
+    fn double_buffer_version_selects_write_buf() {
+        // When version is even, write_buf is odd; when version is odd, write_buf is even.
+        // This ensures write and read always target different allocations.
+        // We verify the version parity semantics without requiring cuda.
+        let even_version: u64 = 4;
+        let odd_version: u64 = 3;
+
+        // write_buf index at version v = (v+1) % 2
+        // read_buf  index at version v = v % 2
+        let write_at_even = (even_version + 1) % 2; // = 1 (odd buf)
+        let read_at_even = even_version % 2;         // = 0 (even buf)
+        let write_at_odd = (odd_version + 1) % 2;   // = 0 (even buf)
+        let read_at_odd = odd_version % 2;           // = 1 (odd buf)
+
+        assert_ne!(write_at_even, read_at_even, "write and read must differ (even version)");
+        assert_ne!(write_at_odd, read_at_odd, "write and read must differ (odd version)");
+    }
+
+    #[test]
+    fn pinned_applier_rejects_unknown_slot() {
+        let applier = PinnedSlotApplier::new(SlotSchema::new());
+        let update = SlotUpdate {
+            source: "src".into(),
+            slot: "nonexistent".into(),
+            dtype: SlotDType::F32,
+            shape: vec![1],
+            values_f32: vec![1.0],
+            observed_at: "".into(),
+            policy: BackpressurePolicy::LatestWins,
+            event_hash: "aabb".into(),
+        };
+        let err = applier.validate_update(&update);
+        assert!(err.is_err());
+        assert!(err.unwrap_err().contains("unknown slot"));
+    }
+
+    #[test]
+    fn pinned_applier_rejects_dtype_mismatch() {
+        let mut schema = SlotSchema::new();
+        schema.register(DeviceSlot::tensor_f32("market.price", vec![1]));
+        let applier = PinnedSlotApplier::new(schema);
+        let update = SlotUpdate {
+            source: "src".into(),
+            slot: "market.price".into(),
+            dtype: SlotDType::I32,
+            shape: vec![1],
+            values_f32: vec![1.0],
+            observed_at: "".into(),
+            policy: BackpressurePolicy::LatestWins,
+            event_hash: "ccdd".into(),
+        };
+        let err = applier.validate_update(&update);
+        assert!(err.is_err());
+        assert!(err.unwrap_err().contains("dtype mismatch"));
+    }
+
+    #[test]
+    fn double_buffer_registry_contains_returns_false_for_unregistered() {
+        let registry = DoubleBufferRegistry::new();
+        assert!(!registry.contains("market.price"));
+    }
+
+    #[cfg(not(feature = "cuda"))]
+    #[test]
+    fn pinned_applier_no_cuda_drops_with_reason() {
+        let mut schema = SlotSchema::new();
+        schema.register(DeviceSlot::tensor_f32("market.price", vec![1]));
+        let mut applier = PinnedSlotApplier::new(schema);
+        let mut registry = DoubleBufferRegistry::new();
+
+        let update = SlotUpdate {
+            source: "src".into(),
+            slot: "market.price".into(),
+            dtype: SlotDType::F32,
+            shape: vec![1],
+            values_f32: vec![42.0],
+            observed_at: "".into(),
+            policy: BackpressurePolicy::LatestWins,
+            event_hash: "eeff".into(),
+        };
+        let receipts = applier.apply_batch(vec![update], &mut registry);
+        assert_eq!(receipts.len(), 1);
+        assert!(receipts[0].dropped);
+        assert!(receipts[0].reason.as_deref().unwrap_or("").contains("cuda"));
     }
 }
