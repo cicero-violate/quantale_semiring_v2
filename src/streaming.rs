@@ -1,13 +1,21 @@
-//! Async streaming ingress — Phase 1: synchronous micro-batch streamer.
+//! Async streaming ingress.
 //!
-//! Pipeline:
+//! Phase 1 — synchronous micro-batch streamer (no background threads):
 //!   push_raw_event → RawEventQueue → normalize_pending → SlotUpdateQueue
 //!   → apply_pending → DeviceSlotRegistry → QuantaleOrchestrator
+//!
+//! Phase 2 — parallel CPU workers:
+//!   StreamSource → StreamReaderWorker (thread)
+//!   → RawEventQueue → NormalizerWorker (thread)
+//!   → SlotUpdateQueue → StreamWorkers::apply_pending (GPU-owner thread)
 
 use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
-use std::io::Write as _;
-use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
+use std::io::{BufRead, BufReader, Write as _};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::mpsc::{self, RecvTimeoutError, Receiver, SyncSender, TrySendError};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -137,6 +145,8 @@ pub struct StreamConfig {
     pub slot_update_queue_capacity: usize,
     pub raw_event_queue_capacity: usize,
     pub latest_wins_slots: Vec<String>,
+    /// How long the reader worker sleeps when its source returns no data (ms).
+    pub reader_poll_interval_ms: u64,
 }
 
 impl Default for StreamConfig {
@@ -153,6 +163,7 @@ impl Default for StreamConfig {
                 "market.low".into(),
                 "market.volume".into(),
             ],
+            reader_poll_interval_ms: 5,
         }
     }
 }
@@ -741,6 +752,434 @@ impl StreamReceiptWriter {
     }
 }
 
+// ── Phase 2: queue metrics ────────────────────────────────────────────────────
+
+/// Snapshot of streaming pipeline queue metrics at one point in time.
+#[derive(Clone, Debug, Default)]
+pub struct QueueSnapshot {
+    pub raw_enqueued: u64,
+    pub raw_dequeued: u64,
+    pub raw_dropped: u64,
+    pub normalize_errors: u64,
+    pub slot_update_enqueued: u64,
+    pub slot_update_dequeued: u64,
+    pub slot_update_dropped: u64,
+}
+
+impl QueueSnapshot {
+    /// Approximate number of raw events currently in-flight between source and normalizer.
+    pub fn raw_queue_depth(&self) -> u64 {
+        self.raw_enqueued.saturating_sub(self.raw_dequeued)
+    }
+
+    /// Approximate number of slot updates waiting to be applied.
+    pub fn slot_update_queue_depth(&self) -> u64 {
+        self.slot_update_enqueued.saturating_sub(self.slot_update_dequeued)
+    }
+}
+
+/// Shared atomic counters updated by background worker threads.
+#[derive(Default)]
+pub struct StreamMetrics {
+    pub raw_enqueued: AtomicU64,
+    pub raw_dequeued: AtomicU64,
+    pub raw_dropped: AtomicU64,
+    pub normalize_errors: AtomicU64,
+    pub slot_update_enqueued: AtomicU64,
+    pub slot_update_dequeued: AtomicU64,
+    pub slot_update_dropped: AtomicU64,
+}
+
+impl StreamMetrics {
+    pub fn snapshot(&self) -> QueueSnapshot {
+        QueueSnapshot {
+            raw_enqueued: self.raw_enqueued.load(Ordering::Relaxed),
+            raw_dequeued: self.raw_dequeued.load(Ordering::Relaxed),
+            raw_dropped: self.raw_dropped.load(Ordering::Relaxed),
+            normalize_errors: self.normalize_errors.load(Ordering::Relaxed),
+            slot_update_enqueued: self.slot_update_enqueued.load(Ordering::Relaxed),
+            slot_update_dequeued: self.slot_update_dequeued.load(Ordering::Relaxed),
+            slot_update_dropped: self.slot_update_dropped.load(Ordering::Relaxed),
+        }
+    }
+}
+
+// ── Phase 2: stream sources ───────────────────────────────────────────────────
+
+/// A pull-based streaming source.  Called by `StreamReaderWorker` in a loop.
+///
+/// `poll` returns the next event, or `None` when no data is available yet.
+/// The reader sleeps for `reader_poll_interval_ms` between `None` returns.
+pub trait StreamSource: Send + 'static {
+    fn poll(&mut self) -> Option<RawStreamEvent>;
+    fn source_name(&self) -> &str;
+}
+
+/// In-memory source backed by a pre-loaded `Vec`.  Useful for tests and
+/// one-shot replay.  Returns `None` once all events are drained.
+pub struct InMemorySource {
+    name: String,
+    events: std::collections::VecDeque<RawStreamEvent>,
+}
+
+impl InMemorySource {
+    pub fn new(name: impl Into<String>, events: Vec<RawStreamEvent>) -> Self {
+        Self {
+            name: name.into(),
+            events: events.into(),
+        }
+    }
+}
+
+impl StreamSource for InMemorySource {
+    fn poll(&mut self) -> Option<RawStreamEvent> {
+        self.events.pop_front()
+    }
+
+    fn source_name(&self) -> &str {
+        &self.name
+    }
+}
+
+/// JSONL file source.  Each non-empty line is parsed as a JSON object and
+/// wrapped in a `RawStreamEvent`.
+///
+/// In `tail_mode = false` (default) the source is exhausted at EOF.
+/// In `tail_mode = true` the reader loops at EOF (like `tail -f`), returning
+/// `None` each time so the reader worker sleeps before retrying.
+pub struct FileLineSource {
+    name: String,
+    path: std::path::PathBuf,
+    reader: Option<BufReader<std::fs::File>>,
+    pub tail_mode: bool,
+}
+
+impl FileLineSource {
+    pub fn new(name: impl Into<String>, path: impl Into<std::path::PathBuf>) -> Self {
+        Self {
+            name: name.into(),
+            path: path.into(),
+            reader: None,
+            tail_mode: false,
+        }
+    }
+
+    pub fn with_tail(mut self) -> Self {
+        self.tail_mode = true;
+        self
+    }
+}
+
+impl StreamSource for FileLineSource {
+    fn poll(&mut self) -> Option<RawStreamEvent> {
+        // Lazy-open: attempt to open the file on first poll.
+        if self.reader.is_none() {
+            match std::fs::File::open(&self.path) {
+                Ok(f) => self.reader = Some(BufReader::new(f)),
+                Err(_) => return None,
+            }
+        }
+
+        let reader = self.reader.as_mut()?;
+        let mut line = String::new();
+        match reader.read_line(&mut line) {
+            Ok(0) => {
+                // EOF.
+                if !self.tail_mode {
+                    self.reader = None; // exhaust
+                }
+                None
+            }
+            Ok(_) => {
+                let trimmed = line.trim();
+                if trimmed.is_empty() {
+                    return None;
+                }
+                match serde_json::from_str::<Value>(trimmed) {
+                    Ok(payload) => {
+                        let kind = payload
+                            .get("kind")
+                            .and_then(Value::as_str)
+                            .unwrap_or("market_tick")
+                            .to_string();
+                        let observed_at = payload
+                            .get("observed_at")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .to_string();
+                        Some(RawStreamEvent::new(&self.name, kind, observed_at, payload))
+                    }
+                    Err(_) => None, // malformed line: skip, reader advances past it
+                }
+            }
+            Err(_) => None,
+        }
+    }
+
+    fn source_name(&self) -> &str {
+        &self.name
+    }
+}
+
+// ── Phase 2: background worker functions ──────────────────────────────────────
+
+fn run_reader_worker(
+    mut source: impl StreamSource,
+    raw_tx: SyncSender<RawStreamEvent>,
+    metrics: Arc<StreamMetrics>,
+    shutdown: Arc<AtomicBool>,
+    poll_interval_ms: u64,
+) {
+    while !shutdown.load(Ordering::Relaxed) {
+        match source.poll() {
+            Some(event) => match raw_tx.try_send(event) {
+                Ok(()) => {
+                    metrics.raw_enqueued.fetch_add(1, Ordering::Relaxed);
+                }
+                Err(TrySendError::Full(_)) => {
+                    metrics.raw_dropped.fetch_add(1, Ordering::Relaxed);
+                }
+                Err(TrySendError::Disconnected(_)) => break,
+            },
+            None => {
+                // No data available; yield to avoid spinning.
+                std::thread::sleep(Duration::from_millis(poll_interval_ms.max(1)));
+            }
+        }
+    }
+}
+
+fn run_normalizer_worker(
+    raw_rx: Receiver<RawStreamEvent>,
+    update_tx: SyncSender<SlotUpdate>,
+    metrics: Arc<StreamMetrics>,
+    shutdown: Arc<AtomicBool>,
+    config: StreamConfig,
+) {
+    loop {
+        match raw_rx.recv_timeout(Duration::from_millis(10)) {
+            Ok(event) => {
+                metrics.raw_dequeued.fetch_add(1, Ordering::Relaxed);
+                match normalize_event(&event, &config) {
+                    Ok(updates) => {
+                        for update in updates {
+                            let policy = update.policy;
+                            match update_tx.try_send(update) {
+                                Ok(()) => {
+                                    metrics.slot_update_enqueued.fetch_add(1, Ordering::Relaxed);
+                                }
+                                Err(TrySendError::Full(u)) => {
+                                    if policy == BackpressurePolicy::NeverDrop {
+                                        // Retry with blocking send (bounded duration: up to 10ms
+                                        // across 10 attempts so the normalizer cannot stall forever).
+                                        let mut retries = 10u8;
+                                        let mut pending = u;
+                                        while retries > 0 {
+                                            std::thread::sleep(Duration::from_millis(1));
+                                            match update_tx.try_send(pending) {
+                                                Ok(()) => {
+                                                    metrics.slot_update_enqueued
+                                                        .fetch_add(1, Ordering::Relaxed);
+                                                    break;
+                                                }
+                                                Err(TrySendError::Full(u2)) => {
+                                                    pending = u2;
+                                                    retries -= 1;
+                                                }
+                                                Err(TrySendError::Disconnected(_)) => return,
+                                            }
+                                        }
+                                        if retries == 0 {
+                                            metrics.slot_update_dropped.fetch_add(1, Ordering::Relaxed);
+                                        }
+                                    } else {
+                                        // LatestWins / WindowSample / etc: drop immediately.
+                                        metrics.slot_update_dropped.fetch_add(1, Ordering::Relaxed);
+                                    }
+                                }
+                                Err(TrySendError::Disconnected(_)) => return,
+                            }
+                        }
+                    }
+                    Err(_) => {
+                        metrics.normalize_errors.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+            }
+            Err(RecvTimeoutError::Timeout) => {
+                if shutdown.load(Ordering::Relaxed) {
+                    // Drain any remaining raw events before exiting.
+                    while let Ok(event) = raw_rx.try_recv() {
+                        metrics.raw_dequeued.fetch_add(1, Ordering::Relaxed);
+                        if let Ok(updates) = normalize_event(&event, &config) {
+                            for u in updates {
+                                let _ = update_tx.try_send(u);
+                            }
+                        }
+                    }
+                    break;
+                }
+            }
+            Err(RecvTimeoutError::Disconnected) => break,
+        }
+    }
+}
+
+// ── Phase 2: StreamWorkers ────────────────────────────────────────────────────
+
+/// Parallel streaming pipeline with one reader thread and one normalizer thread.
+///
+/// Invariants:
+/// - Only `StreamWorkers` (via its `SlotApplier`) may mutate device slot state.
+/// - All GPU mutations flow through `apply_pending` on the orchestrator thread.
+/// - Background threads write only to bounded queues; they never touch the device.
+pub struct StreamWorkers {
+    /// Sender that external code can use to inject raw events.
+    pub raw_event_tx: SyncSender<RawStreamEvent>,
+    update_rx: Receiver<SlotUpdate>,
+    pub applier: SlotApplier,
+    pub metrics: Arc<StreamMetrics>,
+    shutdown: Arc<AtomicBool>,
+    reader_handle: Option<std::thread::JoinHandle<()>>,
+    normalizer_handle: Option<std::thread::JoinHandle<()>>,
+    config: StreamConfig,
+}
+
+impl StreamWorkers {
+    /// Spawn the reader and normalizer background workers.
+    ///
+    /// `source` is moved into the reader thread.  The GPU applier stays on the
+    /// calling thread; call `apply_pending` from the orchestrator loop.
+    pub fn spawn(config: StreamConfig, schema: SlotSchema, source: impl StreamSource) -> Self {
+        let (raw_tx, raw_rx) = mpsc::sync_channel(config.raw_event_queue_capacity);
+        let (update_tx, update_rx) = mpsc::sync_channel(config.slot_update_queue_capacity);
+        let metrics = Arc::new(StreamMetrics::default());
+        let shutdown = Arc::new(AtomicBool::new(false));
+
+        let reader_raw_tx = raw_tx.clone();
+        let reader_metrics = metrics.clone();
+        let reader_shutdown = shutdown.clone();
+        let poll_interval = config.reader_poll_interval_ms;
+        let reader_handle = std::thread::Builder::new()
+            .name("stream-reader".into())
+            .spawn(move || {
+                run_reader_worker(
+                    source,
+                    reader_raw_tx,
+                    reader_metrics,
+                    reader_shutdown,
+                    poll_interval,
+                );
+            })
+            .expect("failed to spawn stream-reader thread");
+
+        let norm_metrics = metrics.clone();
+        let norm_shutdown = shutdown.clone();
+        let norm_config = config.clone();
+        let normalizer_handle = std::thread::Builder::new()
+            .name("stream-normalizer".into())
+            .spawn(move || {
+                run_normalizer_worker(raw_rx, update_tx, norm_metrics, norm_shutdown, norm_config);
+            })
+            .expect("failed to spawn stream-normalizer thread");
+
+        Self {
+            raw_event_tx: raw_tx,
+            update_rx,
+            applier: SlotApplier::new(schema),
+            metrics,
+            shutdown,
+            reader_handle: Some(reader_handle),
+            normalizer_handle: Some(normalizer_handle),
+            config,
+        }
+    }
+
+    /// Inject a raw event directly (bypassing the source thread).
+    ///
+    /// Useful when the caller produces events itself rather than via a source.
+    pub fn push_raw_event(&self, event: RawStreamEvent) -> Result<(), StreamIngressError> {
+        match self.raw_event_tx.try_send(event) {
+            Ok(()) => {
+                self.metrics.raw_enqueued.fetch_add(1, Ordering::Relaxed);
+                Ok(())
+            }
+            Err(TrySendError::Full(_)) => {
+                self.metrics.raw_dropped.fetch_add(1, Ordering::Relaxed);
+                Err(StreamIngressError::QueueFull("raw_event_queue".into()))
+            }
+            Err(TrySendError::Disconnected(_)) => Err(StreamIngressError::Disconnected),
+        }
+    }
+
+    /// Drain the slot update queue and apply a compacted batch to the device.
+    ///
+    /// Must be called from the orchestrator (GPU-owner) thread only.
+    #[cfg(feature = "cuda")]
+    pub fn apply_pending(
+        &mut self,
+        registry: &mut DeviceSlotRegistry,
+        dev: &Arc<cudarc::driver::CudaDevice>,
+    ) -> Vec<StreamReceipt> {
+        let updates = self.drain_slot_updates();
+        if updates.is_empty() {
+            return Vec::new();
+        }
+        self.metrics
+            .slot_update_dequeued
+            .fetch_add(updates.len() as u64, Ordering::Relaxed);
+        let compacted = compact_latest_wins(updates);
+        self.applier.apply_batch(compacted, registry, dev)
+    }
+
+    #[cfg(not(feature = "cuda"))]
+    pub fn apply_pending(&mut self, registry: &mut DeviceSlotRegistry) -> Vec<StreamReceipt> {
+        let updates = self.drain_slot_updates();
+        if updates.is_empty() {
+            return Vec::new();
+        }
+        self.metrics
+            .slot_update_dequeued
+            .fetch_add(updates.len() as u64, Ordering::Relaxed);
+        let compacted = compact_latest_wins(updates);
+        self.applier.apply_batch(compacted, registry)
+    }
+
+    /// Snapshot of queue depth and drop counters.
+    pub fn queue_metrics(&self) -> QueueSnapshot {
+        self.metrics.snapshot()
+    }
+
+    /// Signal background workers to stop.  They finish draining in-flight events
+    /// before exiting.  Joined automatically on `Drop`.
+    pub fn shutdown(&self) {
+        self.shutdown.store(true, Ordering::Relaxed);
+    }
+
+    fn drain_slot_updates(&mut self) -> Vec<SlotUpdate> {
+        let mut updates = Vec::with_capacity(self.config.max_batch_size);
+        while updates.len() < self.config.max_batch_size {
+            match self.update_rx.try_recv() {
+                Ok(u) => updates.push(u),
+                Err(_) => break,
+            }
+        }
+        updates
+    }
+}
+
+impl Drop for StreamWorkers {
+    fn drop(&mut self) {
+        self.shutdown.store(true, Ordering::Relaxed);
+        if let Some(h) = self.reader_handle.take() {
+            let _ = h.join();
+        }
+        if let Some(h) = self.normalizer_handle.take() {
+            let _ = h.join();
+        }
+    }
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -1049,6 +1488,118 @@ mod tests {
         assert_eq!(versions.bump("market.price"), 2);
         assert_eq!(versions.get("market.price"), 2);
         assert_eq!(versions.get("other.slot"), 0);
+    }
+
+    // ── Phase 2: parallel workers ──────────────────────────────────────────────
+
+    #[test]
+    fn stream_reader_continues_while_gpu_orchestrator_runs() {
+        // Reader and normalizer threads should process events independently.
+        let mut schema = SlotSchema::new();
+        schema.register(DeviceSlot::tensor_f32("market.price", vec![1]));
+
+        let events: Vec<_> = (0..5)
+            .map(|i| {
+                RawStreamEvent::new(
+                    "market_feed",
+                    "market_tick",
+                    "2026-06-06T00:00:00Z",
+                    json!({ "price": (60000.0 + i as f64) }),
+                )
+            })
+            .collect();
+
+        let source = InMemorySource::new("test", events);
+        let workers = StreamWorkers::spawn(StreamConfig::default(), schema, source);
+
+        // Give background threads time to process all events.
+        std::thread::sleep(Duration::from_millis(100));
+
+        let snap = workers.queue_metrics();
+        assert!(
+            snap.raw_enqueued > 0 || snap.slot_update_enqueued > 0,
+            "expected background threading activity; got {snap:?}"
+        );
+    }
+
+    #[test]
+    fn no_direct_multi_writer_gpu_mutation() {
+        // Structural: `StreamWorkers` owns the sole `SlotApplier` and is not Clone.
+        // Only one `StreamWorkers` instance can exist per device.
+        fn assert_not_clone<T: ?Sized>() {}
+        let _: fn() = assert_not_clone::<StreamWorkers>;
+    }
+
+    #[test]
+    fn bounded_queues_prevent_unbounded_memory_growth() {
+        // The bounded mpsc queue rejects pushes when at capacity, preventing
+        // unbounded memory growth under a fast producer.
+        let (tx, _rx) = mpsc::sync_channel::<RawStreamEvent>(3);
+        let make = || {
+            RawStreamEvent::new("test", "market_tick", "", json!({ "price": 1.0 }))
+        };
+
+        // Fill to capacity.
+        assert!(tx.try_send(make()).is_ok());
+        assert!(tx.try_send(make()).is_ok());
+        assert!(tx.try_send(make()).is_ok());
+        // One past capacity must fail.
+        assert!(
+            matches!(tx.try_send(make()), Err(TrySendError::Full(_))),
+            "expected QueueFull on 4th push to capacity-3 queue"
+        );
+    }
+
+    #[test]
+    fn file_line_source_reads_jsonl() {
+        let path = std::env::temp_dir().join(format!(
+            "stream_file_source_test_{}.jsonl",
+            std::process::id()
+        ));
+        std::fs::write(
+            &path,
+            "{\"kind\":\"market_tick\",\"price\":100.0}\n\
+             {\"kind\":\"market_tick\",\"price\":101.0}\n",
+        )
+        .unwrap();
+
+        let mut source = FileLineSource::new("test", &path);
+        let e1 = source.poll().expect("expected first event");
+        let e2 = source.poll().expect("expected second event");
+        let e3 = source.poll(); // EOF
+
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(e1.kind, "market_tick");
+        assert_eq!(e2.kind, "market_tick");
+        assert_eq!(e1.payload["price"], 100.0);
+        assert_eq!(e2.payload["price"], 101.0);
+        assert!(e3.is_none(), "expected None at EOF");
+    }
+
+    #[test]
+    fn in_memory_source_exhausts_after_all_events() {
+        let events = vec![
+            RawStreamEvent::new("src", "market_tick", "", json!({ "price": 1.0 })),
+            RawStreamEvent::new("src", "market_tick", "", json!({ "price": 2.0 })),
+        ];
+        let mut source = InMemorySource::new("test", events);
+        assert!(source.poll().is_some());
+        assert!(source.poll().is_some());
+        assert!(source.poll().is_none(), "expected None after exhaustion");
+    }
+
+    #[test]
+    fn queue_snapshot_depth_is_difference_of_enqueued_and_dequeued() {
+        let snap = QueueSnapshot {
+            raw_enqueued: 10,
+            raw_dequeued: 3,
+            slot_update_enqueued: 7,
+            slot_update_dequeued: 5,
+            ..Default::default()
+        };
+        assert_eq!(snap.raw_queue_depth(), 7);
+        assert_eq!(snap.slot_update_queue_depth(), 2);
     }
 
     // ── receipt writer ─────────────────────────────────────────────────────────

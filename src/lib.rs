@@ -44,9 +44,10 @@ pub use pattern::*;
 pub use plan::*;
 pub use tensor::*;
 pub use streaming::{
-    BackpressurePolicy, NormalizeError, RawStreamEvent, SlotApplier, SlotDType, SlotSchema,
-    SlotUpdate, SlotVersions, StreamConfig, StreamIngress, StreamIngressError, StreamReceipt,
-    StreamReceiptWriter, compact_latest_wins, normalize_event,
+    BackpressurePolicy, FileLineSource, InMemorySource, NormalizeError, QueueSnapshot,
+    RawStreamEvent, SlotApplier, SlotDType, SlotSchema, SlotUpdate, SlotVersions, StreamConfig,
+    StreamIngress, StreamIngressError, StreamMetrics, StreamReceipt, StreamReceiptWriter,
+    StreamSource, StreamWorkers, compact_latest_wins, normalize_event,
 };
 pub use tlog::*;
 pub use topology::*;
