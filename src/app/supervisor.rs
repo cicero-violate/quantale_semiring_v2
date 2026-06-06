@@ -17,6 +17,7 @@ pub fn gpu_native_supervisor_loop(
     world: &mut TensorQuantaleWorld,
     max_device_steps: u32,
     max_total_steps: u32,
+    mut pre_burst_fn: impl FnMut(&mut TensorQuantaleWorld),
     mut service_fn: impl FnMut(&mut TensorQuantaleWorld),
 ) -> Result<u32, CudaError> {
     let mut total_steps = 0u32;
@@ -25,6 +26,9 @@ pub fn gpu_native_supervisor_loop(
         if max_total_steps > 0 && total_steps >= max_total_steps {
             break;
         }
+
+        // Apply stream batch and activate event frontier before each burst.
+        pre_burst_fn(world);
 
         let previous_steps = total_steps;
         let status = world.orchestrate_until_wait_or_halt(max_device_steps)?;

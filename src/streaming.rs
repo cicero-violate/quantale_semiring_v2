@@ -73,6 +73,34 @@ pub enum BackpressurePolicy {
     Compact,
 }
 
+/// Normalized topology delta from a streaming source.
+///
+/// Produced when a raw event has `"kind": "edge_delta"` or `"kind": "node_delta"`.
+/// Routed through a separate bounded channel from slot updates so graph mutations
+/// do not compete with data uploads for queue capacity.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum TopologyDelta {
+    /// Mutate one edge in the quantale tensor.
+    Edge {
+        source: String,
+        src: String,
+        dst: String,
+        confidence: f32,
+        cost: f32,
+        safety: f32,
+        observed_at: String,
+        event_hash: String,
+    },
+    /// Activate or clear one node in the quantale frontier.
+    Node {
+        source: String,
+        node: String,
+        active: bool,
+        observed_at: String,
+        event_hash: String,
+    },
+}
+
 /// Raw event from a streaming source before normalization.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RawStreamEvent {
@@ -163,6 +191,7 @@ impl StreamReceipt {
     }
 
     /// Receipt placeholder for a valid update staged for a later batch flush.
+    #[allow(dead_code)]
     fn staged(update: SlotUpdate) -> Self {
         Self {
             source: update.source,
@@ -281,6 +310,9 @@ pub fn normalize_event(
     match event.kind.as_str() {
         "market_tick" => normalize_market_tick(event, config),
         "slot_update" => normalize_slot_update_envelope(event, config),
+        // Topology mutations are handled by the separate delta channel; yield no
+        // slot updates here so the normalizer worker counts them correctly.
+        "edge_delta" | "node_delta" => Ok(Vec::new()),
         _ => {
             // Check if payload carries an explicit kind field.
             if let Some(k) = event.payload.get("kind").and_then(Value::as_str) {
@@ -290,6 +322,16 @@ pub fn normalize_event(
             }
             Ok(Vec::new())
         }
+    }
+}
+
+/// If `event.kind` is `"edge_delta"` or `"node_delta"`, parse and return a
+/// `TopologyDelta`.  Returns `None` for all other event kinds.
+pub fn try_normalize_topology_delta(event: &RawStreamEvent) -> Option<TopologyDelta> {
+    match event.kind.as_str() {
+        "edge_delta" => normalize_edge_delta(event),
+        "node_delta" => normalize_node_delta(event),
+        _ => None,
     }
 }
 
@@ -418,6 +460,42 @@ fn normalize_slot_update_envelope(
     }])
 }
 
+/// Parse a `{"kind":"edge_delta", "src":…, "dst":…, "confidence":…, …}` envelope.
+///
+/// Returns `None` when required fields are missing or malformed.
+pub(crate) fn normalize_edge_delta(event: &RawStreamEvent) -> Option<TopologyDelta> {
+    let src = event.payload["src"].as_str()?.to_string();
+    let dst = event.payload["dst"].as_str()?.to_string();
+    let confidence = event.payload["confidence"].as_f64()? as f32;
+    let cost = event.payload["cost"].as_f64()? as f32;
+    let safety = event.payload["safety"].as_f64()? as f32;
+    Some(TopologyDelta::Edge {
+        source: event.source.clone(),
+        src,
+        dst,
+        confidence,
+        cost,
+        safety,
+        observed_at: event.observed_at.clone(),
+        event_hash: event.hash.clone(),
+    })
+}
+
+/// Parse a `{"kind":"node_delta", "node":…, "active":…}` envelope.
+///
+/// Returns `None` when required fields are missing or malformed.
+pub(crate) fn normalize_node_delta(event: &RawStreamEvent) -> Option<TopologyDelta> {
+    let node = event.payload["node"].as_str()?.to_string();
+    let active = event.payload["active"].as_bool().unwrap_or(true);
+    Some(TopologyDelta::Node {
+        source: event.source.clone(),
+        node,
+        active,
+        observed_at: event.observed_at.clone(),
+        event_hash: event.hash.clone(),
+    })
+}
+
 fn slot_policy(slot: &str, config: &StreamConfig) -> BackpressurePolicy {
     if config.latest_wins_slots.iter().any(|s| s == slot) {
         BackpressurePolicy::LatestWins
@@ -498,6 +576,10 @@ impl SlotSchema {
     pub fn contains(&self, name: &str) -> bool {
         self.slots.contains_key(name)
     }
+
+    pub fn iter(&self) -> impl Iterator<Item = &DeviceSlot> {
+        self.slots.values()
+    }
 }
 
 // ── SlotApplier ───────────────────────────────────────────────────────────────
@@ -562,7 +644,15 @@ impl SlotApplier {
                 Ok(()) => {}
             }
 
-            match self.upload_queue.stage(&update.slot, &update.values_f32) {
+            // schema entry confirmed by validate_update above
+            let slot_meta = match self.schema.get(&update.slot).cloned() {
+                Some(m) => m,
+                None => {
+                    receipts.push(StreamReceipt::dropped(update, "internal: slot missing after validation"));
+                    continue;
+                }
+            };
+            match self.upload_queue.stage(&slot_meta, &update.values_f32) {
                 Err(e) => {
                     receipts.push(StreamReceipt::dropped(update, format!("stage failed: {e}")));
                     continue;
@@ -1018,6 +1108,7 @@ fn run_reader_worker(
 fn run_normalizer_worker(
     raw_rx: Receiver<RawStreamEvent>,
     update_tx: SyncSender<SlotUpdate>,
+    delta_tx: SyncSender<TopologyDelta>,
     metrics: Arc<StreamMetrics>,
     shutdown: Arc<AtomicBool>,
     config: StreamConfig,
@@ -1026,6 +1117,12 @@ fn run_normalizer_worker(
         match raw_rx.recv_timeout(Duration::from_millis(10)) {
             Ok(event) => {
                 metrics.raw_dequeued.fetch_add(1, Ordering::Relaxed);
+                // Route topology deltas (edge_delta / node_delta) to the separate
+                // channel.  Other event kinds produce slot updates as before.
+                if let Some(delta) = try_normalize_topology_delta(&event) {
+                    // Best-effort: drop delta if the delta channel is full.
+                    let _ = delta_tx.try_send(delta);
+                }
                 match normalize_event(&event, &config) {
                     Ok(updates) => {
                         for update in updates {
@@ -1080,6 +1177,9 @@ fn run_normalizer_worker(
                     // Drain any remaining raw events before exiting.
                     while let Ok(event) = raw_rx.try_recv() {
                         metrics.raw_dequeued.fetch_add(1, Ordering::Relaxed);
+                        if let Some(delta) = try_normalize_topology_delta(&event) {
+                            let _ = delta_tx.try_send(delta);
+                        }
                         if let Ok(updates) = normalize_event(&event, &config) {
                             for u in updates {
                                 let _ = update_tx.try_send(u);
@@ -1106,6 +1206,10 @@ pub struct StreamWorkers {
     /// Sender that external code can use to inject raw events.
     pub raw_event_tx: SyncSender<RawStreamEvent>,
     update_rx: Receiver<SlotUpdate>,
+    /// Topology mutation deltas routed by the normalizer from `edge_delta` /
+    /// `node_delta` events.  Drained on the GPU-owner thread via
+    /// `drain_topology_deltas`.
+    topology_delta_rx: Receiver<TopologyDelta>,
     pub applier: SlotApplier,
     pub metrics: Arc<StreamMetrics>,
     shutdown: Arc<AtomicBool>,
@@ -1122,6 +1226,10 @@ impl StreamWorkers {
     pub fn spawn(config: StreamConfig, schema: SlotSchema, source: impl StreamSource) -> Self {
         let (raw_tx, raw_rx) = mpsc::sync_channel(config.raw_event_queue_capacity);
         let (update_tx, update_rx) = mpsc::sync_channel(config.slot_update_queue_capacity);
+        // Topology delta channel: capacity proportional to raw event queue but
+        // capped at 256 since graph mutations are rare compared to data updates.
+        let delta_cap = config.raw_event_queue_capacity.min(256).max(8);
+        let (delta_tx, topology_delta_rx) = mpsc::sync_channel::<TopologyDelta>(delta_cap);
         let metrics = Arc::new(StreamMetrics::default());
         let shutdown = Arc::new(AtomicBool::new(false));
 
@@ -1148,13 +1256,21 @@ impl StreamWorkers {
         let normalizer_handle = std::thread::Builder::new()
             .name("stream-normalizer".into())
             .spawn(move || {
-                run_normalizer_worker(raw_rx, update_tx, norm_metrics, norm_shutdown, norm_config);
+                run_normalizer_worker(
+                    raw_rx,
+                    update_tx,
+                    delta_tx,
+                    norm_metrics,
+                    norm_shutdown,
+                    norm_config,
+                );
             })
             .expect("failed to spawn stream-normalizer thread");
 
         Self {
             raw_event_tx: raw_tx,
             update_rx,
+            topology_delta_rx,
             applier: SlotApplier::new(schema),
             metrics,
             shutdown,
@@ -1162,6 +1278,20 @@ impl StreamWorkers {
             normalizer_handle: Some(normalizer_handle),
             config,
         }
+    }
+
+    /// Drain all pending topology deltas (edge and node mutations) from the
+    /// background normalizer queue.
+    ///
+    /// Must be called from the orchestrator (GPU-owner) thread before each burst,
+    /// alongside `apply_pending`, so that graph mutations are visible to the
+    /// scheduler in the same burst cycle as their associated slot updates.
+    pub fn drain_topology_deltas(&mut self) -> Vec<TopologyDelta> {
+        let mut deltas = Vec::new();
+        while let Ok(d) = self.topology_delta_rx.try_recv() {
+            deltas.push(d);
+        }
+        deltas
     }
 
     /// Inject a raw event directly (bypassing the source thread).

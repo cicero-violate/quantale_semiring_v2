@@ -491,7 +491,7 @@ struct InFlightUpload {
 /// A future refactor can introduce a CUDA stream and pinned host buffers here
 /// once the correctness baseline is established.
 pub struct UploadQueue {
-    staged: Vec<(String, HostStagingBuffer)>,
+    staged: Vec<(DeviceSlot, HostStagingBuffer)>,
     #[cfg(feature = "cuda")]
     in_flight: Vec<InFlightUpload>,
     #[cfg(feature = "cuda")]
@@ -515,31 +515,33 @@ impl UploadQueue {
         Self::default()
     }
 
-    /// Stage `data` for upload under `slot`.  The copy into the staging buffer
-    /// is synchronous (Vec copy on the CPU); the H2D transfer happens on `flush`.
-    pub fn stage(&mut self, slot: &str, data: &[f32]) -> Result<(), String> {
+    /// Stage `data` for upload under `slot_meta`.  Preserves shape and dtype
+    /// metadata so `flush` can call `registry.register` with full slot context.
+    pub fn stage(&mut self, slot_meta: &DeviceSlot, data: &[f32]) -> Result<(), String> {
         self.staged
-            .push((slot.to_string(), HostStagingBuffer::from_slice(data)));
+            .push((slot_meta.clone(), HostStagingBuffer::from_slice(data)));
         Ok(())
     }
 
     #[cfg(feature = "cuda")]
     /// Upload all staged buffers to the device slot registry and clear the queue.
     ///
-    /// The transfer uses `htod_copy` (synchronous H2D DMA).  Staged buffers are
-    /// cleared on success; on failure the queue state is undefined.
+    /// Preserves full slot metadata (shape, dtype) by calling `registry.register`
+    /// rather than the raw `insert` path which would synthesize a minimal descriptor.
     pub fn flush(
         &mut self,
         registry: &mut DeviceSlotRegistry,
         dev: &std::sync::Arc<cudarc::driver::CudaDevice>,
     ) -> Result<(), String> {
         self.synchronize()?;
-        for (slot, buf) in self.staged.drain(..) {
+        for (slot_meta, buf) in self.staged.drain(..) {
             let device_buf = dev
                 .htod_copy(buf.data)
-                .map_err(|e| format!("UploadQueue htod '{slot}': {e}"))?;
-            registry.insert(slot.clone(), device_buf);
-            self.in_flight.push(InFlightUpload { _slot: slot });
+                .map_err(|e| format!("UploadQueue htod '{}': {e}", slot_meta.name))?;
+            self.in_flight.push(InFlightUpload {
+                _slot: slot_meta.name.clone(),
+            });
+            registry.register(slot_meta, device_buf);
         }
         self.in_flight_device = Some(dev.clone());
         Ok(())

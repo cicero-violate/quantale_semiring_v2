@@ -38,3 +38,4 @@ pub(super) const ORCH_CHECK_NO_CMD_WITHOUT_RECEIPT_KERNEL: &str =
     "orch_check_no_command_without_receipt";
 pub(super) const ORCH_REPLAY_SNAPSHOT_KERNEL: &str = "orch_replay_snapshot";
 pub(super) const ORCH_REPLAY_RESTORE_KERNEL: &str = "orch_replay_restore";
+pub(super) const MARK_NODE_ACTIVE_KERNEL: &str = "quantale_mark_node_active";

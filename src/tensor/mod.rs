@@ -135,6 +135,7 @@ impl TensorQuantaleWorld {
                 ORCH_CHECK_NO_CMD_WITHOUT_RECEIPT_KERNEL,
                 ORCH_REPLAY_SNAPSHOT_KERNEL,
                 ORCH_REPLAY_RESTORE_KERNEL,
+                MARK_NODE_ACTIVE_KERNEL,
             ],
         )
         .map_err(|error| CudaError::new("load_ptx tensor", error))?;
@@ -419,6 +420,25 @@ impl TensorQuantaleWorld {
             .htod_copy(self.base_tensor.clone())
             .map_err(|error| CudaError::new("htod_copy tensor base restore", error))?;
         Ok(())
+    }
+
+    /// Apply a pending stream batch from the CPU-side `StreamWorkers` to the
+    /// `DeviceSlotRegistry` using this world's CUDA device.
+    ///
+    /// Must be called from the GPU-owner (orchestrator) thread only.
+    pub fn apply_stream_batch(
+        &mut self,
+        stream: &mut crate::streaming::StreamWorkers,
+        slots: &mut crate::device_slots::DeviceSlotRegistry,
+    ) -> Vec<crate::streaming::StreamReceipt> {
+        #[cfg(feature = "cuda")]
+        {
+            stream.apply_pending(slots, &self.dev)
+        }
+        #[cfg(not(feature = "cuda"))]
+        {
+            stream.apply_pending(slots)
+        }
     }
 
     pub fn reset(&mut self) -> Result<(), CudaError> {

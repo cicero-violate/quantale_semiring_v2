@@ -158,6 +158,7 @@ mod tests {
             "device_ring_pop",
             "tensor_quantale_gpu_dispatch",
             "tensor_quantale_par_group_step",
+            "quantale_mark_node_active",
         ];
         for kernel in expected {
             let needle = format!("extern \"C\" __global__ void {kernel}(");

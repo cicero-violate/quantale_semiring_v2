@@ -572,3 +572,15 @@ extern "C" __global__ void tensor_quantale_orchestrate_step(
         -1, -1, sel_src, sel_hop,
         cmd_ring, cmd_tail, cmd_head, cmd_ring_size);
 }
+
+// ── Stream receipt frontier activation ────────────────────────────────────────
+
+extern "C" __global__ void quantale_mark_node_active(
+    int* active,
+    int node_id,
+    int n
+) {
+    if (threadIdx.x == 0 && node_id >= 0 && node_id < n) {
+        active[node_id] = 1;
+    }
+}

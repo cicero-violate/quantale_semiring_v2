@@ -1260,6 +1260,84 @@
         "writes": [],
         "locks": []
       }
+    },
+    {
+      "node_name": "Stream::Poll",
+      "executable": "true",
+      "static_args": [],
+      "input_mapping": {
+        "stdin_source": null
+      },
+      "effects": {
+        "reads": [],
+        "writes": [],
+        "locks": []
+      }
+    },
+    {
+      "node_name": "Stream::Normalize",
+      "executable": "true",
+      "static_args": [],
+      "input_mapping": {
+        "stdin_source": null
+      },
+      "effects": {
+        "reads": [],
+        "writes": [],
+        "locks": []
+      }
+    },
+    {
+      "node_name": "Stream::SlotUpdate",
+      "executable": "true",
+      "static_args": [],
+      "input_mapping": {
+        "stdin_source": null
+      },
+      "effects": {
+        "reads": [],
+        "writes": [],
+        "locks": []
+      }
+    },
+    {
+      "node_name": "Stream::ApplySlot",
+      "executable": "true",
+      "static_args": [],
+      "input_mapping": {
+        "stdin_source": null
+      },
+      "effects": {
+        "reads": [],
+        "writes": [],
+        "locks": []
+      }
+    },
+    {
+      "node_name": "Stream::Backpressure",
+      "executable": "true",
+      "static_args": [],
+      "input_mapping": {
+        "stdin_source": null
+      },
+      "effects": {
+        "reads": [],
+        "writes": [],
+        "locks": []
+      }
+    },
+    {
+      "node_name": "Event::StreamUpdated",
+      "executable": "true",
+      "static_args": [],
+      "input_mapping": {
+        "stdin_source": null
+      },
+      "effects": {
+        "reads": [],
+        "writes": [],
+        "locks": []
+      }
     }
   ]
 }

@@ -17,6 +17,7 @@ pub mod pattern;
 pub mod plan;
 pub mod runtime_check;
 pub mod streaming;
+pub mod streaming_quantale;
 pub mod tensor;
 pub mod tlog;
 pub mod topology;
@@ -55,8 +56,10 @@ pub use streaming::{
     FileLineSource, InMemorySource, NormalizeError, PinnedSlotApplier, QueueSnapshot,
     RawStreamEvent, ShutdownHandle, SlotApplier, SlotDType, SlotSchema, SlotUpdate, SlotVersions,
     StreamConfig, StreamIngress, StreamIngressError, StreamMetrics, StreamReceipt,
-    StreamReceiptWriter, StreamSource, StreamWorkers, compact_latest_wins, normalize_event,
+    StreamReceiptWriter, StreamSource, StreamWorkers, TopologyDelta, compact_latest_wins,
+    normalize_event, try_normalize_topology_delta,
 };
+pub use streaming_quantale::*;
 pub use tensor::*;
 pub use tlog::*;
 pub use topology::*;

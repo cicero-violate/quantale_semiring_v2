@@ -334,6 +334,37 @@
       "id": 60,
       "name": "State::Introspect",
       "type": "State"
+    },
+    {
+      "id": 61,
+      "name": "Stream::Poll",
+      "type": "Stream"
+    },
+    {
+      "id": 62,
+      "name": "Stream::Normalize",
+      "type": "Stream"
+    },
+    {
+      "id": 63,
+      "name": "Stream::SlotUpdate",
+      "type": "Stream"
+    },
+    {
+      "id": 64,
+      "name": "Stream::ApplySlot",
+      "type": "Stream"
+    },
+    {
+      "id": 65,
+      "name": "Stream::Backpressure",
+      "type": "Stream"
+    },
+    {
+      "id": 66,
+      "name": "Event::StreamUpdated",
+      "type": "Event",
+      "consumption": "reentrant"
     }
   ],
   "pages": [
@@ -665,6 +696,18 @@
     "workspace.files": {
       "kind": "state",
       "type": "bytes"
+    },
+    "market.high": {
+      "type": "f32[]",
+      "kind": "tensor"
+    },
+    "market.low": {
+      "type": "f32[]",
+      "kind": "tensor"
+    },
+    "market.volume": {
+      "type": "f32[]",
+      "kind": "tensor"
     }
   },
   "source_version": "v1",
@@ -1420,6 +1463,70 @@
       "policy_effect": "market_analysis_cycle",
       "safety": 0.98,
       "to": "State::Plan"
+    },
+    {
+      "from": "Stream::Poll",
+      "to": "Stream::Normalize",
+      "confidence": 0.99,
+      "cost": 0.01,
+      "safety": 0.99,
+      "policy_effect": "StreamNormalize"
+    },
+    {
+      "from": "Stream::Normalize",
+      "to": "Stream::SlotUpdate",
+      "confidence": 0.99,
+      "cost": 0.01,
+      "safety": 0.99,
+      "policy_effect": "StreamSlotUpdate"
+    },
+    {
+      "from": "Stream::SlotUpdate",
+      "to": "Stream::ApplySlot",
+      "confidence": 0.99,
+      "cost": 0.01,
+      "safety": 0.99,
+      "policy_effect": "StreamApply"
+    },
+    {
+      "from": "Stream::ApplySlot",
+      "to": "Event::StreamUpdated",
+      "confidence": 0.99,
+      "cost": 0.01,
+      "safety": 0.99,
+      "policy_effect": "StreamReceipt"
+    },
+    {
+      "from": "Stream::ApplySlot",
+      "to": "Stream::Backpressure",
+      "confidence": 0.5,
+      "cost": 0.1,
+      "safety": 0.9,
+      "policy_effect": "StreamBackpressure"
+    },
+    {
+      "from": "Event::MarketFeedUpdated",
+      "to": "Analysis::Return1",
+      "confidence": 0.9,
+      "cost": 0.05,
+      "safety": 0.95,
+      "policy_effect": "TriggerAnalysis"
+    },
+    {
+      "from": "Event::MarketFeedUpdated",
+      "to": "Analysis::Volatility",
+      "confidence": 0.9,
+      "cost": 0.05,
+      "safety": 0.95,
+      "policy_effect": "TriggerAnalysis"
+    },
+    {
+      "from": "Event::MarketFeedUpdated",
+      "to": "Analysis::SignalScore",
+      "confidence": 0.9,
+      "cost": 0.05,
+      "safety": 0.95,
+      "policy_effect": "TriggerAnalysis"
     }
   ],
   "version": 1

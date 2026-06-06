@@ -9,7 +9,9 @@ mod app;
 
 use app::{CliCommand, handle};
 #[cfg(feature = "cuda")]
-use app::{build_runtime_epoch, gpu_native_supervisor_loop};
+use app::{activate_stream_event_nodes, build_runtime_epoch, gpu_native_supervisor_loop};
+#[cfg(feature = "cuda")]
+use quantale_semiring_v2::apply_topology_delta;
 
 #[cfg(feature = "cuda")]
 macro_rules! fatal {
@@ -136,6 +138,38 @@ fn run_runtime() {
         &mut epoch.world,
         max_device_steps,
         max_total_steps,
+        |world| {
+            if let Some(stream) = epoch.stream_workers.as_mut() {
+                // Apply streamed slot updates.
+                let receipts = world.apply_stream_batch(stream, &mut epoch.slot_registry);
+                if let Err(error) = epoch.stream_receipts.append(&receipts) {
+                    console::warn(
+                        "streaming",
+                        "receipt_write_failed",
+                        &[("error", error.to_string())],
+                    );
+                }
+                if let Err(error) =
+                    activate_stream_event_nodes(world, &epoch.topology, &receipts)
+                {
+                    console::warn(
+                        "streaming",
+                        "activate_event_nodes_failed",
+                        &[("error", error.to_string())],
+                    );
+                }
+                // Apply streamed topology deltas (edge_delta / node_delta events).
+                for delta in stream.drain_topology_deltas() {
+                    if let Err(error) = apply_topology_delta(world, &epoch.topology, delta) {
+                        console::warn(
+                            "streaming",
+                            "topology_delta_failed",
+                            &[("error", error.to_string())],
+                        );
+                    }
+                }
+            }
+        },
         |world| match quantale_semiring_v2::orch_service::service_external_commands(
             world,
             &epoch.executor,

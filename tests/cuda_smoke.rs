@@ -3,7 +3,7 @@ mod cuda_smoke {
     use cudarc::driver::{CudaDevice, LaunchAsync, LaunchConfig};
     use quantale_semiring_v2::{
         DISPATCH_KIND_EXTERNAL_IO, DISPATCH_KIND_EXTERNAL_PROCESS, DISPATCH_KIND_HF_DEVICE,
-        DeviceSlotRegistry, FusionHfCoverage, JitCache, JitChain, OperatorRegistry, OrchStepStatus,
+        DeviceSlot, DeviceSlotRegistry, FusionHfCoverage, JitCache, JitChain, OperatorRegistry, OrchStepStatus,
         PAR_DISPATCH_ABSTRACT_DEVICE, PAR_DISPATCH_HF_DEVICE, ProjectionBias, SystemConfig,
         TENSOR_NODE_COUNT, TensorEdge, TensorQuantaleWorld, TopologyRuntime, UploadQueue,
         build_node_dispatch_kinds, load_operator_registry,
@@ -814,7 +814,8 @@ mod cuda_smoke {
 
         let mut queue = UploadQueue::new();
         let mut slots = DeviceSlotRegistry::new();
-        queue.stage("math.a", &[1.0, 2.0, 3.0, 4.0])?;
+        let slot = DeviceSlot::tensor_f32("math.a", vec![4]);
+        queue.stage(&slot, &[1.0, 2.0, 3.0, 4.0])?;
         queue.flush(&mut slots, &device)?;
         assert_eq!(queue.pending(), 0);
         assert_eq!(queue.in_flight(), 1);

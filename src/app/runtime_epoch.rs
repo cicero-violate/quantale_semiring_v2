@@ -1,5 +1,6 @@
 use quantale_semiring_v2::{
-    LearningBuffer, LearningPolicy, SystemConfig, TensorQuantaleWorld, TlogWriter,
+    DeviceSlot, DeviceSlotRegistry, LearningBuffer, LearningPolicy, SlotSchema,
+    StreamReceiptWriter, StreamWorkers, SystemConfig, TensorQuantaleWorld, TlogWriter,
     TopologyInvariants, TopologyRuntime, UniversalExecutor, ViolationKind, check_with_operators,
     compile_pattern, console, format_violations, load_compiled_pattern_edges,
     load_default_patterns, load_learned_tensor_edges,
@@ -10,6 +11,47 @@ pub(crate) struct RuntimeEpoch {
     pub(crate) executor: UniversalExecutor,
     pub(crate) world: TensorQuantaleWorld,
     pub(crate) learning_buffer: LearningBuffer,
+    pub(crate) slot_registry: DeviceSlotRegistry,
+    pub(crate) stream_workers: Option<StreamWorkers>,
+    pub(crate) stream_receipts: StreamReceiptWriter,
+}
+
+/// Build the slot schema expected by the streaming pipeline.
+///
+/// Each slot gets shape [3] as a minimal placeholder (open/high/low, etc.).
+fn build_stream_slot_schema() -> SlotSchema {
+    let mut schema = SlotSchema::new();
+    for name in &[
+        "market.price",
+        "market.open",
+        "market.high",
+        "market.low",
+        "market.volume",
+        "analysis.return",
+        "analysis.volatility",
+        "analysis.signal_score",
+    ] {
+        schema.register(DeviceSlot::tensor_f32(*name, vec![3]));
+    }
+    schema
+}
+
+/// Pre-allocate device buffers for every slot declared in `schema` and
+/// insert them into `registry`.
+#[cfg(feature = "cuda")]
+fn preallocate_slot_registry(
+    registry: &mut DeviceSlotRegistry,
+    schema: &SlotSchema,
+    dev: &std::sync::Arc<cudarc::driver::CudaDevice>,
+) -> Result<(), String> {
+    for slot in schema.iter() {
+        let zeros: Vec<f32> = vec![0.0_f32; slot.len()];
+        let buf = dev
+            .htod_copy(zeros)
+            .map_err(|e| format!("preallocate slot '{}': {e}", slot.name))?;
+        registry.register(slot.clone(), buf);
+    }
+    Ok(())
 }
 
 pub(crate) fn build_runtime_epoch(
@@ -125,10 +167,25 @@ pub(crate) fn build_runtime_epoch(
         }
     }
 
+    // ── Streaming pipeline setup ──────────────────────────────────────────────
+
+    let schema = build_stream_slot_schema();
+    let mut slot_registry = DeviceSlotRegistry::new();
+
+    #[cfg(feature = "cuda")]
+    preallocate_slot_registry(&mut slot_registry, &schema, world.device())
+        .map_err(|e| e.to_string())?;
+
+    let stream_receipts = StreamReceiptWriter::open("state/stream_receipts.jsonl")
+        .map_err(|e| format!("open stream_receipts: {e}"))?;
+
     Ok(RuntimeEpoch {
         topology,
         executor,
         world,
         learning_buffer: LearningBuffer::new(&config.learned_edges_path, LEARNING_FLUSH_THRESHOLD),
+        slot_registry,
+        stream_workers: None,
+        stream_receipts,
     })
 }

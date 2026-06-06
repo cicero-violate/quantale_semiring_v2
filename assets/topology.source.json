@@ -185,6 +185,18 @@
     "rollback.record": {
       "type": "json",
       "kind": "state"
+    },
+    "market.high": {
+      "type": "f32[]",
+      "kind": "tensor"
+    },
+    "market.low": {
+      "type": "f32[]",
+      "kind": "tensor"
+    },
+    "market.volume": {
+      "type": "f32[]",
+      "kind": "tensor"
     }
   },
   "resources": {
@@ -1125,6 +1137,73 @@
       "governance": {
         "llm": true
       }
+    },
+    {
+      "name": "Stream::Poll",
+      "kind": "host_node",
+      "purity": "impure",
+      "runtime": {
+        "backend": "noop"
+      },
+      "reads": [],
+      "writes": [],
+      "locks": []
+    },
+    {
+      "name": "Stream::Normalize",
+      "kind": "host_node",
+      "purity": "pure",
+      "runtime": {
+        "backend": "noop"
+      },
+      "reads": [],
+      "writes": [],
+      "locks": []
+    },
+    {
+      "name": "Stream::SlotUpdate",
+      "kind": "host_node",
+      "purity": "pure",
+      "runtime": {
+        "backend": "noop"
+      },
+      "reads": [],
+      "writes": [],
+      "locks": []
+    },
+    {
+      "name": "Stream::ApplySlot",
+      "kind": "host_node",
+      "purity": "impure",
+      "runtime": {
+        "backend": "noop"
+      },
+      "reads": [],
+      "writes": [],
+      "locks": []
+    },
+    {
+      "name": "Stream::Backpressure",
+      "kind": "host_node",
+      "purity": "pure",
+      "runtime": {
+        "backend": "noop"
+      },
+      "reads": [],
+      "writes": [],
+      "locks": []
+    },
+    {
+      "name": "Event::StreamUpdated",
+      "kind": "event_node",
+      "purity": "pure",
+      "runtime": {
+        "backend": "noop"
+      },
+      "reentrant": true,
+      "reads": [],
+      "writes": [],
+      "locks": []
     }
   ],
   "programs": [
@@ -1977,6 +2056,46 @@
       "confidence": 0.9,
       "cost": 0.1,
       "safety": 0.95
+    },
+    {
+      "from": "Stream::Poll",
+      "to": "Stream::Normalize",
+      "label": "raw_event"
+    },
+    {
+      "from": "Stream::Normalize",
+      "to": "Stream::SlotUpdate",
+      "label": "slot_update"
+    },
+    {
+      "from": "Stream::SlotUpdate",
+      "to": "Stream::ApplySlot",
+      "label": "apply"
+    },
+    {
+      "from": "Stream::ApplySlot",
+      "to": "Event::StreamUpdated",
+      "label": "receipt"
+    },
+    {
+      "from": "Stream::ApplySlot",
+      "to": "Stream::Backpressure",
+      "label": "backpressure"
+    },
+    {
+      "from": "Event::MarketFeedUpdated",
+      "to": "Analysis::Return1",
+      "label": "trigger"
+    },
+    {
+      "from": "Event::MarketFeedUpdated",
+      "to": "Analysis::Volatility",
+      "label": "trigger"
+    },
+    {
+      "from": "Event::MarketFeedUpdated",
+      "to": "Analysis::SignalScore",
+      "label": "trigger"
     }
   ],
   "pages": [

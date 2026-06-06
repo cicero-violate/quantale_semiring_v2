@@ -829,4 +829,18 @@ impl TensorQuantaleWorld {
         }
         .map_err(|e| CudaError::new(ORCH_REPLAY_RESTORE_KERNEL, e))
     }
+
+    // ── Stream receipt frontier activation ───────────────────────────────────
+
+    /// Set `active[node_id] = 1` on the GPU frontier.  Called once per applied
+    /// `StreamReceipt` to drive the scheduler's event frontier.
+    pub fn mark_node_active(&mut self, node_id: i32) -> Result<(), CudaError> {
+        let n = TENSOR_NODE_COUNT as i32;
+        let kernel = self
+            .dev
+            .get_func(MODULE_NAME, MARK_NODE_ACTIVE_KERNEL)
+            .ok_or(CudaError::missing_function(MARK_NODE_ACTIVE_KERNEL))?;
+        unsafe { kernel.launch(kernel_config(), (&mut self.active, node_id, n)) }
+            .map_err(|error| CudaError::new(MARK_NODE_ACTIVE_KERNEL, error))
+    }
 }

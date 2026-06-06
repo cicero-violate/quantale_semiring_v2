@@ -11,7 +11,8 @@
 #[cfg(not(feature = "cuda"))]
 use quantale_semiring_v2::DeviceSlotRegistry;
 use quantale_semiring_v2::{
-    FusionDispatch, HostStagingBuffer, HotRegionRegistry, UploadQueue, load_operator_registry,
+    DeviceSlot, FusionDispatch, HostStagingBuffer, HotRegionRegistry, UploadQueue,
+    load_operator_registry,
 };
 
 // ── Hot region slot validation ────────────────────────────────────────────────
@@ -126,16 +127,17 @@ fn upload_queue_stage_accumulates_slots() {
     let mut q = UploadQueue::new();
     assert_eq!(q.pending(), 0);
 
-    q.stage("math.a", &[1.0, 2.0]).unwrap();
-    q.stage("math.b", &[3.0, 4.0]).unwrap();
+    q.stage(&DeviceSlot::tensor_f32("math.a", vec![2]), &[1.0, 2.0]).unwrap();
+    q.stage(&DeviceSlot::tensor_f32("math.b", vec![2]), &[3.0, 4.0]).unwrap();
     assert_eq!(q.pending(), 2);
 }
 
 #[test]
 fn upload_queue_stage_same_slot_twice_accumulates() {
     let mut q = UploadQueue::new();
-    q.stage("x", &[1.0]).unwrap();
-    q.stage("x", &[2.0]).unwrap();
+    let slot = DeviceSlot::tensor_f32("x", vec![1]);
+    q.stage(&slot, &[1.0]).unwrap();
+    q.stage(&slot, &[2.0]).unwrap();
     assert_eq!(
         q.pending(),
         2,
@@ -147,7 +149,7 @@ fn upload_queue_stage_same_slot_twice_accumulates() {
 #[test]
 fn upload_queue_flush_clears_staged_no_cuda() {
     let mut q = UploadQueue::new();
-    q.stage("x", &[1.0, 2.0]).unwrap();
+    q.stage(&DeviceSlot::tensor_f32("x", vec![2]), &[1.0, 2.0]).unwrap();
     let mut reg = DeviceSlotRegistry::new();
     // Non-CUDA flush just clears the queue without uploading.
     q.flush(&mut reg).unwrap();
