@@ -38,9 +38,7 @@ TensorEdge[]
   → GPU-native orchestration (tensor_quantale_orchestrate_step: SEQ/PAR/CHOICE/STAR on-device)
       ControlEdge + EffectTable tables → select_control_decision → commit_selected_node_or_command
       DeviceCommand ring → CPU command service → DeviceReceiptExt ring
-  → Single-step fallback   (frontier_step, when no control edge is active)
   → ProcessReceipt
-  → tensor_quantale_update_edge → T := T ∨ ΔT
 ```
 
 `main.rs` uses the generated artifact path only. The scalar CUDA matrix runtime, scalar LLM plan format, CPU routing planner, and DSL/search/ingress demo layer must not be reintroduced.
@@ -102,7 +100,7 @@ The node universe is declared in `assets/topology.source.json` and compiled into
 registry.id_of("State::Execute")   // Option<usize>
 registry.name_of(9)                 // Option<&str>
 registry.action_of(17)              // Option<&str>  — from JSON "action" field
-registry.len()                      // node count (74)
+registry.len()                      // node count (61)
 registry.matrix_len()               // len * len
 ```
 
@@ -113,13 +111,13 @@ To add a node: edit `assets/topology.source.json`, then run `cargo run -- topolo
 ```text
 cuda/quantale_world.cu
   → compiled at runtime via NVRTC (cudarc::nvrtc::compile_ptx)
-  Tensor core: closure, projection, exploration (seed/expand/score/topk/commit),
-               frontier_step, tick, update_edge, decay, par_group_step (legacy)
+  Tensor core: reset, embed_edges, closure, project, decay,
+               exploration (seed/expand/score/topk/commit), JIT score embedding
   Orchestration scheduler: tensor_quantale_orchestrate_step (primary per-step entry),
                orchestration_state_init/snapshot, star_counters_init,
                select_control_decision, commit_selected_node_or_command,
                orch_replay_snapshot/restore, orch_event_trace_push/drain,
-               failure_policy_*, learned_delta_*, orch_check_*
+               failure_policy_*, learned_delta_*, orch_check_*, par_group_step
 
 JIT fusion kernels (src/jit_kernel_fusion/)
   → synthesized from topology.fusion.json + operators.json at startup
@@ -266,7 +264,7 @@ separate kernel_fusion crate or addons/ directory
 runtime PTX stitching or FusionPlan types
 fake CUDA planned-success receipts
 QuantaleAction enum / selected_action()
-control_flow_advance as a primary path (deprecated; use orchestrate_step)
+standalone control-flow side path bypassing orchestrate_step
 TypedIR lowering scaffold (ir.rs — deleted)
 CPU batch scheduler (batch.rs — deleted)
 bench binaries in src/bin/ (deleted)
@@ -274,4 +272,4 @@ bench binaries in src/bin/ (deleted)
 
 ## Proof boundary
 
-Lean/cLean artifacts live under `lean/`. They name the proof boundary for tensor closure, projection, frontier, tick, and batch projection/commit behavior. Specification artifacts unless a local Lean toolchain is installed.
+Lean/cLean artifacts live under `lean/`. They name the proof boundary for tensor closure, projection, and GPU-native orchestration behavior. Specification artifacts unless a local Lean toolchain is installed.

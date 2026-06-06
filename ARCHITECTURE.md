@@ -163,9 +163,9 @@ GPU-native orchestration with external command service (current)
            D_g=0 for process/IO (explicit command/receipt protocol)
 
 Fully GPU-native orchestration (complete — all nine phases done 2026-06-05)
-  Same as above plus: standalone control_flow_advance side-path retired;
+  Same as above plus: standalone control-flow side paths retired;
   all runtime test coverage migrated to orchestrate_step observations;
-  legacy CPU orchestration feature-gated rather than default.
+  no legacy CPU orchestration fallback is compiled into the runtime.
 
   Metrics: S_g=1  P_g=1  E_g=1  D_g=1  C_g=1  R_g=1  F_g=1  H_g=0
 ```
@@ -182,15 +182,14 @@ Three distinct compilation and loading paths — all dispatch through cudarc:
 cuda/quantale_world.cu
   Compiled: NVRTC at runtime (cudarc::nvrtc::compile_ptx)
   Tensor core:
-    tensor_quantale_reset, embed_edges, closure, project,
-    project_batch, commit_batch, frontier_step, tick,
-    update_edge, decay, seed_exploration, expand_tokens,
-    score_tokens, select_topk_tokens, commit_exploration,
-    par_group_step
+    tensor_quantale_reset, embed_edges, closure, project, decay,
+    seed_exploration, expand_tokens, score_tokens,
+    select_topk_tokens, commit_exploration,
+    jit_chain_score_embed, par_group_step
   Orchestration scheduler:
     orchestration_state_init, orchestration_state_snapshot,
     tensor_quantale_orchestrate_step, star_counters_init,
-    control_flow_advance, check_effects_independent,
+    check_effects_independent,
     failure_policy_init, failure_policy_classify_and_emit,
     failure_policy_set_rollback_marker, failure_policy_apply_rollback,
     learned_delta_init, learned_delta_fold_receipt,
@@ -211,7 +210,7 @@ GPU-native orchestration scheduler. `tensor_quantale_orchestrate_step` is the
 primary per-step entry point: it consults the ControlEdge + EffectTable device
 tables to execute SEQ, PAR, CHOICE, and bounded STAR without CPU involvement,
 then falls back to singleton tensor scoring if no control edge is active.
-`par_group_step` remains for the legacy par-dispatch path. Fusion kernels use
+`par_group_step` remains for explicit GPU-native par-group dispatch. Fusion kernels use
 NVRTC to specialize operator chains at startup.
 
 ## Fusion architecture
@@ -289,15 +288,12 @@ TensorEdge[]
           select_control_decision (priority: SEQ > STAR_BODY > CHOICE > PAR > HALT)
           per-edge star_counters → GPU-resident, snapshotted for replay
           DeviceCommand ring → CPU command service → DeviceReceiptExt ring
-  → legacy par dispatch (superseded)
+  → GPU-native par dispatch
       → par_group_step(ParGroupGpuData)
           tensor_quantale_par_group_step  (select + validate + commit)
       → dispatch_gpu_parallel_group       (concurrent operator launch)
-  → single-step fallback
-      → tensor_quantale_frontier_step
-  → ProcessReceipt
-  → tensor_quantale_update_edge
-  → T := T ∨ ΔT
+  → ProcessReceipt / DeviceReceiptExt feedback
+      → device receipt drain folds outcomes into T
 ```
 
 ## Dispatch loop
@@ -325,7 +321,7 @@ each tick:
        CPU command service: reads DeviceCommand ring, executes process/IO, returns DeviceReceiptExt
        update receipt priors + tlog
        continue  (if step completed with ORCH_CONTINUE)
-  5. frontier_step (fallback when no control edge is active)
+  5. blocked/no-ready status when no control edge or tensor edge is active
        execute_active_node_blocking     ← same single dispatch path
        update receipt priors + lattice
 ```
@@ -420,28 +416,22 @@ tensor_quantale_reset
 tensor_quantale_embed_edges
 tensor_quantale_closure
 tensor_quantale_project
-tensor_quantale_project_batch       (used internally by par_group_step)
-tensor_quantale_commit_batch        (used internally by par_group_step)
-tensor_quantale_par_group_step      (legacy: GPU-native select + validate + commit par group)
+tensor_quantale_par_group_step      GPU-native select + validate + commit par group
 tensor_quantale_seed_exploration
 tensor_quantale_expand_tokens
 tensor_quantale_score_tokens
 tensor_quantale_select_topk_tokens
 tensor_quantale_commit_exploration
-tensor_quantale_frontier_step
-tensor_quantale_tick
-tensor_quantale_update_edge
 tensor_quantale_decay
 ```
 
 Orchestration scheduler:
 
 ```text
-orchestration_state_init            zero all 26 OrchestrationState fields with sentinels
+orchestration_state_init            zero all OrchestrationState fields with sentinels
 orchestration_state_snapshot        copy OrchestrationState to replay buffer
 tensor_quantale_orchestrate_step    primary per-step entry: SEQ/PAR/CHOICE/STAR on-device
 star_counters_init                  zero per-edge star counter buffer
-control_flow_advance                (deprecated: side-path bypasses scheduler selection)
 check_effects_independent
 failure_policy_init / _classify_and_emit / _set_rollback_marker / _apply_rollback
 learned_delta_init / _fold_receipt / _apply
@@ -513,7 +503,7 @@ scalar LLM plan format
 CPU routing planner
 CPU group-selection loop for par dispatch (deleted; GPU kernel selects)
 policy side-channel files
-legacy assets/patterns.json      (deleted; replaced by generated patterns.source.json)
+deleted assets/patterns.json runtime source (replaced by generated patterns.source.json)
 search/ingress/dsl/paging layers
 PyTorch/JAX/Triton runtime
 hard-coded StateNode/ControlNode/EventNode constants
@@ -523,7 +513,7 @@ runtime PTX stitching or FusionPlan types
 fake CUDA planned-success receipts
 QuantaleAction enum / selected_action()
 batch_contains_cuda_ptx / CUDA-specific batch branching
-runtime fallback to legacy topology or pattern assets
+runtime fallback to deleted topology or pattern assets
 CPU batch scheduler (batch.rs)
 TypedIR lowering scaffold (ir.rs)
 bench binaries (src/bin/bench_*)
