@@ -7,9 +7,11 @@
 
 mod structural {
     use quantale_semiring_v2::{
-        BackpressurePolicy, DeviceSlot, SlotDType, SlotSchema, SlotUpdate, StreamReceipt,
-        TopologyRuntime,
+        BackpressurePolicy, DeviceSlot, InMemorySource, RawStreamEvent, SlotDType, SlotSchema,
+        SlotUpdate, StreamConfig, StreamReceipt, StreamWorkers, TopologyDelta, TopologyRuntime,
+        normalize_event, try_normalize_topology_delta,
     };
+    use serde_json::json;
 
     fn slot_update(slot: &str) -> SlotUpdate {
         SlotUpdate {
@@ -99,6 +101,114 @@ mod structural {
         assert!(receipt.applied);
         assert!(!receipt.dropped);
     }
+
+    /// An `edge_delta` raw event normalizes into `TopologyDelta::Edge`.
+    #[test]
+    fn edge_delta_normalizes_into_topology_delta_edge() {
+        let event = RawStreamEvent::new(
+            "risk_engine",
+            "edge_delta",
+            "2026-06-06T00:00:00Z",
+            json!({
+                "src": "State::Goal",
+                "dst": "Control::GateInput",
+                "confidence": 0.9,
+                "cost": 0.1,
+                "safety": 0.95
+            }),
+        );
+        let delta = try_normalize_topology_delta(&event);
+        assert!(delta.is_some(), "expected Some(TopologyDelta::Edge)");
+        assert!(
+            matches!(delta.unwrap(), TopologyDelta::Edge { .. }),
+            "expected Edge variant"
+        );
+    }
+
+    /// A `node_delta` raw event normalizes into `TopologyDelta::Node`.
+    #[test]
+    fn node_delta_normalizes_into_topology_delta_node() {
+        let event = RawStreamEvent::new(
+            "risk_engine",
+            "node_delta",
+            "2026-06-06T00:00:00Z",
+            json!({ "node": "State::Goal", "active": true }),
+        );
+        let delta = try_normalize_topology_delta(&event);
+        assert!(delta.is_some(), "expected Some(TopologyDelta::Node)");
+        assert!(
+            matches!(delta.unwrap(), TopologyDelta::Node { .. }),
+            "expected Node variant"
+        );
+    }
+
+    /// Topology events must not be encoded as fake slot updates; `normalize_event`
+    /// must return an empty Vec for `edge_delta` and `node_delta` kinds.
+    #[test]
+    fn edge_delta_yields_no_slot_updates() {
+        let config = StreamConfig::default();
+        let edge_event = RawStreamEvent::new(
+            "src",
+            "edge_delta",
+            "2026-06-06T00:00:00Z",
+            json!({ "src": "A", "dst": "B", "confidence": 0.9, "cost": 0.1, "safety": 0.9 }),
+        );
+        let node_event = RawStreamEvent::new(
+            "src",
+            "node_delta",
+            "2026-06-06T00:00:00Z",
+            json!({ "node": "A", "active": true }),
+        );
+        let edge_updates = normalize_event(&edge_event, &config).unwrap();
+        let node_updates = normalize_event(&node_event, &config).unwrap();
+        assert!(
+            edge_updates.is_empty(),
+            "edge_delta must not emit slot updates (got {})",
+            edge_updates.len()
+        );
+        assert!(
+            node_updates.is_empty(),
+            "node_delta must not emit slot updates (got {})",
+            node_updates.len()
+        );
+    }
+
+    /// Injected `edge_delta` / `node_delta` events flow through the normalizer
+    /// worker and appear in `drain_topology_deltas`.
+    #[test]
+    fn drain_topology_deltas_returns_routed_deltas() {
+        let edge_event = RawStreamEvent::new(
+            "test",
+            "edge_delta",
+            "2026-06-06T00:00:00Z",
+            json!({ "src": "State::Goal", "dst": "Control::GateInput",
+                     "confidence": 0.8, "cost": 0.2, "safety": 0.9 }),
+        );
+        let node_event = RawStreamEvent::new(
+            "test",
+            "node_delta",
+            "2026-06-06T00:00:00Z",
+            json!({ "node": "State::Goal", "active": true }),
+        );
+        let source = InMemorySource::new("test", vec![edge_event, node_event]);
+        let mut workers =
+            StreamWorkers::spawn(StreamConfig::default(), SlotSchema::new(), source);
+
+        // Give the reader and normalizer threads time to process both events.
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        let deltas = workers.drain_topology_deltas();
+        assert_eq!(
+            deltas.len(),
+            2,
+            "expected 2 topology deltas (edge + node), got {}",
+            deltas.len()
+        );
+        let has_edge = deltas.iter().any(|d| matches!(d, TopologyDelta::Edge { .. }));
+        let has_node = deltas.iter().any(|d| matches!(d, TopologyDelta::Node { .. }));
+        assert!(has_edge, "expected one Edge delta");
+        assert!(has_node, "expected one Node delta");
+    }
 }
 
 // ── CUDA-gated integration tests ──────────────────────────────────────────────
@@ -106,8 +216,8 @@ mod structural {
 #[cfg(feature = "cuda")]
 mod cuda_streaming {
     use quantale_semiring_v2::{
-        activate_stream_event_nodes, apply_edge_delta, BackpressurePolicy,
-        CudaError, DeviceSlot, DeviceSlotRegistry, EdgeDelta, SlotDType, SlotSchema,
+        activate_stream_event_nodes, apply_edge_delta, apply_node_delta, BackpressurePolicy,
+        CudaError, DeviceSlot, DeviceSlotRegistry, EdgeDelta, NodeDelta, SlotDType, SlotSchema,
         SlotUpdate, StreamReceipt, TensorQuantaleWorld, TopologyRuntime,
     };
 
@@ -249,6 +359,24 @@ mod cuda_streaming {
         let mut registry = DeviceSlotRegistry::new();
         let receipts = world.apply_stream_batch(&mut workers, &mut registry);
         assert!(receipts.is_empty(), "empty source yields no receipts");
+        Ok(())
+    }
+
+    // ── unknown_node_delta_target_is_rejected ────────────────────────────────
+
+    #[test]
+    fn unknown_node_delta_target_is_rejected() -> Result<(), Box<dyn std::error::Error>> {
+        if skip_if_no_cuda() { eprintln!("skip: no CUDA"); return Ok(()); }
+        let (mut world, topology) = make_world_and_topology()?;
+        let delta = NodeDelta {
+            source: "test".into(),
+            node: "Nonexistent::NodeXyz".into(),
+            active: true,
+            observed_at: "2026-06-06T00:00:00Z".into(),
+            event_hash: "badhash".into(),
+        };
+        let result = apply_node_delta(&mut world, &topology, delta);
+        assert!(result.is_err(), "unknown node name must be rejected");
         Ok(())
     }
 

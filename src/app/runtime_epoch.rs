@@ -179,6 +179,17 @@ pub(crate) fn build_runtime_epoch(
     let stream_receipts = StreamReceiptWriter::open("state/stream_receipts.jsonl")
         .map_err(|e| format!("open stream_receipts: {e}"))?;
 
+    // Stream source startup policy: disabled by default (Option A).
+    // `stream_workers` is `None` until an external caller attaches a source via
+    // a future CLI flag or config field (e.g. `--stream-file <path>`).
+    // The pre-burst hook in main.rs is a no-op when this is `None`, so the
+    // GPU-native orchestrator runs unaffected.
+    console::info(
+        "streaming",
+        "source_policy",
+        &[("status", "disabled_by_default".to_string())],
+    );
+
     Ok(RuntimeEpoch {
         topology,
         executor,
