@@ -572,19 +572,3 @@ extern "C" __global__ void tensor_quantale_orchestrate_step(
         -1, -1, sel_src, sel_hop,
         cmd_ring, cmd_tail, cmd_head, cmd_ring_size);
 }
-
-// ── Phase-4 kernels: control-flow advance and par-eligibility check ───────────
-
-// Returns 1 into *out if nodes a and b are effect-independent (par-eligible),
-// 0 otherwise.  Single-thread; used by smoke tests and the par tier.
-extern "C" __global__ void check_effects_independent(
-    const EffectTable* effects,
-    int                n_effects,
-    int                a,
-    int                b,
-    int*               out
-) {
-    if (threadIdx.x != 0 || blockIdx.x != 0) return;
-    *out = effects_independent(effects, n_effects, a, b);
-}
-

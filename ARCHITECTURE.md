@@ -189,7 +189,6 @@ cuda/quantale_world.cu
   Orchestration scheduler:
     orchestration_state_init, orchestration_state_snapshot,
     tensor_quantale_orchestrate_step, star_counters_init,
-    check_effects_independent,
     failure_policy_init, failure_policy_classify_and_emit,
     failure_policy_set_rollback_marker, failure_policy_apply_rollback,
     learned_delta_init, learned_delta_fold_receipt,
@@ -432,7 +431,6 @@ orchestration_state_init            zero all OrchestrationState fields with sent
 orchestration_state_snapshot        copy OrchestrationState to replay buffer
 tensor_quantale_orchestrate_step    primary per-step entry: SEQ/PAR/CHOICE/STAR on-device
 star_counters_init                  zero per-edge star counter buffer
-check_effects_independent
 failure_policy_init / _classify_and_emit / _set_rollback_marker / _apply_rollback
 learned_delta_init / _fold_receipt / _apply
 receipt_prior_snapshot

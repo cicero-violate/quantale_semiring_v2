@@ -139,7 +139,6 @@ mod tests {
             "tensor_quantale_drain_device_receipts",
             "tensor_quantale_push_device_receipt",
             "tensor_quantale_orchestrate_step",
-            "check_effects_independent",
             "failure_policy_init",
             "failure_policy_classify_and_emit",
             "failure_policy_set_rollback_marker",

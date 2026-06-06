@@ -371,34 +371,6 @@ impl TensorQuantaleWorld {
         .map_err(|e| CudaError::new(STAR_COUNTERS_INIT_KERNEL, e))
     }
 
-    /// Check whether nodes `a` and `b` are par-eligible (effect-independent)
-    /// according to the current device effect table.
-    pub fn check_effects_independent(&mut self, a: i32, b: i32) -> Result<bool, CudaError> {
-        let f = self
-            .dev
-            .get_func(MODULE_NAME, CHECK_EFFECTS_INDEPENDENT_KERNEL)
-            .ok_or(CudaError::missing_function(
-                CHECK_EFFECTS_INDEPENDENT_KERNEL,
-            ))?;
-        let mut out = self
-            .dev
-            .htod_copy(vec![0_i32])
-            .map_err(|e| CudaError::new("htod_copy effects_out", e))?;
-        let n_effects = self.orch_buffers.effect_table.len() as i32;
-        unsafe {
-            f.launch(
-                kernel_config(),
-                (&self.orch_buffers.effect_table, n_effects, a, b, &mut out),
-            )
-        }
-        .map_err(|e| CudaError::new(CHECK_EFFECTS_INDEPENDENT_KERNEL, e))?;
-        let result = self
-            .dev
-            .dtoh_sync_copy(&out)
-            .map_err(|e| CudaError::new("dtoh effects_out", e))?;
-        Ok(result[0] != 0)
-    }
-
     // ── Phase-5 failure policy wrappers ──────────────────────────────────────
 
     /// Initialise the per-node failure policy table on the GPU.

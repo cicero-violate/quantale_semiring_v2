@@ -2,7 +2,6 @@
 //!
 //! Converts CKA pattern expressions (from `patterns.source.json`) into flat
 //! `ControlEdge` + `EffectTable` device tables for GPU-native `orchestrate_step` and
-//! `check_effects_independent` without any CPU-side pattern interpretation at
 //! runtime.
 
 use serde_json::Value;
